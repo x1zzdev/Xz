@@ -152,7 +152,18 @@ impl Parser {
             TokKind::DocTrusted => DocTag::Trusted,
             _ => DocTag::Intent,
         };
-        Ok(DocClaim { tag: tag, text: tok.text.clone(), trusted: false, span: tok.span })
+        // A claim line may carry an inline `@trusted` stamp before the
+// review note. The lexer folded the whole line into tok.text, so detect
+// the marker here (it also keeps DocTrusted tokens for standalone use).
+let mut trusted = false;
+let mut text = tok.text.clone();
+if text.ends_with("@trusted") || text.contains(" @trusted") {
+    trusted = true;
+    if let Some(pos) = text.find("@trusted") {
+        text = String::from(text[..pos].trim());
+    }
+}
+Ok(DocClaim { tag: tag, text: text, trusted: trusted, span: tok.span })
     }
 
     fn func_decl(&mut self, docs: Vec<DocClaim>) -> Result<FuncDecl, ParseError> {

@@ -3,6 +3,7 @@ use xz_cli::token::{TokKind};
 use xz_cli::parser::{parse};
 use xz_cli::resolve::{resolve};
 use xz_cli::typecheck::{typecheck};
+use xz_cli::intent::{check_intent};
 
 fn main() {
     let args = std::env::args();
@@ -69,7 +70,18 @@ fn main() {
                                                 }
                                             }
                                             Ok(_) => {
-                                                println!("ok: {} top-level declarations, names resolve and types check", program.items.len());
+                                                let intent = check_intent(&program);
+                                                match intent {
+                                                    Err(errors) => {
+                                                        for err in errors {
+                                                            let (l, c) = err.span.start;
+                                                            println!("  [{}] {} at {}:{}:{}", err.code, err.message, err.span.file, l, c);
+                                                        }
+                                                    }
+                                                    Ok(_) => {
+                                                        println!("ok: {} top-level declarations, names resolve, types check, claims verified", program.items.len());
+                                                    }
+                                                }
                                             }
                                         }
                                     }

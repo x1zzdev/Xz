@@ -4,3 +4,4 @@ pub mod ast;
 pub mod parser;
 pub mod resolve;
 pub mod typecheck;
+pub mod intent;

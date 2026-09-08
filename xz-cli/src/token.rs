@@ -103,7 +103,7 @@ pub struct Token {
     pub text: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum DocTag {
     Intent,
     Requires,
