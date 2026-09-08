@@ -11,8 +11,8 @@ Status: **documentation only** — no implementation yet.
 - [x] Spec gaps closed: `usize`/`Ptr`/`Err`/`Unit`/error unions defined, `?` propagation rule, `@trusted` placement, `result.value` narrowing under `is ok`, channel-as-sanctioned-global-state, program-termination rule, **handle semantics** (`Ptr`-bearing records: no copies, `transfer`-only handoff — the sanctioned exception to value semantics) ([02](02-syntax.md), [03](03-type-system.md), [05](05-concurrency.md), [06](06-error-handling.md), [09](09-intent-verification.md), [10](10-ffi-interop.md))
 - [x] Intent-verification semantics made implementable: NL claims never parsed — structural pairing with `pre`/`post`, formal proof, effect derivation ([09](09-intent-verification.md))
 - [x] Example programs to validate ergonomics ([../examples](../examples/))
-- [ ] Full grammar specification
-- [ ] Standard library API draft
+- [x] Full grammar specification — lexical rules, operator precedence, EBNF, intent-comment grammar, well-formedness constraints ([11-grammar.md](11-grammar.md))
+- [x] Standard library API draft — minimum surface needed to typecheck the examples; full stdlib is Phase 7 ([12-stdlib.md](12-stdlib.md))
 
 ## Phase 1 — Front end
 
@@ -26,6 +26,7 @@ Status: **documentation only** — no implementation yet.
 - `Result` / `Option` / generics
 - Exhaustiveness checks
 - Unit types (`Meters`, `Seconds`, …)
+- Built-in method surface (`to_str`, `Str`/`Option` methods, [12-stdlib.md](12-stdlib.md))
 
 ## Phase 3 — Contracts & intent verification
 

@@ -94,6 +94,18 @@ func load(path: Str) -> Result[Config, IoError | ParseError] { ... }
   `?` propagation rule (see [06-error-handling.md](06-error-handling.md)) uses
   this union to decide whether a callee's error fits the caller's channel.
 
+**Error records.** A record whose fields are exactly `{ message: Str }` is an
+*error record* and automatically conforms to `Err`; its constructor takes the
+message positionally:
+
+```
+record DomainError { message: Str }
+err(DomainError("negative input"))
+```
+
+The stdlib predeclares `IoError`, `DomainError`, `ParseError`, `AllocError`,
+`IndexError`, `DecodeError`, `HttpError` (see [12-stdlib.md](12-stdlib.md)).
+
 ## No implicit conversions
 
 - No integer/float auto-promotion
