@@ -1,0 +1,7 @@
+[package]
+name = "xz-cli"
+version = "0.1.0"
+edition = "2024"
+description = "Xz language compiler CLI (Phase 1: front end)"
+
+[dependencies]
