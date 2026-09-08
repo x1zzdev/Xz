@@ -37,6 +37,8 @@ pub struct TypeChecker {
     fields: HashMap<(String, String), Kind>,
     /// enum variant -> (enum_name, field_types)
     variants: HashMap<String, (String, Vec<Kind>)>,
+    /// enum name -> variant names (for exhaustiveness)
+    enum_variants: HashMap<String, Vec<String>>,
     /// function signatures: name -> (params, ret)
     funcs: HashMap<String, (Vec<Kind>, Option<Kind>)>,
     /// record constructor -> field types in order
@@ -51,6 +53,7 @@ pub fn typecheck(program: &Program) -> Result<(), Vec<TypeError>> {
         decls: HashMap::new(),
         fields: HashMap::new(),
         variants: HashMap::new(),
+        enum_variants: HashMap::new(),
         funcs: HashMap::new(),
         record_ctors: HashMap::new(),
         chans: HashMap::new(),
@@ -93,10 +96,13 @@ impl TypeChecker {
                     let name = en.name.clone();
                     let ty = Kind::Enum(name.clone());
                     self.decls.insert(name.clone(), ty);
+                    let mut vnames: Vec<String> = vec![];
                     for v in &en.variants {
                         let ft: Vec<Kind> = v.fields.iter().map(|f| self.from_ast(&f.ty)).collect();
                         self.variants.insert(v.name.clone(), (name.clone(), ft));
+                        vnames.push(v.name.clone());
                     }
+                    self.enum_variants.insert(name.clone(), vnames);
                 }
                 Item::Chan(c) => {
                     let payload = self.from_ast(&c.payload);
@@ -530,13 +536,19 @@ Item::Func(f) => {
                 self.from_ast(ty)
             }
             Expr::Match(subject, arms) => {
-                let _st = self.check_expr(subject, env);
+                let st = self.check_expr(subject, env);
+                let mut covered: Vec<String> = vec![];
+                let mut has_wildcard = false;
                 let mut result_ty = Kind::Unknown;
                 for (pat, body) in arms {
                     // bind pattern names into env BEFORE checking the body
                     match pat {
                         ast::Pattern::Name(nm) => {
                             env.insert(nm.clone(), Kind::Unknown);
+                            has_wildcard = true;
+                        }
+                        ast::Pattern::Wildcard => {
+                            has_wildcard = true;
                         }
                         ast::Pattern::Variant(vname, names) => {
                             let fts = self.variants.get(vname).cloned().map(|t| t.1);
@@ -547,6 +559,7 @@ Item::Func(f) => {
                                     }
                                 }
                             }
+                            covered.push(vname.clone());
                         }
                         _ => {}
                     }
@@ -556,6 +569,18 @@ Item::Func(f) => {
                     }
                     if result_ty != bt {
                         self.error(format!("match arms produce different types: {:?} vs {:?}", result_ty, bt), "".to_string());
+                    }
+                }
+                // exhaustiveness: an enum subject must cover all its variants
+                if let Kind::Enum(ename) = &st {
+                    if !has_wildcard {
+                        if let Some(vnames) = self.enum_variants.get(ename).cloned() {
+                            for v in &vnames {
+                                if !covered.contains(v) {
+                                    self.error(format!("match on enum '{}' is not exhaustive: missing variant '{}'", ename, v), "".to_string());
+                                }
+                            }
+                        }
                     }
                 }
                 result_ty
