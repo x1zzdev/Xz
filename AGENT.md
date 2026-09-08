@@ -7,10 +7,12 @@ whole point of Xz (see [docs/01-philosophy.md](docs/01-philosophy.md)).
 
 ## Repo layout
 
-- `docs/01..10` — the specification. `docs/02-syntax.md`'s grammar sketch is
-  the single source of truth for *which constructs exist*.
+- `docs/01..12` — the specification. `docs/11-grammar.md` is the authoritative
+  grammar (which constructs exist); `docs/12-stdlib.md` is the stdlib surface
+  (which names exist).
 - `examples/*.xz` — design-validation programs. They must comply with the
   docs, not invent syntax.
+- `xz-cli/` — the compiler implementation (Rust).
 
 ## Ground rules
 
@@ -31,18 +33,24 @@ whole point of Xz (see [docs/01-philosophy.md](docs/01-philosophy.md)).
 
 ## Commit rule (most important)
 
-**When committing — and only when the user has asked for commits — commit in
-the smallest coherent unit, as often as one completes.**
+**Commit continuously and autonomously, in the smallest coherent unit, as soon
+as one completes. Do not wait for the user to ask.**
 
+- The exception is the first commit of a session's work that reeks of "let me
+  check this is what you want" — but even then, commit the work; the user can
+  amend or revert.
 - One logical change = one commit. A spec gap, a doc fix, and an example
   update are three commits, not one, even when they touch related files.
 - "Smallest coherent unit" means the change is internally consistent and
-  complete: docs and examples agree, links resolve, no half-edits.
+  complete: docs and examples agree, links resolve, code compiles, no
+  half-edits.
 - In a design repo, the commit history *is* the record of design decisions.
   Frequent small commits give reviewers a clean history.
 - Commit messages state the decision, not the file list:
   `Add handle semantics to close the Ptr aliasing hole`, not `Update docs`.
 - Never bundle unrelated edits into one commit, and never commit secrets.
+- For a feature that spans multiple small units, commit each unit as it
+  completes rather than one big "implement X" commit at the end.
 
 ## Before committing
 
@@ -57,3 +65,7 @@ the smallest coherent unit, as often as one completes.**
 - No emojis. No comments in code that restate the code.
 - Keep doc changes tight: a new rule is one section, one example, one
   rationale — not an essay.
+- The user writes in Korean; respond in Korean unless the user switches.
+- This repo's Rust uses the toolchain's native stdlib style (see `xz-cli/`
+  for established patterns); match the surrounding code, not external
+  conventions.
