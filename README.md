@@ -17,6 +17,8 @@ Code will increasingly be written by AI. Xz is built so that humans can *read, v
 | Execution | Compiled to native binaries via LLVM |
 | Concurrency | Structured concurrency (async/await) + typed channels |
 | Error handling | `Result` types on a single explicit error channel (no exceptions) |
+| Intent verification | "No unverified claims" — `@intent`/`@ensures`/`@effects` checked against code, `@trusted` escape hatch |
+| Interoperability | FFI-first: C ABI bridge, generated Python bindings (`xz bind`) |
 | Compiler feedback | Structured JSON diagnostics designed for LLM self-correction |
 
 ## Repository layout
@@ -32,7 +34,9 @@ Xz/
     ├── 05-concurrency.md   # Structured concurrency + typed channels
     ├── 06-error-handling.md# Result types, single error channel
     ├── 07-compiler.md      # LLVM backend, JSON diagnostics
-    └── 08-roadmap.md       # Implementation roadmap
+    ├── 08-roadmap.md       # Implementation roadmap
+    ├── 09-intent-verification.md  # Comment–code contract checking (differentiator)
+    └── 10-ffi-interop.md    # C ABI bridge + Python bindings (ecosystem survival)
 ```
 
 ## Status

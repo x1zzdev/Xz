@@ -38,11 +38,22 @@ Most languages make these questions hard to answer because behavior is implicit.
 7. **Determinism by default**
    Value semantics and structured concurrency mean the same input produces the same output. Reviewable code must be reproducible code.
 
+8. **No unverified claims**
+   Documented behavior must be proven by the compiler or explicitly trusted by a human (`@trusted`). AI-written comments that lie about code are caught at build time. See [09-intent-verification.md](09-intent-verification.md).
+
+9. **Interop first**
+   The ecosystem problem is solved by design, not by waiting. C ABI is the bridge; Python bindings are generated, not hand-written. See [10-ffi-interop.md](10-ffi-interop.md).
+
+## Why Xz is not "Python syntax on Rust"
+
+Rust already has strong typing, immutability, and `Result`. Gleam and Go already offer readable code and explicit errors. Xz's distinct value is the **truthfulness contract**: it is the only language among them whose compiler enforces that declared behavior (`@intent`, `@ensures`, `@effects`) matches actual behavior — the exact property AI-written code needs most.
+
 ## What Xz is not
 
 - Not a dynamically-typed scripting language
 - Not a language that hides memory management behind a GC without guarantees
 - Not a language with "clever" per-library sugar that must be learned case by case
+- Not "Python syntax on Rust" — see the truthfulness contract above
 
 ## Consequences for the reviewer
 

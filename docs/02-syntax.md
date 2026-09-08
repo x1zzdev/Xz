@@ -83,6 +83,41 @@ func read_file(path: Str) -> Result[Str, IoError]
 }
 ```
 
+## Intent comments
+
+Public functions require a structured doc comment whose claims are checked against the code (see [09-intent-verification.md](09-intent-verification.md)):
+
+```
+/// Converts degrees to radians.
+/// @intent  Returns the radian equivalent of the input angle.
+/// @ensures result == deg * PI / 180.0
+/// @effects none
+func deg_to_rad(deg: Float) -> Float {
+    deg * PI / 180.0
+}
+```
+
+- `@intent` — natural-language description (for humans and AI)
+- `@requires` / `@ensures` — NL claims, must be mirrored by `pre`/`post`
+- `@effects` — declared side-effect profile (`none`/`mut`/`io`/`chan`/`extern`), auto-derived and compared
+- `@trusted` — human-review stamp; required for unprovable claims in strict builds
+
+## FFI / extern
+
+```
+extern func malloc(size: usize) -> Ptr
+extern func free(ptr: Ptr)
+
+func alloc_buffer(size: Int) -> Result[Buffer, AllocError]
+    pre  size > 0
+{
+    let p = malloc(size as usize)
+    if p == 0 { err(AllocError()) } else { ok(Buffer(p, size)) }
+}
+```
+
+Raw FFI is an escape hatch; safe use is always through contracted wrappers (see [10-ffi-interop.md](10-ffi-interop.md)).
+
 ## Control flow
 
 ```
@@ -129,7 +164,9 @@ A simplified outline; the full grammar is specified in Phase 1.
 
 ```
 program      := statement*
-statement    := decl | func | expr | contract | task | chan
+statement    := decl | func | expr | contract | task | chan | extern
+extern       := "extern" "func" IDENT "(" params ")" ("->" type)?
+intent       := "///" ("@" ("intent" | "requires" | "ensures" | "effects" | "trusted")) ...
 decl         := ("let" | "mut") IDENT ":" type ("=" expr)?
 func         := "func" IDENT "(" params ")" ("->" type)? contract? block
 params       := param ("," param)*
