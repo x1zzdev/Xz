@@ -1,6 +1,7 @@
 use xz_cli::lexer::{lex};
 use xz_cli::token::{TokKind};
 use xz_cli::parser::{parse};
+use xz_cli::resolve::{resolve};
 
 fn main() {
     let args = std::env::args();
@@ -9,7 +10,7 @@ fn main() {
         argv.push(a);
     }
     if argv.len() < 3 {
-        println!("usage: xz <lex|parse> <file.xz>");
+        println!("usage: xz <lex|parse|check> <file.xz>");
         return;
     }
     let cmd = argv[1].clone();
@@ -40,6 +41,28 @@ fn main() {
                             }
                             Ok(program) => {
                                 println!("ok: parsed {} top-level declarations", program.items.len());
+                            }
+                        }
+                    } else if cmd == "check" {
+                        let parsed = parse(tokens);
+                        match parsed {
+                            Err(e) => {
+                                let (l, c) = e.span.start;
+                                println!("error: {} at {}:{}:{}", e.message, e.span.file, l, c);
+                            }
+                            Ok(program) => {
+                                let resolved = resolve(&program);
+                                match resolved {
+                                    Err(errors) => {
+                                        for err in errors {
+                                            let (l, c) = err.span.start;
+                                            println!("error: {} at {}:{}:{}", err.message, err.span.file, l, c);
+                                        }
+                                    }
+                                    Ok(_) => {
+                                        println!("ok: {} top-level declarations, all names resolve", program.items.len());
+                                    }
+                                }
                             }
                         }
                     } else {
