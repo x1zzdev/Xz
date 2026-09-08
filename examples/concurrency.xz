@@ -24,7 +24,7 @@ task worker {
         let r = process(job)             // tasks have no error channel:
         match r {                        // errors are handled locally
             ok(res) -> send(done, res)
-            err(e)  -> send(done, JobResult(job.id, "ERROR"))
+            err(_)  -> send(done, JobResult(job.id, "ERROR"))
         }
     }
 }

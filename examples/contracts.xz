@@ -5,6 +5,10 @@ record Point {
     y: Float
 }
 
+record ValidationError {
+    message: Str
+}
+
 /// Computes the Euclidean distance between two points.
 /// @intent  Returns the straight-line distance from a to b.
 /// @ensures result is ok implies result.value >= 0.0

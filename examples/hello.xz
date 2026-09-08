@@ -7,7 +7,7 @@ func greet() -> Int
 {
     let msg: Str = "Hello, Xz!"
     print(msg)
-    msg.len
+    msg.len()
 }
 
 func main() {

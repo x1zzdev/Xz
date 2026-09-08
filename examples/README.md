@@ -28,4 +28,6 @@ Conventions used throughout:
   error channel (`Err` accepts any; unions accept their members).
 
 If an example needs a language feature that is not yet specified in the docs,
-the gap must be filed in `docs/` rather than silently invented here.
+the gap must be filed in `docs/` rather than silently invented here. The
+authorities are [docs/11-grammar.md](../docs/11-grammar.md) (which constructs
+exist) and [docs/12-stdlib.md](../docs/12-stdlib.md) (which names exist).
