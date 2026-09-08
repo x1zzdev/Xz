@@ -15,27 +15,25 @@ Shared-library output (`xz build --shared`) is the interop on-ramp; `xz bind --l
 ## CLI
 
 ```
-xz build <file.xz>          # type check + contract check + codegen
+xz build <file.xz>          # type check + contract check + codegen (Phase 4)
 xz check <file.xz>          # type/contract check only, no codegen
+xz check --strict <file.xz> # intent checks enforced (I0004: untrusted claims fail)
+xz check-json [--strict] <file.xz>   # same, diagnostics as a JSON array
 xz run <file.xz>            # build and execute
 ```
 
 ## JSON Diagnostics (for LLM self-correction)
 
-Every diagnostic is emitted as structured JSON in addition to human-readable text:
+Every diagnostic is emitted as structured JSON (`xz check-json`) in addition to human-readable text:
 
 ```json
 {
   "version": 1,
   "severity": "error",
-  "code": "E0032",
-  "message": "contract precondition may be violated",
-  "category": "contract",
-  "span": { "file": "src/main.xz", "start": [14, 5], "end": [14, 19] },
-  "suggestion": {
-    "fix": "add 'pre path != \"\"' to the declaration",
-    "confidence": 0.9
-  }
+  "code": "I0020",
+  "message": "declared @effects 'none' does not match derived effects 'io' on 'f'",
+  "category": "intent",
+  "span": { "file": "src/main.xz", "start": [4, 6], "end": [4, 7] }
 }
 ```
 
@@ -43,9 +41,20 @@ Every diagnostic is emitted as structured JSON in addition to human-readable tex
 
 - **Stable error codes** — codes are never renumbered or reused for different errors
 - **Machine-readable spans and categories** — deterministic, queryable
-- **Suggested fixes with confidence scores** — the compiler proposes repairs
-- **Round-trip loop** — an AI tool reads `code` + `span` + `suggestion`, applies a fix, re-runs. This is the self-correction loop that makes "AI-written, human-reviewed" practical.
-- **Intent diagnostics** — codes `I0001` (unprovable formal claim), `I0020` (undeclared effect), `I0021` (NL claim without a paired formal contract), `I0022` (missing intent comment) power the truthfulness check in [09-intent-verification.md](09-intent-verification.md)
+- **Round-trip loop** — an AI tool reads `code` + `span` + `message`, applies a fix, re-runs. This is the self-correction loop that makes "AI-written, human-reviewed" practical.
+- **Intent diagnostics** — codes `I0003` (misplaced `@trusted`), `I0004` (untrusted claim in `--strict`), `I0020` (undeclared effect), `I0021` (NL claim without a paired formal contract), `I0022` (missing intent comment), `I0023` (missing `@effects`), `I0024` (unknown effect label) power the truthfulness check in [09-intent-verification.md](09-intent-verification.md)
+
+### Initial code scheme
+
+| Prefix | Phase | Meaning |
+|---|---|---|
+| `L0001` | lexer | lexical error |
+| `P0001` | parser | syntax error |
+| `R0001` | name resolution | unknown/duplicate name |
+| `T0001` | type checker | type error |
+| `Ixxxx` | intent verification | claim/effect/trust violations (above) |
+
+Suggested fixes with confidence scores (`suggestion.fix`, `suggestion.confidence`) are a planned extension to this shape; the current schema is the stable core every tool can rely on.
 
 ## Feedback to the writer (AI)
 

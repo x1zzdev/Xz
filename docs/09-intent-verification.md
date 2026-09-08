@@ -130,9 +130,13 @@ This is not "Python syntax on Rust." It is a language whose compiler enforces th
 
 ## Feedback to the writer (AI)
 
-- `I0001` — formal `pre`/`post` cannot be proven; add `@trusted` to the paired NL claim, or strengthen/simplify the contract
-- `I0020` — undeclared effect; extend `@effects` or remove the effect from the body
+- `I0001` — formal `pre`/`post` cannot be proven (planned: static provability); add `@trusted` to the paired NL claim, or strengthen/simplify the contract
+- `I0003` — `@trusted` attached to the wrong tag (must be `@ensures`/`@requires`)
+- `I0004` — `@trusted` without a review note, in `--strict`; add `// reviewed by <who> on <date>`
+- `I0020` — declared `@effects` does not match the derived profile (transitively over calls)
 - `I0021` — NL claim without a paired formal contract; write the `pre`/`post`
 - `I0022` — missing intent comment on a public `func`/`task` (every top-level declaration except `main`)
+- `I0023` — missing `@effects` declaration
+- `I0024` — unknown effect label in `@effects` (allowed: `none`, `mut`, `io`, `chan`, `extern`)
 
 All emitted as JSON diagnostics (see [07-compiler.md](07-compiler.md)).
