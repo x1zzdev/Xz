@@ -1,6 +1,6 @@
 # Syntax
 
-Xz uses Python-like, indentation-based syntax. Blocks are delimited by indentation; there are no braces or semicolons.
+Xz uses Python-like syntax with **brace-delimited blocks**. Indentation (4 spaces) is a mandatory layout convention, enforced by the formatter rather than the parser. There are no semicolons — a newline terminates a statement. The authoritative grammar is [11-grammar.md](11-grammar.md).
 
 ## Lexical conventions
 
@@ -171,66 +171,23 @@ task worker {
 }
 ```
 
-## Grammar sketch (outline)
+## Grammar
 
-A simplified outline; the full grammar is specified in Phase 1. It is the
-authority for which constructs exist; examples elsewhere in this repo must
-match it.
+The full, authoritative grammar — lexical rules, operator precedence, EBNF,
+intent-comment grammar, and well-formedness constraints — is specified in
+[11-grammar.md](11-grammar.md). That document is the authority for which
+constructs exist; examples elsewhere in this repo must match it.
 
-```
-program      := statement*
-statement    := decl | func | task | chan_decl | extern_decl
-             | record_decl | enum_decl | expr | contract
-block        := indented statement+
+The surface in one line each:
 
-// declarations
-decl         := ("let" | "mut") IDENT ":" type ("=" expr)?
-chan_decl    := "chan" IDENT ":" "Chan[" type "]"
-extern_decl  := "extern" "func" IDENT "(" params ")" ("->" type)?
-
-// user-defined types
-record_decl  := "record" IDENT "{" field+ "}"
-enum_decl    := "enum" IDENT "{" variant+ "}"
-field        := IDENT ":" type
-variant      := IDENT "(" (field ("," field)*)? ")"
-
-// functions
-func         := ("async")? "func" IDENT "(" params ")" ("->" type)? contract* block
-params       := param ("," param)*
-param        := ("mut")? IDENT ":" type
-contract     := ("pre" | "post" | "invariant") expr
-
-// tasks
-task         := "task" IDENT block
-
-// types
-type         := prim | IDENT | IDENT "[" type ("," type)* "]" | type "|" type
-prim         := "Bool" | "Int" | "usize" | "Float" | "Char" | "Str" | "Bytes"
-             | "Unit" | "Ptr" | "none"
-
-// expressions (selected)
-expr         := literal | IDENT | "match" expr "{" match_arm+ "}"
-             | "if" expr block ("elif" expr block)* ("else" block)?
-             | "loop" block | "for" IDENT "in" expr block
-             | call | "send" "(" expr "," expr ")" | IDENT "<-" "recv" "(" expr ")"
-             | "await" call | call "?" | expr "as" type
-             | "ok" "(" (expr)? ")" | "err" "(" expr ")" | "none"
-             | "transfer" "(" expr ")"
-match_arm    := pattern "->" expr
-pattern      := IDENT | IDENT "(" (IDENT ("," IDENT)*)? ")"
-
-// intent comments (public funcs/tasks, except main)
-intent       := "///" "intent"  NL_TEXT
-             | "///" "@requires" NL_TEXT trusted?
-             | "///" "@ensures"  NL_TEXT trusted?
-             | "///" "@effects"  effect_list
-trusted      := "@trusted" "//" "reviewed by" IDENT "on" DATE   // inline suffix, required note
-effect_list  := "none" | ("mut" | "io" | "chan" | "extern") ("," effect_list)?
-```
-
-The full grammar adds precedence for `as`/`?`/calls and match-arm pattern
-syntax (`circle(r) -> expr`); the outline above fixes the set of constructs,
-which is what the reviewer needs.
+- **Declarations** — `let`/`mut` bindings, `chan`, `record`, `enum`, `extern`
+- **Functions** — `func` (optionally `async`), mandatory signature types,
+  `pre`/`post`/`invariant` contracts, brace block
+- **Tasks** — `task` + brace block
+- **Expressions** — `if`/`elif`/`else`, `match`, `loop`, `for..in`,
+  `send`/`recv`, `await`, `?`, `as`, `ok`/`err`/`some`/`none`, `transfer`
+- **Intent comments** — `/// @intent`/`@requires`/`@ensures`/`@effects` with
+  inline `@trusted`
 
 ## Canonical syntax rule
 
@@ -239,11 +196,13 @@ For every intent there is exactly one idiomatic expression:
 - Assignment of a new binding → `let`
 - Mutating an existing binding → `mut` + operator
 - Optional value → `Option[T]`
+- Present option value → `some(v)`; absent → `none`
 - Fallible call → `Result[T, E]`
 - Propagating a fallible call → `?` at the call site
 - Multiple failure modes → error union `Result[T, E1 | E2]`
 - Type conversion → explicit `as`
 - Absence → `none`
+- Contract implication → `implies` (contract expressions only)
 - Fallible function that returns nothing → `Result[Unit, E]`, success value `ok()`
 - Formatting a value into text → `value.to_str()` (not `as Str` — `as` is a cast, and an `Int` is not a `Str`)
 - Communication → `send` / `recv` on a `Chan[T]`

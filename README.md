@@ -13,7 +13,7 @@ Code will increasingly be written by AI. Xz is built so that humans can *read, v
 | Philosophy | AI-written, Human-reviewed |
 | Type system | Strong static typing; explicit types at contract boundaries, local inference inside bodies |
 | Memory model | Value semantics; immutable by default, explicit `mut` |
-| Syntax | Python-like (indentation-based) |
+| Syntax | Python-like; brace-delimited blocks, indentation layout |
 | Execution | Compiled to native binaries via LLVM |
 | Concurrency | Structured concurrency (async/await) + typed channels |
 | Error handling | `Result` types on a single explicit error channel (no exceptions) |
@@ -37,7 +37,9 @@ Xz/
     ├── 07-compiler.md      # LLVM backend, JSON diagnostics
     ├── 08-roadmap.md       # Implementation roadmap
     ├── 09-intent-verification.md  # Comment–code contract checking (differentiator)
-    └── 10-ffi-interop.md    # C ABI bridge + Python bindings (ecosystem survival)
+    ├── 10-ffi-interop.md    # C ABI bridge + Python bindings (ecosystem survival)
+    ├── 11-grammar.md       # Full grammar: lexical, precedence, EBNF (authoritative)
+    └── 12-stdlib.md        # Minimum stdlib surface (collections/network: Phase 7)
 ```
 
 ## Status
