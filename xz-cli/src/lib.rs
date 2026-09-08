@@ -5,3 +5,4 @@ pub mod parser;
 pub mod resolve;
 pub mod typecheck;
 pub mod intent;
+pub mod diagnostic;

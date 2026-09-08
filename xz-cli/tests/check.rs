@@ -3,6 +3,7 @@ use xz_cli::parser::parse;
 use xz_cli::resolve::resolve;
 use xz_cli::typecheck::typecheck;
 use xz_cli::intent::{check_intent, check_intent_strict};
+use xz_cli::diagnostic::{Diagnostic, Severity, Category, to_json_array};
 
 /// Run the full check pipeline on source; return Some(first error string) or
 /// None when everything passes.
@@ -193,5 +194,39 @@ func f() -> Int
     match err {
         Some(e) => println!("FAIL strict_with_review_note_passes: got {}", e),
         None => {}
+    }
+}
+
+#[test]
+fn json_emits_spec_shape() {
+    // build one diagnostic and verify the JSON carries the spec fields
+    let d = Diagnostic {
+        version: 1,
+        severity: Severity::Error,
+        code: "I0020".to_string(),
+        message: "declared @effects 'none' does not match derived effects 'io' on 'f'".to_string(),
+        category: Category::Intent,
+        span: xz_cli::diagnostic::Span { file: "a.xz".to_string(), start: (4, 6), end: (4, 7) },
+    };
+    let arr = to_json_array(&vec![d]);
+    if !arr.contains("\"version\":1") {
+        println!("FAIL json: missing version");
+        return;
+    }
+    if !arr.contains("\"severity\":\"error\"") {
+        println!("FAIL json: missing severity");
+        return;
+    }
+    if !arr.contains("\"code\":\"I0020\"") {
+        println!("FAIL json: missing code");
+        return;
+    }
+    if !arr.contains("\"category\":\"intent\"") {
+        println!("FAIL json: missing category");
+        return;
+    }
+    if !arr.contains("\"file\":\"a.xz\"") || !arr.contains("\"start\":[4,6]") {
+        println!("FAIL json: malformed span");
+        return;
     }
 }

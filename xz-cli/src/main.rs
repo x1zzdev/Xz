@@ -4,6 +4,8 @@ use xz_cli::parser::{parse};
 use xz_cli::resolve::{resolve};
 use xz_cli::typecheck::{typecheck};
 use xz_cli::intent::{check_intent, check_intent_strict};
+use xz_cli::diagnostic::{Diagnostic, Severity, Category, Span as DSpan, to_json_array};
+use xz_cli::token::{Span, Token};
 
 fn main() {
     let args = std::env::args();
@@ -36,7 +38,7 @@ fn main() {
             println!("error: cannot read {}: {}", path, e);
         }
         Ok(src) => {
-            let result = lex(src, path);
+            let result = lex(src, path.clone());
             match result {
                 Err(e) => {
                     let (l, c) = e.span.start;
@@ -59,52 +61,9 @@ fn main() {
                             }
                         }
                     } else if cmd == "check" {
-                        let parsed = parse(tokens);
-                        match parsed {
-                            Err(e) => {
-                                let (l, c) = e.span.start;
-                                println!("error: {} at {}:{}:{}", e.message, e.span.file, l, c);
-                            }
-                            Ok(program) => {
-                                let resolved = resolve(&program);
-                                match resolved {
-                                    Err(errors) => {
-                                        for err in errors {
-                                            let (l, c) = err.span.start;
-                                            println!("  error: {} at {}:{}:{}", err.message, err.span.file, l, c);
-                                        }
-                                    }
-                                    Ok(_) => {
-                                        let typed = typecheck(&program);
-                                        match typed {
-                                            Err(errors) => {
-                                                for err in errors {
-                                                    println!("  error: {} in {}", err.message, err.file);
-                                                }
-                                            }
-                                            Ok(_) => {
-                                                let intent = if strict {
-                                                    check_intent_strict(&program)
-                                                } else {
-                                                    check_intent(&program)
-                                                };
-                                                match intent {
-                                                    Err(errors) => {
-                                                        for err in errors {
-                                                            let (l, c) = err.span.start;
-                                                            println!("  [{}] {} at {}:{}:{}", err.code, err.message, err.span.file, l, c);
-                                                        }
-                                                    }
-                                                    Ok(_) => {
-                                                        println!("ok: {} top-level declarations, names resolve, types check, claims verified", program.items.len());
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        run_check(tokens, strict, false);
+                    } else if cmd == "check-json" {
+                        run_check(tokens, strict, true);
                     } else {
                         println!("unknown command: {}", cmd);
                     }
@@ -112,6 +71,87 @@ fn main() {
             }
         }
     }
+}
+
+fn run_check(tokens: Vec<Token>, strict: bool, json: bool) {
+    let mut diags: Vec<Diagnostic> = vec![];
+    let parsed = parse(tokens);
+    match parsed {
+        Err(e) => {
+            diags.push(Diagnostic {
+                version: 1,
+                severity: Severity::Error,
+                code: "P0001".to_string(),
+                message: e.message.clone(),
+                category: Category::Parse,
+                span: dspan(e.span),
+            });
+        }
+        Ok(program) => {
+            match resolve(&program) {
+                Err(errors) => {
+                    for err in errors {
+                        diags.push(Diagnostic {
+                            version: 1,
+                            severity: Severity::Error,
+                            code: "R0001".to_string(),
+                            message: err.message.clone(),
+                            category: Category::Resolve,
+                            span: dspan(err.span),
+                        });
+                    }
+                }
+                Ok(_) => {
+                    match typecheck(&program) {
+                        Err(errors) => {
+                            for err in errors {
+                                diags.push(Diagnostic {
+                                    version: 1,
+                                    severity: Severity::Error,
+                                    code: "T0001".to_string(),
+                                    message: err.message.clone(),
+                                    category: Category::Type,
+                                    span: DSpan { file: err.file.clone(), start: (0, 0), end: (0, 0) },
+                                });
+                            }
+                        }
+                        Ok(_) => {
+                            let intent = if strict { check_intent_strict(&program) } else { check_intent(&program) };
+                            match intent {
+                                Err(errors) => {
+                                    for err in errors {
+                                        diags.push(Diagnostic {
+                                            version: 1,
+                                            severity: Severity::Error,
+                                            code: err.code.clone(),
+                                            message: err.message.clone(),
+                                            category: Category::Intent,
+                                            span: dspan(err.span),
+                                        });
+                                    }
+                                }
+                                Ok(_) => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if json {
+        println!("{}", to_json_array(&diags));
+    } else if diags.len() > 0 {
+        for d in diags {
+            let (sl, sc) = d.span.start;
+            println!("  [{}] {} at {}:{}:{}", d.code, d.message, d.span.file, sl, sc);
+        }
+    } else {
+        println!("ok: all checks passed");
+    }
+}
+
+fn dspan(s: Span) -> DSpan {
+    DSpan { file: s.file, start: s.start, end: s.end }
 }
 
 fn tok_name(kind: &TokKind) -> String {
