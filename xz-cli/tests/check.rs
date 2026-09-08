@@ -2,12 +2,20 @@ use xz_cli::lexer::lex;
 use xz_cli::parser::parse;
 use xz_cli::resolve::resolve;
 use xz_cli::typecheck::typecheck;
-use xz_cli::intent::check_intent;
+use xz_cli::intent::{check_intent, check_intent_strict};
 
 /// Run the full check pipeline on source; return Some(first error string) or
 /// None when everything passes.
-fn check_source(source: &str) -> Option<String> {
-    let tokens = lex(source.to_string(), "test.xz".to_string());
+fn check_source(src: &str) -> Option<String> {
+    check_source_mode(src, false)
+}
+
+fn check_source_strict(src: &str) -> Option<String> {
+    check_source_mode(src, true)
+}
+
+fn check_source_mode(src: &str, strict: bool) -> Option<String> {
+    let tokens = lex(src.to_string(), "test.xz".to_string());
     match tokens {
         Err(e) => return Some(format!("lex: {}", e.message)),
         Ok(ts) => {
@@ -23,7 +31,8 @@ fn check_source(source: &str) -> Option<String> {
                         Err(errors) => return Some(format!("typecheck: {} errors", errors.len())),
                         Ok(_) => {}
                     }
-                    match check_intent(&p) {
+                    let intent = if strict { check_intent_strict(&p) } else { check_intent(&p) };
+                    match intent {
                         Err(errors) => {
                             return Some(format!("intent: {}", errors[0].code));
                         }
@@ -150,4 +159,39 @@ func f() -> Int {
         "I0003",
         "trusted placement",
     );
+}
+
+#[test]
+fn strict_trusted_without_review_note() {
+    const SRC: &str = r#"/// Trusted but not reviewed.
+/// @intent  Returns one.
+/// @ensures result == 1  @trusted
+/// @effects none
+func f() -> Int
+    post result == 1
+{
+    1
+}"#;
+    // non-strict: passes (trusted stamp is advisory without strict)
+    expect_ok(SRC, "non-strict trusted");
+    // strict: I0004 — untrusted claim blocks the build
+    expect_intent_code(SRC, "I0004", "strict review note");
+}
+
+#[test]
+fn strict_with_review_note_passes() {
+    const SRC: &str = r#"/// Trusted and reviewed.
+/// @intent  Returns one.
+/// @ensures result == 1  @trusted  // reviewed by alice on 2026-09-08
+/// @effects none
+func f() -> Int
+    post result == 1
+{
+    1
+}"#;
+    let err = check_source_strict(SRC);
+    match err {
+        Some(e) => println!("FAIL strict_with_review_note_passes: got {}", e),
+        None => {}
+    }
 }
