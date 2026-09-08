@@ -18,9 +18,13 @@ extern func malloc(size: usize) -> Ptr
 extern func free(ptr: Ptr)
 
 // Typed, contracted wrapper — the sanctioned way to use FFI
+/// Allocates a buffer; every raw FFI call sits behind a contracted wrapper.
+/// @intent  Allocates size bytes; ok(Buffer) on success, err on null.
+/// @ensures result is ok implies result.value.ptr != 0
+/// @effects extern
 func alloc_buffer(size: Int) -> Result[Buffer, AllocError]
     pre  size > 0
-    post result is ok implies result.ptr != 0
+    post result is ok implies result.value.ptr != 0
 {
     let p = malloc(size as usize)
     if p == 0 { err(AllocError()) } else { ok(Buffer(p, size)) }

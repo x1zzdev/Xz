@@ -32,14 +32,18 @@ let v <- recv(ch)  // receives a copy; blocks if empty
 
 1. A task's memory is its own. Sending a value over a channel transfers a **copy** (value semantics).
 2. Channel payload types are mandatory at declaration.
-3. No global mutable state. `mut` is always local or explicitly passed as a `mut` parameter.
+3. **No global mutable state — except channel bindings.** A `chan` declaration
+   is the *single sanctioned form* of global state: it is exactly the
+   communication mechanism the model allows, its payload type is fixed at the
+   one declaration site, and the reviewer sees the complete graph by reading
+   those declarations. Everything else is local or explicitly `mut`-passed.
 4. No locks, no shared counters, no unsafe access.
 
 ## Benefits for review
 
 - A reviewer can see the complete communication graph of a program by reading channel declarations and `send`/`recv` sites.
 - No race conditions, no lock ordering, no hidden shared memory.
-- Scheduling is deterministic given the same inputs (cooperative tasks).
+- Channel-level behavior is deterministic: given the same inputs, the same values flow through each channel in the same order. The exact interleaving of *independent* tasks is scheduler-defined and specified in Phase 6.
 - Data races are impossible by construction.
 
 ## Structured concurrency
@@ -53,6 +57,14 @@ let body = await fetch(url)?   // suspension is visible at the call site
 ```
 
 `await` and channel operations are the only suspension points and are always visible in the syntax.
+
+## Program termination
+
+The program ends when `main` returns. Remaining tasks are torn down without
+draining their channels — a task that must complete before the program exits
+must say so: by waiting on an acknowledgment channel (see the example program)
+or by explicit structured cancellation (planned, below). There is no
+implicit join; the rule is one sentence long and leaves nothing to guess.
 
 ## Future options
 

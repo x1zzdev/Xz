@@ -2,7 +2,9 @@
 /// @intent  Writes "Hello, Xz!" to standard output and returns its character count.
 /// @ensures result == 10
 /// @effects io
-func greet() -> Int {
+func greet() -> Int
+    post result == 10
+{
     let msg: Str = "Hello, Xz!"
     print(msg)
     msg.len
@@ -10,5 +12,5 @@ func greet() -> Int {
 
 func main() {
     let n = greet()
-    print("length: " + n as Str)
+    print("length: " + n.to_str())
 }

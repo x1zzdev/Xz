@@ -79,6 +79,35 @@ func d() -> Result[Int, IoError] {
 
 In the success case, `expr?` evaluates to the unwrapped `T`.
 
+## Contracts over a `Result`
+
+When a function returns `Result[T, E]`, `result` in the `post` is the whole
+`Result`. The predicates `result is ok` / `result is err` narrow the payload:
+
+```
+func sqrt(x: Float) -> Result[Float, DomainError]
+    pre  x >= 0
+    post result is ok implies result.value >= 0
+{
+    ...
+}
+```
+
+Under `result is ok`, `result.value` is the `T` payload and typechecks as
+such. The compiler proves (or rejects) the claim *under that narrowing* — so
+`result.value` is never reachable when the result is an error.
+
+## Unions grow up the call stack — deliberately
+
+A function that propagates two distinct failures declares both, and any caller
+that propagates further must re-declare them. This is the *point*: every level
+shows its full failure set, and nothing escapes a signature. The cost is
+longer unions on deep call chains — the escape hatch is `Err` (rule 3), which
+is the explicit, visible choice "this function can fail in any way". Choosing
+`Err` trades failure-set precision for signature brevity; choosing the union
+keeps precision at the cost of churn when a callee's error set changes. Both
+are visible to the reviewer; neither happens silently.
+
 ## Contract failures vs runtime errors
 
 - **Contract failures** (`pre`/`post`/`invariant` violations) are compile-time checkable where provable. Otherwise they are treated as logic bugs and reported as structured diagnostics — they are never caught-and-handled runtime events.

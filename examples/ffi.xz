@@ -11,11 +11,11 @@ record Buffer {
 
 /// Allocates a buffer of the given size.
 /// @intent  Allocates size bytes; returns ok(Buffer) or err(AllocError).
-/// @ensures result is ok implies ok(result).value.ptr != 0
+/// @ensures result is ok implies result.value.ptr != 0
 /// @effects extern
 func alloc_buffer(size: Int) -> Result[Buffer, AllocError]
     pre  size > 0
-    post result is ok implies ok(result).value.ptr != 0
+    post result is ok implies result.value.ptr != 0
 {
     let p = malloc(size as usize)
     if p == 0 {

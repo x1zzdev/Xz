@@ -32,6 +32,7 @@ func area(shape: Shape) -> Float {          // signature: types mandatory
 | Type | Meaning |
 |---|---|
 | `Ptr` | opaque pointer; usable only in `extern` signatures and thin wrappers. No arithmetic, no dereference outside a wrapper. |
+| `Unit` | the unit type — exactly one value. The payload of fallible functions that return nothing: `func main() -> Result[Unit, Err]` ends with `ok()`. |
 
 `none` is the literal for absence — the only inhabitant of `Option[T]`'s
 absence case. Constructors are the only way to produce or consume option/
@@ -50,6 +51,11 @@ result values; they are part of the language, not sugar:
 | `Result[T, E]` | value or error | failure paths are typed |
 | `List[T]`, `Map[K, V]`, `Set[T]` | collections | value types, copy semantics |
 | `Chan[T]` | typed channel | exactly one declared payload type |
+
+`Map` and `Set` preserve **insertion order** on iteration. Iteration order is
+part of the type contract: a reviewer must be able to predict the sequence of
+values a loop produces, so no hash-order nondeterminism is allowed into
+observable behavior.
 
 ## Error channel
 

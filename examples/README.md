@@ -13,12 +13,17 @@ ergonomics and to give the implementation a concrete target.
 
 Conventions used throughout:
 
-- Public functions always carry a `///` doc comment with `@intent`, `@ensures`,
-  and `@effects` — the intent verification contract (see
-  [docs/09-intent-verification.md](../docs/09-intent-verification.md)).
+- Public `func`/`task` declarations always carry a `///` doc comment with
+  `@intent`, `@ensures`, and `@effects` — the intent verification contract
+  (see [docs/09-intent-verification.md](../docs/09-intent-verification.md)).
+- `@ensures`/`@requires` NL claims are paired (in order) with a `post`/`pre`;
+  `@trusted` appears inline on the claim line it vouches for.
+- `main` is the one exemption from the doc-comment rule and returns
+  `Result[Unit, Err]`, ending in `ok()` — never `Result[Int, Err]`/`ok(0)`.
+- Formatting uses `value.to_str()`, never `as Str` (`as` is a cast).
 - Raw FFI (`extern`) never appears outside a thin, contracted wrapper.
 - `?` is used only on calls whose error channel fits the caller's declared
-  error channel.
+  error channel (`Err` accepts any; unions accept their members).
 
 If an example needs a language feature that is not yet specified in the docs,
 the gap must be filed in `docs/` rather than silently invented here.

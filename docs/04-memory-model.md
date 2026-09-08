@@ -45,6 +45,12 @@ func add_to(mut acc: Int, n: Int) {
 add_to(acc, 5)        // ok: mut parameter is visible at the call site
 ```
 
+A `mut` parameter is **copy-in / copy-out**: the argument's value is copied in,
+mutated as the function's own binding, and copied back when the function
+returns. This is the one sanctioned way for a function to change caller state,
+and it is fully visible — there is no hidden aliasing and therefore nothing a
+`mut` parameter can do behind a reviewer's back.
+
 ## Why not GC / ownership?
 
 - A **GC** hides allocation and mutation behind runtime behavior, weakening reviewability.
@@ -57,4 +63,4 @@ Because tasks never share mutable state (see [05-concurrency.md](05-concurrency.
 
 ## Determinism
 
-The same input produces the same sequence of value transitions. There is no observer-visible nondeterminism from memory layout, allocation order, or scheduling of value copies.
+The same input produces the same sequence of value transitions. There is no observer-visible nondeterminism from memory layout, allocation order, scheduling of value copies, or iteration order (`Map`/`Set` are insertion-ordered, see [03-type-system.md](03-type-system.md)).

@@ -71,6 +71,12 @@ func divide(a: Float, b: Float) -> Float
 - `post <expr>` — postcondition (`result` refers to the return value)
 - `invariant <expr>` — on records/loops, must hold at all times
 
+Formal contracts are required **when a claim is made**: an `@requires`/`@ensures`
+NL claim must be paired with a `pre`/`post` (see
+[09-intent-verification.md](09-intent-verification.md)). A public function
+that makes no claims declares no contracts — the type signature is then its
+entire contract, which the reviewer sees as the absence of guarantees.
+
 ## Error-returning functions
 
 Functions that can fail declare the error channel in the return type:
@@ -92,15 +98,17 @@ Public functions require a structured doc comment whose claims are checked again
 /// @intent  Returns the radian equivalent of the input angle.
 /// @ensures result == deg * PI / 180.0
 /// @effects none
-func deg_to_rad(deg: Float) -> Float {
+func deg_to_rad(deg: Float) -> Float
+    post result == deg * PI / 180.0
+{
     deg * PI / 180.0
 }
 ```
 
-- `@intent` — natural-language description (for humans and AI)
-- `@requires` / `@ensures` — NL claims, must be mirrored by `pre`/`post`
+- `@intent` — natural-language description (for humans and AI); advisory, never machine-gated
+- `@requires` / `@ensures` — NL claims, each paired (in order) with a `pre`/`post`
 - `@effects` — declared side-effect profile (`none`/`mut`/`io`/`chan`/`extern`), auto-derived and compared
-- `@trusted` — human-review stamp appended to a specific `@ensures`/`@requires` line; required for unprovable claims in strict builds (see [09-intent-verification.md](09-intent-verification.md))
+- `@trusted` — human-review stamp appended to a specific `@ensures`/`@requires` line; discharges the proof obligation of the paired formal contract in strict builds (see [09-intent-verification.md](09-intent-verification.md))
 
 ## FFI / extern
 
@@ -108,8 +116,13 @@ func deg_to_rad(deg: Float) -> Float {
 extern func malloc(size: usize) -> Ptr
 extern func free(ptr: Ptr)
 
+/// Allocates a buffer; every raw FFI call sits behind a contracted wrapper.
+/// @intent  Allocates size bytes; ok(Buffer) on success, err on null.
+/// @ensures result is ok implies result.value.ptr != 0
+/// @effects extern
 func alloc_buffer(size: Int) -> Result[Buffer, AllocError]
     pre  size > 0
+    post result is ok implies result.value.ptr != 0
 {
     let p = malloc(size as usize)
     if p == 0 { err(AllocError()) } else { ok(Buffer(p, size)) }
@@ -166,13 +179,20 @@ match it.
 
 ```
 program      := statement*
-statement    := decl | func | task | chan_decl | extern_decl | expr | contract
+statement    := decl | func | task | chan_decl | extern_decl
+             | record_decl | enum_decl | expr | contract
 block        := indented statement+
 
 // declarations
 decl         := ("let" | "mut") IDENT ":" type ("=" expr)?
 chan_decl    := "chan" IDENT ":" "Chan[" type "]"
 extern_decl  := "extern" "func" IDENT "(" params ")" ("->" type)?
+
+// user-defined types
+record_decl  := "record" IDENT "{" field+ "}"
+enum_decl    := "enum" IDENT "{" variant+ "}"
+field        := IDENT ":" type
+variant      := IDENT "(" (field ("," field)*)? ")"
 
 // functions
 func         := ("async")? "func" IDENT "(" params ")" ("->" type)? contract* block
@@ -186,21 +206,24 @@ task         := "task" IDENT block
 // types
 type         := prim | IDENT | IDENT "[" type ("," type)* "]" | type "|" type
 prim         := "Bool" | "Int" | "usize" | "Float" | "Char" | "Str" | "Bytes"
-             | "Option[" type "]" | "Result[" type "," type "]" | "Chan[" type "]"
+             | "Unit" | "Ptr" | "none"
 
 // expressions (selected)
-expr         := literal | IDENT | "match" expr "{" match_arm* "}"
+expr         := literal | IDENT | "match" expr "{" match_arm+ "}"
              | "if" expr block ("elif" expr block)* ("else" block)?
              | "loop" block | "for" IDENT "in" expr block
              | call | "send" "(" expr "," expr ")" | IDENT "<-" "recv" "(" expr ")"
              | "await" call | call "?" | expr "as" type
-             | "ok" "(" expr ")" | "err" "(" expr ")" | "none"
+             | "ok" "(" (expr)? ")" | "err" "(" expr ")" | "none"
+match_arm    := pattern "->" expr
+pattern      := IDENT | IDENT "(" (IDENT ("," IDENT)*)? ")"
 
-// intent comments (public functions only)
+// intent comments (public funcs/tasks, except main)
 intent       := "///" "intent"  NL_TEXT
-             | "///" "@requires" NL_TEXT
-             | "///" "@ensures"  NL_TEXT
+             | "///" "@requires" NL_TEXT trusted?
+             | "///" "@ensures"  NL_TEXT trusted?
              | "///" "@effects"  effect_list
+trusted      := "@trusted" "//" "reviewed by" IDENT "on" DATE   // inline suffix, required note
 effect_list  := "none" | ("mut" | "io" | "chan" | "extern") ("," effect_list)?
 ```
 
@@ -220,6 +243,8 @@ For every intent there is exactly one idiomatic expression:
 - Multiple failure modes → error union `Result[T, E1 | E2]`
 - Type conversion → explicit `as`
 - Absence → `none`
+- Fallible function that returns nothing → `Result[Unit, E]`, success value `ok()`
+- Formatting a value into text → `value.to_str()` (not `as Str` — `as` is a cast, and an `Int` is not a `Str`)
 - Communication → `send` / `recv` on a `Chan[T]`
 - Suspension → `await` on an `async` call
 

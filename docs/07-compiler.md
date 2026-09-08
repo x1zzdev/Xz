@@ -45,7 +45,7 @@ Every diagnostic is emitted as structured JSON in addition to human-readable tex
 - **Machine-readable spans and categories** — deterministic, queryable
 - **Suggested fixes with confidence scores** — the compiler proposes repairs
 - **Round-trip loop** — an AI tool reads `code` + `span` + `suggestion`, applies a fix, re-runs. This is the self-correction loop that makes "AI-written, human-reviewed" practical.
-- **Intent diagnostics** — codes `I0001` (unproven claim), `I0020` (undeclared effect), `I0021` (NL claim without matching contract) power the truthfulness check in [09-intent-verification.md](09-intent-verification.md)
+- **Intent diagnostics** — codes `I0001` (unprovable formal claim), `I0020` (undeclared effect), `I0021` (NL claim without a paired formal contract), `I0022` (missing intent comment) power the truthfulness check in [09-intent-verification.md](09-intent-verification.md)
 
 ## Feedback to the writer (AI)
 

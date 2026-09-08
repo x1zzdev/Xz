@@ -28,7 +28,6 @@ task worker {
         }
     }
 }
-}
 
 /// Processes a single job.
 /// @intent  Transforms the payload into an uppercase, quoted form.
@@ -42,22 +41,22 @@ func process(job: Job) -> Result[JobResult, Err] {
 }
 
 /// Consumes results and prints them in receive order.
-/// @intent  Prints each completed job until the done channel closes.
+/// @intent  Prints each completed job as it arrives and acknowledges it.
 /// @effects io, chan
 task reporter {
     loop {
         let r <- recv(done)             // blocks until a result arrives
-        print("job " + r.id as Str + ": " + r.processed)
+        print("job " + r.id.to_str() + ": " + r.processed)
         send(all_done, r.id)
     }
 }
 
-func main() -> Result[Int, Err] {
+func main() -> Result[Unit, Err] {
     let total: Int = 5
     mut i: Int = 0
     loop {
         if i == total { break }
-        send(work, Job(i, "item" + i as Str))
+        send(work, Job(i, "item" + i.to_str()))
         i += 1
     }
     // wait for every job to be reported, then stop
@@ -67,5 +66,5 @@ func main() -> Result[Int, Err] {
         seen += 1
         if seen == total { break }
     }
-    ok(0)
+    ok()
 }
