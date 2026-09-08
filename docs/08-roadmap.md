@@ -8,9 +8,10 @@ Status: **documentation only** — no implementation yet.
 - [x] Language design decisions (type system, memory model, syntax, concurrency, errors)
 - [x] Intent verification design ([09-intent-verification.md](09-intent-verification.md))
 - [x] FFI/interop design ([10-ffi-interop.md](10-ffi-interop.md))
+- [x] Spec gaps closed: `usize`/`Ptr`/`Err`/error unions defined, `?` propagation rule, `@trusted` placement ([02](02-syntax.md), [03](03-type-system.md), [06](06-error-handling.md), [09](09-intent-verification.md))
+- [x] Example programs to validate ergonomics ([../examples](../examples/))
 - [ ] Full grammar specification
 - [ ] Standard library API draft
-- [ ] Example programs (to validate ergonomics)
 
 ## Phase 1 — Front end
 

@@ -47,6 +47,38 @@ func validate_and_sqrt(x: Float) -> Result[Float, ValidationError | DomainError]
 
 `?` is the only propagation operator. There is no implicit propagation.
 
+## The `?` acceptance rule (precise)
+
+`expr?` — where `expr: Result[T, E_callee]` — is legal **only if** the caller's
+declared error channel `E_caller` accepts `E_callee`:
+
+1. `E_caller == E_callee` — identical type.
+2. `E_caller` is an error union `E1 | E2 | ...` and `E_callee` is one of its
+   members (or itself a union of members).
+3. `E_caller == Err` — the root type accepts any narrower error type.
+
+Otherwise the call must be handled locally with `match`; propagating it is a
+compile error, because it would widen the caller's signature without a visible
+declaration.
+
+```
+func a() -> Result[Int, IoError] { ... }
+func b() -> Result[Int, ParseError] { ... }
+
+func c() -> Result[Int, IoError | ParseError] {
+    a()?        // ok: IoError is a member of the union
+    b()?        // ok: ParseError is a member of the union
+    ...
+}
+
+func d() -> Result[Int, IoError] {
+    a()?        // ok
+    b()?        // ERROR: ParseError not in {IoError}; handle locally
+}
+```
+
+In the success case, `expr?` evaluates to the unwrapped `T`.
+
 ## Contract failures vs runtime errors
 
 - **Contract failures** (`pre`/`post`/`invariant` violations) are compile-time checkable where provable. Otherwise they are treated as logic bugs and reported as structured diagnostics — they are never caught-and-handled runtime events.

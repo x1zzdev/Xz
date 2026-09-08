@@ -53,8 +53,13 @@ Rust has `unsafe`; Xz has `@trusted`:
 func positive(x: Float) -> Float { ... }
 ```
 
-- `@trusted` marks a claim as human-reviewed. In `xz build --strict`, **any unproven, untrusted claim blocks the build**.
-- This creates the same safe/unsafe split as Rust, applied to *truthfulness* rather than memory safety.
+- `@trusted` is an **inline suffix** on the specific `@requires`/`@ensures`
+  line it vouches for. It is a stamp, not a tag line: it always attaches to a
+  claim, and a review note (`// reviewed by <who> on <date>`) is required.
+- `@trusted` marks that claim as human-reviewed. In `xz build --strict`, **any
+  unproven, untrusted claim blocks the build**.
+- This creates the same safe/unsafe split as Rust, applied to *truthfulness*
+  rather than memory safety.
 
 ## Why this is the differentiator
 

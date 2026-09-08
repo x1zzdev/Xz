@@ -1,0 +1,96 @@
+// Contracts, Result types, and intent verification in one program.
+
+record Point {
+    x: Float
+    y: Float
+}
+
+/// Computes the Euclidean distance between two points.
+/// @intent  Returns the straight-line distance from a to b.
+/// @ensures result is ok implies ok(result).value >= 0.0
+/// @effects none
+func distance(a: Point, b: Point) -> Result[Float, DomainError]
+    post result is ok implies ok(result).value >= 0.0
+{
+    let dx = b.x - a.x
+    let dy = b.y - a.y
+    let s = sqrt(dx * dx + dy * dy)?
+    ok(s)
+}
+
+/// Square root of a non-negative number.
+/// @intent  Returns the principal square root of x.
+/// @requires x is non-negative
+/// @ensures result is ok implies ok(result).value >= 0.0
+///          @trusted  // reviewed by x1zz on 2026-09-08
+/// @effects none
+func sqrt(x: Float) -> Result[Float, DomainError]
+    pre  x >= 0.0
+    post result is ok implies ok(result).value >= 0.0
+{
+    if x < 0.0 {
+        err(DomainError("negative input"))
+    } else {
+        // contract holds: x >= 0 guaranteed by pre
+        ok(approx_sqrt(x))
+    }
+}
+
+/// Validates a speed vector.
+/// @intent  Rejects any component exceeding the speed limit.
+/// @effects none
+func validate_speed(dx: Float, dy: Float) -> Result[Point, ValidationError]
+    pre  dx != 0.0 or dy != 0.0
+{
+    if dx.abs() > 1000.0 or dy.abs() > 1000.0 {
+        err(ValidationError("speed limit exceeded"))
+    } else {
+        ok(Point(dx, dy))
+    }
+}
+
+/// Computes the final position after a move, validating inputs first.
+/// @intent  Validates speed, then computes a displacement over time.
+/// @effects none
+func move(from: Point, dx: Float, dy: Float, time: Float)
+    -> Result[Point, ValidationError | DomainError]
+{
+    let v = validate_speed(dx, dy)?
+    let d = sqrt(v.x * v.x + v.y * v.y)?
+    ok(Point(from.x + dx * time, from.y + dy * time))
+}
+
+enum Shape {
+    circle(radius: Float)
+    rect(width: Float, height: Float)
+}
+
+/// Computes the area of a shape.
+/// @intent  Returns the area of a circle or rectangle.
+/// @ensures result >= 0.0
+/// @effects none
+func area(shape: Shape) -> Float
+    post result >= 0.0
+{
+    match shape {
+        circle(r) -> PI * r * r
+        rect(w, h) -> w * h
+    }
+}
+
+func main() -> Result[Int, Err] {
+    let origin: Point = Point(0.0, 0.0)
+    let target: Point = Point(3.0, 4.0)
+
+    // Err is the root error type: it accepts ValidationError | DomainError
+    let d = distance(origin, target)?       // d == 5.0, proven by post
+    print("distance: " + d as Str)
+
+    let final = move(origin, 1.0, 0.0, 2.0)?
+    print("final x: " + final.x as Str)
+
+    let a = area(circle(2.0))
+    print("area: " + a as Str)
+
+    ok(0)
+}

@@ -1,0 +1,40 @@
+// FFI: raw C ABI is an escape hatch; all use goes through contracted wrappers.
+
+extern func malloc(size: usize) -> Ptr
+extern func free(ptr: Ptr)
+extern func strlen(ptr: Ptr) -> usize
+
+record Buffer {
+    ptr: Ptr
+    size: Int
+}
+
+/// Allocates a buffer of the given size.
+/// @intent  Allocates size bytes; returns ok(Buffer) or err(AllocError).
+/// @ensures result is ok implies ok(result).value.ptr != 0
+/// @effects extern
+func alloc_buffer(size: Int) -> Result[Buffer, AllocError]
+    pre  size > 0
+    post result is ok implies ok(result).value.ptr != 0
+{
+    let p = malloc(size as usize)
+    if p == 0 {
+        err(AllocError("malloc returned null"))
+    } else {
+        ok(Buffer(p, size))
+    }
+}
+
+/// Releases a buffer. Must be called exactly once per allocation.
+/// @intent  Frees the underlying allocation.
+/// @effects extern
+func release_buffer(buf: Buffer) {
+    free(buf.ptr)
+}
+
+/// Measures a C string without copying it.
+/// @intent  Returns the byte length of the NUL-terminated C string.
+/// @effects extern
+func cstr_len(ptr: Ptr) -> Int {
+    strlen(ptr) as Int
+}

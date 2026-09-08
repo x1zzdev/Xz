@@ -26,6 +26,7 @@ Code will increasingly be written by AI. Xz is built so that humans can *read, v
 ```
 Xz/
 ├── README.md               # This overview
+├── examples/               # Design-validation programs (not runnable yet)
 └── docs/
     ├── 01-philosophy.md    # Core thesis and design principles
     ├── 02-syntax.md        # Language syntax (Python-like)

@@ -1,0 +1,14 @@
+/// Prints a greeting and returns the length of the result.
+/// @intent  Writes "Hello, Xz!" to standard output and returns its character count.
+/// @ensures result == 10
+/// @effects io
+func greet() -> Int {
+    let msg: Str = "Hello, Xz!"
+    print(msg)
+    msg.len
+}
+
+func main() {
+    let n = greet()
+    print("length: " + n as Str)
+}

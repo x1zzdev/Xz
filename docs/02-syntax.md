@@ -100,7 +100,7 @@ func deg_to_rad(deg: Float) -> Float {
 - `@intent` — natural-language description (for humans and AI)
 - `@requires` / `@ensures` — NL claims, must be mirrored by `pre`/`post`
 - `@effects` — declared side-effect profile (`none`/`mut`/`io`/`chan`/`extern`), auto-derived and compared
-- `@trusted` — human-review stamp; required for unprovable claims in strict builds
+- `@trusted` — human-review stamp appended to a specific `@ensures`/`@requires` line; required for unprovable claims in strict builds (see [09-intent-verification.md](09-intent-verification.md))
 
 ## FFI / extern
 
@@ -160,21 +160,53 @@ task worker {
 
 ## Grammar sketch (outline)
 
-A simplified outline; the full grammar is specified in Phase 1.
+A simplified outline; the full grammar is specified in Phase 1. It is the
+authority for which constructs exist; examples elsewhere in this repo must
+match it.
 
 ```
 program      := statement*
-statement    := decl | func | expr | contract | task | chan | extern
-extern       := "extern" "func" IDENT "(" params ")" ("->" type)?
-intent       := "///" ("@" ("intent" | "requires" | "ensures" | "effects" | "trusted")) ...
-decl         := ("let" | "mut") IDENT ":" type ("=" expr)?
-func         := "func" IDENT "(" params ")" ("->" type)? contract? block
-params       := param ("," param)*
-param        := IDENT ":" type
-type         := prim | IDENT | IDENT "[" type ("," type)* "]"
-contract     := ("pre" | "post" | "invariant") expr
+statement    := decl | func | task | chan_decl | extern_decl | expr | contract
 block        := indented statement+
+
+// declarations
+decl         := ("let" | "mut") IDENT ":" type ("=" expr)?
+chan_decl    := "chan" IDENT ":" "Chan[" type "]"
+extern_decl  := "extern" "func" IDENT "(" params ")" ("->" type)?
+
+// functions
+func         := ("async")? "func" IDENT "(" params ")" ("->" type)? contract* block
+params       := param ("," param)*
+param        := ("mut")? IDENT ":" type
+contract     := ("pre" | "post" | "invariant") expr
+
+// tasks
+task         := "task" IDENT block
+
+// types
+type         := prim | IDENT | IDENT "[" type ("," type)* "]" | type "|" type
+prim         := "Bool" | "Int" | "usize" | "Float" | "Char" | "Str" | "Bytes"
+             | "Option[" type "]" | "Result[" type "," type "]" | "Chan[" type "]"
+
+// expressions (selected)
+expr         := literal | IDENT | "match" expr "{" match_arm* "}"
+             | "if" expr block ("elif" expr block)* ("else" block)?
+             | "loop" block | "for" IDENT "in" expr block
+             | call | "send" "(" expr "," expr ")" | IDENT "<-" "recv" "(" expr ")"
+             | "await" call | call "?" | expr "as" type
+             | "ok" "(" expr ")" | "err" "(" expr ")" | "none"
+
+// intent comments (public functions only)
+intent       := "///" "intent"  NL_TEXT
+             | "///" "@requires" NL_TEXT
+             | "///" "@ensures"  NL_TEXT
+             | "///" "@effects"  effect_list
+effect_list  := "none" | ("mut" | "io" | "chan" | "extern") ("," effect_list)?
 ```
+
+The full grammar adds precedence for `as`/`?`/calls and match-arm pattern
+syntax (`circle(r) -> expr`); the outline above fixes the set of constructs,
+which is what the reviewer needs.
 
 ## Canonical syntax rule
 
@@ -184,6 +216,11 @@ For every intent there is exactly one idiomatic expression:
 - Mutating an existing binding → `mut` + operator
 - Optional value → `Option[T]`
 - Fallible call → `Result[T, E]`
+- Propagating a fallible call → `?` at the call site
+- Multiple failure modes → error union `Result[T, E1 | E2]`
+- Type conversion → explicit `as`
+- Absence → `none`
 - Communication → `send` / `recv` on a `Chan[T]`
+- Suspension → `await` on an `async` call
 
 No two ways to express the same thing. This is what makes AI-generated code predictable to review.
