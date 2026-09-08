@@ -150,6 +150,9 @@ primary         := literal | IDENT | "(" expr ")"
                  | "some" "(" expr ")" | "none"
 match_arm       := pattern "->" expr
 pattern         := "_" | "none"
+                 | "ok" "(" (IDENT ("," IDENT)*)? ")"
+                 | "err" "(" (IDENT ("," IDENT)*)? ")"
+                 | "some" "(" (IDENT ("," IDENT)*)? ")"
                  | IDENT | IDENT "(" (IDENT ("," IDENT)*)? ")"
 
 type            := union_type
