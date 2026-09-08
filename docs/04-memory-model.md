@@ -2,7 +2,7 @@
 
 ## Value semantics
 
-Values are copied by default. Assigning a variable, passing an argument, or returning a value copies the data. There is **no hidden aliasing** — two variables never silently share mutable storage.
+Values are copied by default. Assigning a variable, passing an argument, or returning a value copies the data. There is **no hidden aliasing** — two variables never silently share mutable storage. The one exception is **handle types** (`Ptr`-bearing records): they are never copied, and ownership moves only through the explicit `transfer` operator (see [10-ffi-interop.md](10-ffi-interop.md)).
 
 ```
 let a: Point = Point(1.0, 2.0)

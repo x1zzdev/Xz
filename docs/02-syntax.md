@@ -215,6 +215,7 @@ expr         := literal | IDENT | "match" expr "{" match_arm+ "}"
              | call | "send" "(" expr "," expr ")" | IDENT "<-" "recv" "(" expr ")"
              | "await" call | call "?" | expr "as" type
              | "ok" "(" (expr)? ")" | "err" "(" expr ")" | "none"
+             | "transfer" "(" expr ")"
 match_arm    := pattern "->" expr
 pattern      := IDENT | IDENT "(" (IDENT ("," IDENT)*)? ")"
 
@@ -247,5 +248,6 @@ For every intent there is exactly one idiomatic expression:
 - Formatting a value into text → `value.to_str()` (not `as Str` — `as` is a cast, and an `Int` is not a `Str`)
 - Communication → `send` / `recv` on a `Chan[T]`
 - Suspension → `await` on an `async` call
+- Handing off a handle (`Ptr`-bearing record) → `transfer(x)`; handles are never copied (see [10-ffi-interop.md](10-ffi-interop.md))
 
 No two ways to express the same thing. This is what makes AI-generated code predictable to review.

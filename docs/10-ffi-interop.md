@@ -17,8 +17,14 @@ New languages die from empty ecosystems. Xz's strategy is **interop-first**: fro
 extern func malloc(size: usize) -> Ptr
 extern func free(ptr: Ptr)
 
-// Typed, contracted wrapper — the sanctioned way to use FFI
-/// Allocates a buffer; every raw FFI call sits behind a contracted wrapper.
+record Buffer {
+    ptr: Ptr
+    size: Int
+}
+
+// Typed, contracted wrapper — the sanctioned way to use FFI.
+// Buffer is a handle type: never copied, handed off with transfer.
+/// Allocates size bytes; ok(Buffer) on success, err on null.
 /// @intent  Allocates size bytes; ok(Buffer) on success, err on null.
 /// @ensures result is ok implies result.value.ptr != 0
 /// @effects extern
@@ -29,7 +35,41 @@ func alloc_buffer(size: Int) -> Result[Buffer, AllocError]
     let p = malloc(size as usize)
     if p == 0 { err(AllocError()) } else { ok(Buffer(p, size)) }
 }
+
+/// Releases a buffer exactly once; consumes the handle.
+/// @intent  Frees the underlying allocation; ownership moves to this wrapper.
+/// @effects extern
+func release_buffer(buf: Buffer) {
+    free(buf.ptr)
+}
+
+func main() -> Result[Unit, Err] {
+    let buf = alloc_buffer(16)?
+    print("capacity: " + buf.size.to_str())  // reading a value field: fine
+    release_buffer(transfer(buf))            // ownership moves; buf is dead
+    ok()
+}
 ```
+
+## Handles: the missing link
+
+Without handle semantics, the safety story has a hole: `Buffer` is a plain
+`record`, so `let b = a` would copy the `Ptr`, and two value-bindings would
+share one allocation — a double `free`. Handles close it:
+
+```
+let a = alloc_buffer(16)?     // a: Buffer handle
+let b = a                     // ERROR: handles are never copied
+release_buffer(transfer(a))   // ok; a is dead
+release_buffer(transfer(a))   // ERROR: a was already transferred
+```
+
+- Pure code (no `@effects extern`) can hold a handle and read its value
+  fields, but can only hand it on with `transfer`.
+- Raw pointers never leak into value code, so the FFI escape hatch stays
+  confined to thin, contracted wrappers.
+- The full rules live in [03-type-system.md](03-type-system.md); the type
+  mapping below shows where handles begin.
 
 ## Type mapping (Xz ↔ C)
 
@@ -41,7 +81,7 @@ func alloc_buffer(size: Int) -> Result[Buffer, AllocError]
 | `Char` | `char` |
 | `Str` | `(ptr: char*, len: usize)` struct |
 | `Bytes` | `(ptr: uint8*, len: usize)` struct |
-| `Ptr` | `void*` (opaque, only in wrappers) |
+| `Ptr` | `void*` — a handle, never copied; only in wrappers |
 | `record` | `struct` (memory-layout option `@cstruct`) |
 
 ## Interop matrix

@@ -41,6 +41,28 @@ result values; they are part of the language, not sugar:
 - `ok(value)` / `err(e)` — constructors for `Result[T, E]`
 - `none` — absence value; `Option[T]` is `T \| none`
 
+## Handle types
+
+`Ptr`, and any `record` that transitively contains a `Ptr` field, is a
+**handle type**: it owns or references an external resource, so it does not
+behave as a value. Handles are the *single, sanctioned exception* to value
+semantics (see [04-memory-model.md](04-memory-model.md) and
+[10-ffi-interop.md](10-ffi-interop.md)).
+
+- **No copying.** `let b = a`, passing to a function, storing in a collection,
+  or sending over a channel is a compile error for a handle.
+- **Explicit handoff.** Moving a handle to a function or rebinding it is
+  `transfer(x)` — a final-use marker: `x` is dead afterward.
+- **Creation** happens only inside a wrapper (`@effects extern`), from a `Ptr`
+  freshly returned by an `extern` call: `ok(Buffer(p, size))`.
+- **`Ptr` fields are opaque.** Reading `buf.ptr` is confined to wrappers, and
+  only as an `extern` argument or the operand of `transfer`.
+- **Non-pointer fields are ordinary.** Reading `buf.size` anywhere is fine; it
+  creates no alias.
+
+Handle rules are *affine*: each handle value has exactly one owner at a time,
+and ownership moves only through the explicit, visible `transfer`.
+
 ## Composite types
 
 | Type | Kind | Notes |

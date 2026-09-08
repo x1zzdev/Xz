@@ -1,4 +1,5 @@
 // FFI: raw C ABI is an escape hatch; all use goes through contracted wrappers.
+// Buffer is a handle type: never copied, handed off with `transfer`.
 
 extern func malloc(size: usize) -> Ptr
 extern func free(ptr: Ptr)
@@ -10,7 +11,7 @@ record Buffer {
 }
 
 /// Allocates a buffer of the given size.
-/// @intent  Allocates size bytes; returns ok(Buffer) or err(AllocError).
+/// @intent  Allocates size bytes; ok(Buffer) on success, err on null.
 /// @ensures result is ok implies result.value.ptr != 0
 /// @effects extern
 func alloc_buffer(size: Int) -> Result[Buffer, AllocError]
@@ -25,8 +26,8 @@ func alloc_buffer(size: Int) -> Result[Buffer, AllocError]
     }
 }
 
-/// Releases a buffer. Must be called exactly once per allocation.
-/// @intent  Frees the underlying allocation.
+/// Releases a buffer exactly once; consumes the handle.
+/// @intent  Frees the underlying allocation; ownership moves to this wrapper.
 /// @effects extern
 func release_buffer(buf: Buffer) {
     free(buf.ptr)
@@ -37,4 +38,11 @@ func release_buffer(buf: Buffer) {
 /// @effects extern
 func cstr_len(ptr: Ptr) -> Int {
     strlen(ptr) as Int
+}
+
+func main() -> Result[Unit, Err] {
+    let buf = alloc_buffer(16)?
+    print("capacity: " + buf.size.to_str())    // reading a value field: fine
+    release_buffer(transfer(buf))              // ownership moves; buf is dead
+    ok()
 }

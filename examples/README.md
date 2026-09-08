@@ -9,7 +9,7 @@ ergonomics and to give the implementation a concrete target.
 | `hello.xz` | Minimal program; `@intent`/`@ensures`/`@effects` on a public function |
 | `contracts.xz` | `record`/`enum`, `match`, `pre`/`post`, `Result` + `?`, error unions (`E1 \| E2`) |
 | `concurrency.xz` | `task`, typed channels `Chan[T]`, `send`/`recv`, deterministic completion |
-| `ffi.xz` | `extern` declarations, `Ptr`/`usize`, contracted wrappers over raw C ABI |
+| `ffi.xz` | `extern` declarations, `Ptr`/`usize`, handle types, `transfer` |
 
 Conventions used throughout:
 
@@ -22,6 +22,8 @@ Conventions used throughout:
   `Result[Unit, Err]`, ending in `ok()` — never `Result[Int, Err]`/`ok(0)`.
 - Formatting uses `value.to_str()`, never `as Str` (`as` is a cast).
 - Raw FFI (`extern`) never appears outside a thin, contracted wrapper.
+- Handles (`Ptr`-bearing records) are never copied; handoff uses
+  `transfer(x)`, which marks the source binding dead.
 - `?` is used only on calls whose error channel fits the caller's declared
   error channel (`Err` accepts any; unions accept their members).
 

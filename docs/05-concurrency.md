@@ -38,6 +38,8 @@ let v <- recv(ch)  // receives a copy; blocks if empty
    one declaration site, and the reviewer sees the complete graph by reading
    those declarations. Everything else is local or explicitly `mut`-passed.
 4. No locks, no shared counters, no unsafe access.
+5. Handles never cross channels — a `send` transfers a copy, and handles
+   cannot be copied (see [10-ffi-interop.md](10-ffi-interop.md)).
 
 ## Benefits for review
 
