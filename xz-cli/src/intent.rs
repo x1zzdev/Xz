@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::ast;
 use crate::ast::{Program, Item, FuncDecl, Expr, Stmt};
 use crate::token::{Span, DocTag};
@@ -20,7 +22,14 @@ impl EffectSet {
     fn empty() -> EffectSet {
         EffectSet { io: false, chan: false, mut_: false, extern_: false }
     }
-    /// Returns the derived effect list, e.g. ["io", "chan"].
+
+    fn merge(&mut self, other: &EffectSet) {
+        self.io = self.io || other.io;
+        self.chan = self.chan || other.chan;
+        self.mut_ = self.mut_ || other.mut_;
+        self.extern_ = self.extern_ || other.extern_;
+    }
+
     fn labels(&self) -> Vec<&'static str> {
         let mut v: Vec<&'static str> = vec![];
         if self.mut_ { v.push("mut"); }
@@ -31,14 +40,15 @@ impl EffectSet {
     }
 }
 
-
-
 pub struct IntentChecker {
     errors: Vec<IntentError>,
+    /// function name -> declared @effects profile (for transitive propagation)
+    declared: HashMap<String, EffectSet>,
 }
 
 pub fn check_intent(program: &Program) -> Result<(), Vec<IntentError>> {
-    let mut ic = IntentChecker { errors: vec![] };
+    let mut ic = IntentChecker { errors: vec![], declared: HashMap::new() };
+    ic.collect_declared(program);
     for item in &program.items {
         match item {
             Item::Func(f) => {
@@ -46,14 +56,7 @@ pub fn check_intent(program: &Program) -> Result<(), Vec<IntentError>> {
                 ic.check_func(f);
             }
             Item::Task(t) => {
-                match &t.doc {
-                    Some(d) => {
-                        let mut derived = EffectSet::empty();
-                        walk_block(&t.body, &mut derived);
-                        ic.check_effects(&d.claims, &t.name, t.span.clone(), derived);
-                    }
-                    None => ic.error("I0022", format!("missing intent comment on task '{}'", t.name), t.span.clone()),
-                }
+                ic.check_task(t);
             }
             _ => {}
         }
@@ -63,8 +66,35 @@ pub fn check_intent(program: &Program) -> Result<(), Vec<IntentError>> {
 }
 
 impl IntentChecker {
+    /// First pass: register each function's declared @effects so calls can
+    /// propagate transitively (09: derived profile = self effects union
+    /// callees').
+    fn collect_declared(&mut self, program: &Program) {
+        for item in &program.items {
+            if let Item::Func(f) = item {
+                if let Some(d) = &f.doc {
+                    let set = effects_from_doc(d);
+                    self.declared.insert(f.name.clone(), set);
+                }
+            }
+        }
+    }
+
     fn error(&mut self, code: &str, message: String, span: Span) {
         self.errors.push(IntentError { code: code.to_string(), message: message, span: span });
+    }
+
+    fn check_task(&mut self, t: &ast::TaskDecl) {
+        let doc = match &t.doc {
+            Some(d) => d,
+            None => {
+                self.error("I0022", format!("missing intent comment on task '{}'", t.name), t.span.clone());
+                return;
+            }
+        };
+        let mut derived = EffectSet::empty();
+        walk_block(&t.body, &mut derived, &self.declared);
+        self.check_effects(&doc.claims, &t.name, t.span.clone(), derived);
     }
 
     fn check_func(&mut self, f: &FuncDecl) {
@@ -92,138 +122,146 @@ impl IntentChecker {
                 self.error("I0003", format!("'@trusted' must attach to an @ensures or @requires claim on '{}'", f.name), c.span.clone());
             }
         }
-        // 3. derived effects vs declared
+        // 3. derived effects (transitive) vs declared
         let mut derived = EffectSet::empty();
         if f.params.iter().any(|p| p.mutable) { derived.mut_ = true; }
-        walk_block(&f.body, &mut derived);
+        walk_block(&f.body, &mut derived, &self.declared);
         self.check_effects(&doc.claims, &f.name, f.span.clone(), derived);
     }
 
     fn check_effects(&mut self, claims: &Vec<ast::DocClaim>, name: &str, span: Span, derived: EffectSet) {
-        let declared: Vec<String> = claims.iter()
+        let declared_text: Vec<String> = claims.iter()
             .filter(|c| c.tag == DocTag::Effects)
             .map(|c| c.text.clone())
             .collect();
-        if declared.len() == 0 {
+        if declared_text.len() == 0 {
             self.error("I0023", format!("missing @effects declaration on '{}'", name), span);
             return;
         }
-        // parse declared labels
-        let raw = declared[0].clone();
-        let mut declared_set: Vec<&str> = if raw.trim() == "none" {
-            vec![]
-        } else {
-            raw.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect()
-        };
-        for p in declared_set.iter() {
-            if !["none", "mut", "io", "chan", "extern"].contains(p) {
-                self.error("I0024", format!("unknown effect '{}' in @effects on '{}'", p, name), span.clone());
-            }
+        let raw = declared_text[0].clone();
+        let declared: EffectSet = effect_set_from_text(&raw);
+        if !is_valid_effects(&raw) {
+            self.error("I0024", format!("unknown effect in @effects on '{}' (allowed: none, mut, io, chan, extern)", name), span.clone());
         }
-        if declared_set.contains(&"none") {
-            declared_set = vec![];
-        }
-        // compare derived vs declared
-        let mut derived_set: Vec<&str> = derived.labels().clone();
-        let declared_wo_none: Vec<&str> = declared_set.iter().map(|s| *s).collect();
-        // normalize order and dedupe
-        let mut decl_plus: Vec<&str> = declared_wo_none.clone();
-        decl_plus.sort();
-        derived_set.sort();
-        if decl_plus != derived_set {
-            let d_str = if derived_set.len() == 0 { "none".to_string() } else { derived_set.join(",") };
-            let p_str = if decl_plus.len() == 0 { "none".to_string() } else { decl_plus.join(",") };
-            self.error("I0020", format!("declared @effects '{p_str}' does not match derived effects '{d_str}' on '{name}'"), span.clone());
+        let mut dl = declared.labels();
+        let mut dd = derived.labels();
+        dl.sort();
+        dd.sort();
+        if dl != dd {
+            let d_str = if dd.len() == 0 { "none".to_string() } else { dd.join(",") };
+            let p_str = if dl.len() == 0 { "none".to_string() } else { dl.join(",") };
+            self.error("I0020", format!("declared @effects '{p_str}' does not match derived effects '{d_str}' on '{name}'"), span);
         }
     }
 }
 
-fn walk_block(block: &ast::Block, set: &mut EffectSet) {
+/// Parse the labels out of a doc comment's @effects lines into a set.
+fn effects_from_doc(d: &ast::DocComment) -> EffectSet {
+    let mut set = EffectSet::empty();
+    for c in d.claims.iter() {
+        if c.tag == DocTag::Effects {
+            set = effect_set_from_text(&c.text);
+        }
+    }
+    set
+}
+
+fn effect_set_from_text(text: &str) -> EffectSet {
+    let mut set = EffectSet::empty();
+    let t = text.trim();
+    if t == "none" || t == "" { return set; }
+    for part in t.split(',') {
+        match part.trim() {
+            "mut" => set.mut_ = true,
+            "io" => set.io = true,
+            "chan" => set.chan = true,
+            "extern" => set.extern_ = true,
+            _ => {}
+        }
+    }
+    set
+}
+
+fn is_valid_effects(text: &str) -> bool {
+    let t = text.trim();
+    if t == "none" || t == "" { return true; }
+    t.split(',').all(|p| ["mut", "io", "chan", "extern"].contains(&p.trim()))
+}
+
+fn walk_block(block: &ast::Block, set: &mut EffectSet, declared: &HashMap<String, EffectSet>) {
     for stmt in &block.stmts {
         match stmt {
             Stmt::Decl(d) => {
-                if d.mutable {
-                    set.mut_ = true;
-                }
-                if d.recv {
-                    set.chan = true;
-                }
+                if d.mutable { set.mut_ = true; }
+                if d.recv { set.chan = true; }
                 match &d.init {
-                    Some(e) => walk_expr(e, set),
+                    Some(e) => walk_expr(e, set, declared),
                     None => {}
                 }
             }
             Stmt::Assign(a) => {
                 set.mut_ = true;
-                walk_expr(&a.value, set);
+                walk_expr(&a.value, set, declared);
             }
-            Stmt::Expr(e) => walk_expr(e, set),
+            Stmt::Expr(e) => walk_expr(e, set, declared),
             _ => {}
         }
     }
 }
 
-fn walk_expr(e: &Expr, set: &mut EffectSet) {
+fn walk_expr(e: &Expr, set: &mut EffectSet, declared: &HashMap<String, EffectSet>) {
     match e {
         Expr::Int(_) | Expr::Float(_) | Expr::Char(_) | Expr::Str(_)
-        | Expr::RawStr(_) | Expr::Bool(_) | Expr::None => {}
-        Expr::Name(_) => {}
+        | Expr::RawStr(_) | Expr::Bool(_) | Expr::None | Expr::Name(_) => {}
         Expr::Call(callee, args) => {
-            for a in args { walk_expr(a, set); }
+            for a in args { walk_expr(a, set, declared); }
             match &**callee {
                 Expr::Name(n) => {
                     if n == "print" {
                         set.io = true;
+                    } else if let Some(callee_effects) = declared.get(n) {
+                        set.merge(callee_effects);
                     } else if is_extern(n) {
                         set.extern_ = true;
                     }
                 }
-                Expr::Field(recv, method) => {
-                    let _ = recv;
-                    // method calls on values are pure unless known io (none in stdlib surface)
-                    let _ = method;
+                Expr::Field(_, _) => {
+                    // method calls on values are pure in the stdlib surface
                 }
-                _ => { walk_expr(callee, set); }
+                _ => { walk_expr(callee, set, declared); }
             }
         }
-        Expr::Field(base, _) => walk_expr(base, set),
-        Expr::Index(base, idx) => { walk_expr(base, set); walk_expr(idx, set); }
-        Expr::Prop(base, _) => walk_expr(base, set),
-        Expr::Unary(op, a) => {
-            let _ = op;
-            walk_expr(a, set);
-        }
-        Expr::Binary(op, a, b) => {
-            walk_expr(a, set);
-            walk_expr(b, set);
-            let _ = op;
-        }
-        Expr::Cast(a, _) => walk_expr(a, set),
+        Expr::Field(base, _) => walk_expr(base, set, declared),
+        Expr::Index(base, idx) => { walk_expr(base, set, declared); walk_expr(idx, set, declared); }
+        Expr::Prop(base, _) => walk_expr(base, set, declared),
+        Expr::Unary(_, a) => walk_expr(a, set, declared),
+        Expr::Binary(_, a, b) => { walk_expr(a, set, declared); walk_expr(b, set, declared); }
+        Expr::Cast(a, _) => walk_expr(a, set, declared),
         Expr::Match(subject, arms) => {
-            walk_expr(subject, set);
-            for (_, body) in arms { walk_expr(body, set); }
+            walk_expr(subject, set, declared);
+            for (_, body) in arms { walk_expr(body, set, declared); }
         }
         Expr::If(ifx) => {
-            walk_expr(&ifx.cond, set);
-            walk_block(&ifx.then_block, set);
+            walk_expr(&ifx.cond, set, declared);
+            walk_block(&ifx.then_block, set, declared);
             match &ifx.elif {
-                Some((c, b)) => { walk_expr(c, set); walk_block(b, set); }
+                Some((c, b)) => { walk_expr(c, set, declared); walk_block(b, set, declared); }
                 None => {}
             }
             match &ifx.else_block {
-                Some(b) => walk_block(b, set),
+                Some(b) => walk_block(b, set, declared),
                 None => {}
             }
         }
-        Expr::Loop(b) => walk_block(b, set),
-        Expr::For(_, iter, b) => { walk_expr(iter, set); walk_block(b, set); }
-        Expr::Await(a) => walk_expr(a, set),
+        Expr::Loop(b) => walk_block(b, set, declared),
+        Expr::For(_, iter, b) => { walk_expr(iter, set, declared); walk_block(b, set, declared); }
+        Expr::Await(a) => walk_expr(a, set, declared),
         Expr::Send(_, _) => { set.chan = true; }
         Expr::Recv(_) => { set.chan = true; }
-        Expr::Transfer(a) => walk_expr(a, set),
-        Expr::Ok(inner) => { match inner { Some(v) => walk_expr(v, set), None => {} } }
-        Expr::Err(a) => walk_expr(a, set),
-        Expr::Some(a) => walk_expr(a, set),
+        Expr::Transfer(a) => walk_expr(a, set, declared),
+        Expr::Ok(inner) => { match inner { Some(v) => walk_expr(v, set, declared), None => {} } }
+        Expr::Err(a) => walk_expr(a, set, declared),
+        Expr::Some(a) => walk_expr(a, set, declared),
     }
 }
 
