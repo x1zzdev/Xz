@@ -44,10 +44,20 @@ pub struct IntentChecker {
     errors: Vec<IntentError>,
     /// function name -> declared @effects profile (for transitive propagation)
     declared: HashMap<String, EffectSet>,
+    /// strict mode: untrusted claims (trusted without a review note) block the build
+    strict: bool,
 }
 
 pub fn check_intent(program: &Program) -> Result<(), Vec<IntentError>> {
-    let mut ic = IntentChecker { errors: vec![], declared: HashMap::new() };
+    run(program, false)
+}
+
+pub fn check_intent_strict(program: &Program) -> Result<(), Vec<IntentError>> {
+    run(program, true)
+}
+
+fn run(program: &Program, strict: bool) -> Result<(), Vec<IntentError>> {
+    let mut ic = IntentChecker { errors: vec![], declared: HashMap::new(), strict: strict };
     ic.collect_declared(program);
     for item in &program.items {
         match item {
@@ -118,8 +128,13 @@ impl IntentChecker {
         }
         // 2. @trusted placement
         for c in doc.claims.iter() {
-            if c.trusted && c.tag != DocTag::Ensures && c.tag != DocTag::Requires {
-                self.error("I0003", format!("'@trusted' must attach to an @ensures or @requires claim on '{}'", f.name), c.span.clone());
+            if c.trusted {
+                if c.tag != DocTag::Ensures && c.tag != DocTag::Requires {
+                    self.error("I0003", format!("'@trusted' must attach to an @ensures or @requires claim on '{}'", f.name), c.span.clone());
+                }
+                if self.strict && !c.reviewed {
+                    self.error("I0004", format!("@trusted claim on '{}' is untrusted: missing review note ('// reviewed by <who> on <date>')", f.name), c.span.clone());
+                }
             }
         }
         // 3. derived effects (transitive) vs declared

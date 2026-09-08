@@ -3,7 +3,7 @@ use xz_cli::token::{TokKind};
 use xz_cli::parser::{parse};
 use xz_cli::resolve::{resolve};
 use xz_cli::typecheck::{typecheck};
-use xz_cli::intent::{check_intent};
+use xz_cli::intent::{check_intent, check_intent_strict};
 
 fn main() {
     let args = std::env::args();
@@ -12,11 +12,24 @@ fn main() {
         argv.push(a);
     }
     if argv.len() < 3 {
-        println!("usage: xz <lex|parse|check> <file.xz>");
+        println!("usage: xz <lex|parse|check> [--strict] <file.xz>");
         return;
     }
     let cmd = argv[1].clone();
-    let path = argv[2].clone();
+    let mut strict = false;
+    let mut path: String = "".to_string();
+    for i in 2..argv.len() {
+        let a = argv[i].clone();
+        if a == "--strict" {
+            strict = true;
+        } else if path == "" {
+            path = a;
+        }
+    }
+    if path == "" {
+        println!("usage: xz <lex|parse|check> [--strict] <file.xz>");
+        return;
+    }
     let source = std::fs::read_to_string(path.clone());
     match source {
         Err(e) => {
@@ -70,7 +83,11 @@ fn main() {
                                                 }
                                             }
                                             Ok(_) => {
-                                                let intent = check_intent(&program);
+                                                let intent = if strict {
+                                                    check_intent_strict(&program)
+                                                } else {
+                                                    check_intent(&program)
+                                                };
                                                 match intent {
                                                     Err(errors) => {
                                                         for err in errors {

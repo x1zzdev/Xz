@@ -156,14 +156,15 @@ impl Parser {
 // review note. The lexer folded the whole line into tok.text, so detect
 // the marker here (it also keeps DocTrusted tokens for standalone use).
 let mut trusted = false;
-let mut text = tok.text.clone();
-if text.ends_with("@trusted") || text.contains(" @trusted") {
-    trusted = true;
-    if let Some(pos) = text.find("@trusted") {
-        text = String::from(text[..pos].trim());
-    }
-}
-Ok(DocClaim { tag: tag, text: text, trusted: trusted, span: tok.span })
+        let mut text = tok.text.clone();
+        if text.ends_with("@trusted") || text.contains(" @trusted") {
+            trusted = true;
+            if let Some(pos) = text.find("@trusted") {
+                text = String::from(text[..pos].trim());
+            }
+        }
+        let reviewed = trusted && tok.text.contains("// reviewed by");
+        Ok(DocClaim { tag: tag, text: text, trusted: trusted, reviewed: reviewed, span: tok.span })
     }
 
     fn func_decl(&mut self, docs: Vec<DocClaim>) -> Result<FuncDecl, ParseError> {

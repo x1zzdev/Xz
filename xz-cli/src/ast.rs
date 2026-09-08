@@ -153,6 +153,7 @@ pub struct DocClaim {
     pub tag: DocTag,
     pub text: String,
     pub trusted: bool,
+    pub reviewed: bool,
     pub span: Span,
 }
 
