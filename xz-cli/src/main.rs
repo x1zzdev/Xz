@@ -1,5 +1,6 @@
 use xz_cli::lexer::{lex};
 use xz_cli::token::{TokKind};
+use xz_cli::parser::{parse};
 
 fn main() {
     let args = std::env::args();
@@ -8,34 +9,45 @@ fn main() {
         argv.push(a);
     }
     if argv.len() < 3 {
-        println!("usage: xz lex <file.xz>");
+        println!("usage: xz <lex|parse> <file.xz>");
         return;
     }
     let cmd = argv[1].clone();
     let path = argv[2].clone();
-    if cmd == "lex" {
-        let source = std::fs::read_to_string(path.clone());
-        match source {
-            Err(e) => {
-                println!("error: cannot read {}: {}", path, e);
-            }
-            Ok(src) => {
-                let result = lex(src, path);
-                match result {
-                    Err(e) => {
-                        let (l, c) = e.span.start;
-                        println!("error: {} at {}:{}:{}", e.message, e.span.file, l, c);
-                    }
-                    Ok(tokens) => {
+    let source = std::fs::read_to_string(path.clone());
+    match source {
+        Err(e) => {
+            println!("error: cannot read {}: {}", path, e);
+        }
+        Ok(src) => {
+            let result = lex(src, path);
+            match result {
+                Err(e) => {
+                    let (l, c) = e.span.start;
+                    println!("error: {} at {}:{}:{}", e.message, e.span.file, l, c);
+                }
+                Ok(tokens) => {
+                    if cmd == "lex" {
                         for tok in tokens {
                             println!("{}  {}", tok_name(&tok.kind), tok.text);
                         }
+                    } else if cmd == "parse" {
+                        let parsed = parse(tokens);
+                        match parsed {
+                            Err(e) => {
+                                let (l, c) = e.span.start;
+                                println!("error: {} at {}:{}:{}", e.message, e.span.file, l, c);
+                            }
+                            Ok(program) => {
+                                println!("ok: parsed {} top-level declarations", program.items.len());
+                            }
+                        }
+                    } else {
+                        println!("unknown command: {}", cmd);
                     }
                 }
             }
         }
-    } else {
-        println!("unknown command: {}", cmd);
     }
 }
 

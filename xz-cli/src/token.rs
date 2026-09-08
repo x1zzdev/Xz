@@ -1,3 +1,4 @@
+#[derive(Clone, PartialEq)]
 pub enum TokKind {
     // literals
     Int(u64),
@@ -88,18 +89,21 @@ pub enum TokKind {
     Eof,
 }
 
+#[derive(Clone, Debug)]
 pub struct Span {
     pub file: String,
     pub start: (usize, usize),
     pub end: (usize, usize),
 }
 
+#[derive(Clone)]
 pub struct Token {
     pub kind: TokKind,
     pub span: Span,
     pub text: String,
 }
 
+#[derive(Clone)]
 pub enum DocTag {
     Intent,
     Requires,
