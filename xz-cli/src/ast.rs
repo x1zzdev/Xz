@@ -212,7 +212,7 @@ pub enum UnaryOp {
     Not,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum BinOp {
     Add,
     Sub,

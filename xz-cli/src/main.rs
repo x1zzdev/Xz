@@ -2,6 +2,7 @@ use xz_cli::lexer::{lex};
 use xz_cli::token::{TokKind};
 use xz_cli::parser::{parse};
 use xz_cli::resolve::{resolve};
+use xz_cli::typecheck::{typecheck};
 
 fn main() {
     let args = std::env::args();
@@ -56,11 +57,21 @@ fn main() {
                                     Err(errors) => {
                                         for err in errors {
                                             let (l, c) = err.span.start;
-                                            println!("error: {} at {}:{}:{}", err.message, err.span.file, l, c);
+                                            println!("  error: {} at {}:{}:{}", err.message, err.span.file, l, c);
                                         }
                                     }
                                     Ok(_) => {
-                                        println!("ok: {} top-level declarations, all names resolve", program.items.len());
+                                        let typed = typecheck(&program);
+                                        match typed {
+                                            Err(errors) => {
+                                                for err in errors {
+                                                    println!("  error: {} in {}", err.message, err.file);
+                                                }
+                                            }
+                                            Ok(_) => {
+                                                println!("ok: {} top-level declarations, names resolve and types check", program.items.len());
+                                            }
+                                        }
                                     }
                                 }
                             }
