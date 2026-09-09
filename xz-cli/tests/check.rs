@@ -233,6 +233,48 @@ func main() -> Result[Int, Err] {
 }
 
 #[test]
+fn generic_call_infers_type_argument() {
+    expect_ok(
+        r#"/// Returns the larger.
+/// @intent  Compares and returns the max.
+/// @effects none
+func max[T](a: T, b: T) -> T {
+    if a > b { a } else { b }
+}
+
+func main() {
+    let m: Int = max(3, 7)
+    let f: Float = max(1.5, 2.5)
+    print(m.to_str() + f.to_str())
+}"#,
+        "generic max inference",
+    );
+}
+
+#[test]
+fn generic_mismatch_detected() {
+    let err = check_source(r#"/// Identity.
+/// @intent  Returns its argument.
+/// @effects none
+func id[T](x: T) -> T {
+    x
+}
+
+func main() {
+    let s: Str = id(1)
+    print(s)
+}"#);
+    match err {
+        Some(e) => {
+            if !e.contains("Str but initializer is Int") {
+                println!("FAIL generic_mismatch: unexpected error {}", e);
+            }
+        }
+        None => println!("FAIL generic_mismatch: id(1) accepted as Str"),
+    }
+}
+
+#[test]
 fn json_emits_spec_shape() {
     // build one diagnostic and verify the JSON carries the spec fields
     let d = Diagnostic {
