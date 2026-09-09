@@ -366,6 +366,52 @@ func wrap() -> Result[Str, CfgError] {
 }
 
 #[test]
+fn option_narrowing_via_is_some() {
+    expect_ok(
+        r#"/// Normalizes.
+/// @intent  Uppercases if present, else returns "none".
+/// @effects none
+func norm(o: Option[Str]) -> Str {
+    if o is some {
+        o.to_upper()
+    } else {
+        "none"
+    }
+}"#,
+        "is some narrows Option to payload",
+    );
+    // complement: else of `is none` has the value
+    expect_ok(
+        r#"/// Length.
+/// @intent  Returns the value length, 0 if absent.
+/// @effects none
+func len(o: Option[Str]) -> Int {
+    if o is none {
+        0
+    } else {
+        o.to_upper()
+    }
+}"#,
+        "is none else narrows to payload",
+    );
+    // without narrowing: rejected
+    let err = check_source(r#"/// Length.
+/// @intent  Returns the value length.
+/// @effects none
+func len(o: Option[Str]) -> Int {
+    o.to_upper()
+}"#);
+    match err {
+        Some(e) => {
+            if !e.contains("no method 'to_upper' on Option") {
+                println!("FAIL option_narrowing: unexpected error {}", e);
+            }
+        }
+        None => println!("FAIL option_narrowing: allowed method on Option without narrowing"),
+    }
+}
+
+#[test]
 fn json_emits_spec_shape() {
     // build one diagnostic and verify the JSON carries the spec fields
     let d = Diagnostic {
