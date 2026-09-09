@@ -238,7 +238,7 @@ fn generic_call_infers_type_argument() {
         r#"/// Returns the larger.
 /// @intent  Compares and returns the max.
 /// @effects none
-func max[T](a: T, b: T) -> T {
+func max[T: Ordered](a: T, b: T) -> T {
     if a > b { a } else { b }
 }
 
@@ -249,6 +249,24 @@ func main() {
 }"#,
         "generic max inference",
     );
+}
+
+#[test]
+fn unconstrained_typevar_cannot_compare() {
+    let err = check_source(r#"/// Compares.
+/// @intent  Returns the max.
+/// @effects none
+func max[T](a: T, b: T) -> T {
+    if a > b { a } else { b }
+}"#);
+    match err {
+        Some(e) => {
+            if !e.contains("must be constrained") {
+                println!("FAIL unconstrained_typevar: unexpected error {}", e);
+            }
+        }
+        None => println!("FAIL unconstrained_typevar: allowed comparison on bare T"),
+    }
 }
 
 #[test]
