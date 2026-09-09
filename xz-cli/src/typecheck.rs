@@ -20,6 +20,7 @@ pub enum Kind {
     Record(String),
     Enum(String),
     Err,                       // root error type
+    ErrUnion(Vec<Kind>),       // error union E1 | E2 (docs/06)
     TypeVar(usize),
     Unknown,
     Never,
@@ -49,6 +50,8 @@ pub struct TypeChecker {
     cur_tparams: Vec<String>,
     /// constraints of the in-scope type parameters, by index (e.g. Ordered)
     cur_constraints: Vec<Option<String>>,
+    /// the enclosing function's declared error channel (for `?` acceptance)
+    cur_error_channel: Option<Kind>,
     errors: Vec<TypeError>,
 }
 
@@ -63,6 +66,7 @@ pub fn typecheck(program: &Program) -> Result<(), Vec<TypeError>> {
         chans: HashMap::new(),
         cur_tparams: vec![],
         cur_constraints: vec![],
+        cur_error_channel: None,
         errors: vec![],
     };
     tc.build_world(program);
@@ -159,12 +163,10 @@ impl TypeChecker {
             }
             Type::NamedPlain(name) => self.from_ast_named(name, &vec![]),
             Type::Union(members) => {
-                // error unions are checked structurally in `?`; represent as first variant chain
-                let mut t = self.from_ast(&members[0]);
-                for m in &members[1..] {
-                    t = self.from_ast(m);
-                }
-                t
+                // error unions (docs/06): preserved so `?` acceptance can
+                // check membership
+                let kinds: Vec<Kind> = members.iter().map(|m| self.from_ast(m)).collect();
+                Kind::ErrUnion(kinds)
             }
         }
     }
@@ -222,6 +224,10 @@ Item::Func(f) => {
                     self.cur_tparams = f.type_params.iter().map(|tp| tp.name.clone()).collect();
                     self.cur_constraints = f.type_params.iter().map(|tp| tp.constraint.clone()).collect();
                     let ret_ty: Option<Kind> = match &f.ret { Some(t) => Some(self.from_ast(t)), None => None };
+                    self.cur_error_channel = match &ret_ty {
+                        Some(Kind::Result(_, e)) => Some((**e).clone()),
+                        _ => None,
+                    };
                     let mut env: HashMap<String, Kind> = HashMap::new();
                     for p in &f.params {
                         env.insert(p.name.clone(), self.from_ast(&p.ty));
@@ -241,7 +247,31 @@ Item::Func(f) => {
         }
     }
 
-    fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
+    /// The `?` acceptance rule (docs/06): a callee error E is legal to propagate
+/// if the caller's declared error channel accepts it.
+fn accepts_error(&self, callee_e: &Kind, caller_e: &Kind) -> bool {
+    // 3. Err is the root: accepts any narrower error type
+    if caller_e == &Kind::Err {
+        return true;
+    }
+    match (callee_e, caller_e) {
+        // 1. identical
+        _ if callee_e == caller_e => true,
+        // 2. the caller is a union and the callee is one of its members
+        (c, Kind::ErrUnion(members)) => {
+            let mut ok = false;
+            for m in members {
+                if c == m {
+                    ok = true;
+                }
+            }
+            ok
+        }
+        _ => false,
+    }
+}
+
+fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
         // A bare type parameter may be stored/passed/returned, but comparing
         // or doing arithmetic on it requires a justifying constraint.
         // Currently only `T: Ordered` (comparison) is defined (docs/03).
@@ -582,8 +612,21 @@ Item::Func(f) => {
             Expr::Prop(base, _) => {
                 let bt = self.check_expr(base, env);
                 match &bt {
-                    Kind::Result(t, _) => {
-                        // `?` unwraps result; failure is the surrounding function's
+                    Kind::Result(t, e) => {
+                        // `?` unwraps the payload; the callee's error must be
+                        // accepted by the enclosing function's error channel
+                        // (docs/06, the ? acceptance rule)
+                        let callee_e = (**e).clone();
+                        match &self.cur_error_channel {
+                            Some(caller_e) => {
+                                if !self.accepts_error(&callee_e, caller_e) {
+                                    self.error(format!("cannot propagate {:?} via '?': the enclosing function's error channel is {:?}", callee_e, caller_e), "".to_string());
+                                }
+                            }
+                            None => {
+                                self.error(format!("cannot use '?' here: the enclosing function has no error channel (declare Result[_, E])"), "".to_string());
+                            }
+                        }
                         (**t).clone()
                     }
                     _ => {
@@ -849,6 +892,10 @@ fn subst(ty: &Kind, bindings: &Vec<Option<Kind>>) -> Kind {
         Kind::Option(inner) => Kind::Option(Box::new(subst(inner, bindings))),
         Kind::Result(t, e) => Kind::Result(Box::new(subst(t, bindings)), Box::new(subst(e, bindings))),
         Kind::Chan(inner) => Kind::Chan(Box::new(subst(inner, bindings))),
+        Kind::ErrUnion(members) => {
+            let ms: Vec<Kind> = members.iter().map(|m| subst(m, bindings)).collect();
+            Kind::ErrUnion(ms)
+        }
         Kind::Record(_) | Kind::Enum(_) => ty.clone(),
         Kind::Bool | Kind::Int | Kind::Usize | Kind::Float | Kind::Char
         | Kind::Str | Kind::Bytes | Kind::Unit | Kind::Ptr | Kind::Err
