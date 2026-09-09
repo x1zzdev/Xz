@@ -1,6 +1,7 @@
 # Roadmap
 
-Status: **documentation only** — no implementation yet.
+Status: Phases 1–4 (front end + LLVM JIT backend) are implemented; `xz check`
+and `xz run` work on the example programs. Phases 5–8 are not yet implemented.
 
 ## Phase 0 — Design (current)
 
@@ -38,9 +39,12 @@ Status: **documentation only** — no implementation yet.
 
 ## Phase 4 — Backend
 
-- LLVM IR generation (inkwell)
-- Native binary output
-- JSON diagnostics emission
+- [x] LLVM IR generation (inkwell) — `xz-cli/src/backend/` ([13-codegen.md](13-codegen.md))
+- [x] JIT execution (`xz run`) with host `print`/`to_str`/`abs`/`sqrt`
+- [x] IR emission (`xz build`, Phase 4 output is IR; native binary is Phase 5)
+- [x] Example programs execute: `hello.xz`, `contracts.xz`
+- [ ] Native binary output
+- [ ] JSON diagnostics emission
 
 ## Phase 5 — FFI & interop (early, by design)
 

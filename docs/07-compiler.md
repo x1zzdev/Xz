@@ -10,6 +10,11 @@ source ──► lexer ──► parser ──► AST ──► name resolution
 
 Backend: **LLVM** via Rust bindings (inkwell) — the same ecosystem proven in Xazz. Rust's parser libraries (nom, pest) are used for the front end.
 
+**Phase 4 status:** `xz build`/`xz run` are implemented for the front end plus a
+JIT backend (see [13-codegen.md](13-codegen.md) for the design contract and
+[14-codegen-notes.md](14-codegen-notes.md) for the hard problems). The backend
+runs on a root-free portable LLVM 17 (`xz-cli/.cargo/config.toml` + `scripts/setup-llvm.sh`).
+
 Shared-library output (`xz build --shared`) is the interop on-ramp; `xz bind --lang python` generates Python wrappers from interface files (see [10-ffi-interop.md](10-ffi-interop.md)).
 
 ## CLI

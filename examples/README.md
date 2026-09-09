@@ -1,8 +1,19 @@
 # Examples
 
-Design-validation programs. **Not runnable yet** — the language is in the design
-phase (see [docs/08-roadmap.md](../docs/08-roadmap.md)). They exist to validate
-ergonomics and to give the implementation a concrete target.
+Design-validation programs. They exist to validate ergonomics and to give the
+implementation a concrete target.
+
+**Runnable** (Phase 4): `hello.xz` and `contracts.xz` pass the full front end
+and execute via the LLVM JIT backend:
+
+```
+cd ../xz-cli
+cargo run -- run ../examples/hello.xz      # Hello, Xz!length: 10
+cargo run -- run ../examples/contracts.xz  # distance/final x/area
+```
+
+`concurrency.xz` and `ffi.xz` typecheck but are **not runnable yet**: the
+concurrency runtime is Phase 6 and FFI is Phase 5.
 
 | File | Demonstrates |
 |---|---|

@@ -44,4 +44,8 @@ Xz/
 
 ## Status
 
-**Design/documentation phase.** No implementation yet. See [docs/08-roadmap.md](docs/08-roadmap.md).
+**Phases 1–4 implemented.** The front end (`xz check`) and the LLVM JIT backend
+(`xz run`) work; `hello.xz` and `contracts.xz` execute. Phases 5–8 (FFI,
+concurrency runtime, stdlib, tooling) are on the
+[docs/08-roadmap.md](docs/08-roadmap.md). The backend uses a root-free portable
+LLVM 17 (see [docs/13-codegen.md](docs/13-codegen.md)).
