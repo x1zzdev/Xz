@@ -153,8 +153,11 @@ Rules:
   instantiates `T = Float`. Type inference is bounded to the call argument
   list; there is no inference inside bodies (contract-point explicitness).
 - **Bodies check with a fresh type variable** — inside the body, `T` is a
-  distinct unknown type; operations on it must be justified by the constraint
-  or the body stays parametric (it is proven correct for all `T`).
+  distinct unknown type. Operations on it are only allowed if the constraint
+  justifies them: a type parameter without a constraint may be stored,
+  passed, and returned, but **not** compared or used in arithmetic. The
+  constraint `T: Ordered` permits `< <= > >=`; numeric constraints (planned)
+  permit arithmetic.
 - **Explicit instantiation** — `max[Int](1, 2)` is allowed and must match the
   inferred argument types.
 
