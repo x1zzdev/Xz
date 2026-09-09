@@ -198,6 +198,41 @@ func f() -> Int
 }
 
 #[test]
+fn forbidden_cast_rejected() {
+    let err = check_source(r#"func main() {
+    let b: Bool = true
+    let i: Int = b as Int
+    print(i.to_str())
+}"#);
+    match err {
+        Some(e) => {
+            if !e.contains("cannot cast") {
+                println!("FAIL forbidden_cast: unexpected error {}", e);
+            }
+        }
+        None => println!("FAIL forbidden_cast: allowed Bool->Int"),
+    }
+}
+
+#[test]
+fn allowed_cast_passes() {
+    expect_ok(
+        r#"extern func malloc(size: usize) -> Ptr
+
+func main() -> Result[Int, Err] {
+    let n: Int = 16
+    let p = malloc(n as usize)
+    if p == 0 {
+        err("oom")
+    } else {
+        ok(0)
+    }
+}"#,
+        "allowed Int->usize cast",
+    );
+}
+
+#[test]
 fn json_emits_spec_shape() {
     // build one diagnostic and verify the JSON carries the spec fields
     let d = Diagnostic {

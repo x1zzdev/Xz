@@ -578,8 +578,12 @@ Item::Func(f) => {
                 }
             }
             Expr::Cast(a, ty) => {
-                let _ = self.check_expr(a, env);
-                self.from_ast(ty)
+                let at = self.check_expr(a, env);
+                let tt = self.from_ast(ty);
+                if !self.accepts_cast(&at, &tt) {
+                    self.error(format!("cannot cast {:?} to {:?} (allowed: Int<->usize, Int->Float, Float->Int, Str<->Bytes)", at, tt), "".to_string());
+                }
+                tt
             }
             Expr::Match(subject, arms) => {
                 let st = self.check_expr(subject, env);
@@ -680,6 +684,21 @@ Item::Func(f) => {
                 Kind::Option(Box::new(t))
             }
         }
+    }
+
+    fn accepts_cast(&self, value: &Kind, target: &Kind) -> bool {
+        if value == target {
+            return true;
+        }
+        let v = value;
+        let t = target;
+        if matches!(v, Kind::Int) && matches!(t, Kind::Usize) { return true; }
+        if matches!(v, Kind::Usize) && matches!(t, Kind::Int) { return true; }
+        if matches!(v, Kind::Int) && matches!(t, Kind::Float) { return true; }
+        if matches!(v, Kind::Float) && matches!(t, Kind::Int) { return true; }
+        if matches!(v, Kind::Str) && matches!(t, Kind::Bytes) { return true; }
+        if matches!(v, Kind::Bytes) && matches!(t, Kind::Str) { return true; }
+        false
     }
 
     fn accepts(&self, value: &Kind, target: &Kind) -> bool {
