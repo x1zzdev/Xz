@@ -807,14 +807,15 @@ let mut trusted = false;
         self.expect(TokKind::If, String::from("'if'")).unwrap();
         let cond = self.expr().unwrap();
         let then_block = self.block().unwrap();
-        let mut elif: Option<(Box<Expr>, Block)> = None;
+        let mut elif: Vec<(Box<Expr>, Block)> = vec![];
         let mut else_block: Option<Block> = None;
-        if self.at(TokKind::Elif) {
+        while self.at(TokKind::Elif) {
             self.i += 1;
             let c = self.expr().unwrap();
             let b = self.block().unwrap();
-            elif = Some((Box::new(c), b));
-        } else if self.at(TokKind::Else) {
+            elif.push((Box::new(c), b));
+        }
+        if self.at(TokKind::Else) {
             self.i += 1;
             else_block = Some(self.block().unwrap());
         }

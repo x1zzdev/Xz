@@ -296,13 +296,10 @@ impl Resolver {
                 self.resolve_expr(&ifx.cond, scope);
                 let mut then_scope = child_scope(scope);
                 self.resolve_block(&ifx.then_block, &mut then_scope);
-                match &ifx.elif {
-                    Some((c, b)) => {
-                        self.resolve_expr(c, scope);
-                        let mut s = child_scope(scope);
-                        self.resolve_block(b, &mut s);
-                    }
-                    None => {}
+                for (c, b) in &ifx.elif {
+                    self.resolve_expr(c, scope);
+                    let mut s = child_scope(scope);
+                    self.resolve_block(b, &mut s);
                 }
                 match &ifx.else_block {
                     Some(b) => {

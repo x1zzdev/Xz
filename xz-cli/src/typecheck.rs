@@ -734,20 +734,17 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                 let cond_ty = self.check_expr(&ifx.cond, env);
                 let _ = cond_ty;
                 // flow typing: a positive test narrows the bound name inside
-                // the then-branch; the else branch is the complement.
+                // the then-branch; each elif and the else are their own branch.
                 let pos_narrow = extract_narrowing(&ifx.cond);
                 let mut then_env = env.clone();
                 apply_narrowing(&mut then_env, &pos_narrow);
                 let _ = self.check_block(&ifx.then_block, &mut then_env);
-                match &ifx.elif {
-                    Some((c, b)) => {
-                        let _ = self.check_expr(c, env);
-                        let mut s = env.clone();
-                        let n = extract_narrowing(c);
-                        apply_narrowing(&mut s, &n);
-                        let _ = self.check_block(b, &mut s);
-                    }
-                    None => {}
+                for (c, b) in &ifx.elif {
+                    let _ = self.check_expr(c, env);
+                    let mut s = env.clone();
+                    let n = extract_narrowing(c);
+                    apply_narrowing(&mut s, &n);
+                    let _ = self.check_block(b, &mut s);
                 }
                 match &ifx.else_block {
                     Some(b) => {
@@ -826,7 +823,8 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
             (_ , Kind::Err) => true,
             // result errors narrow: any error type fits Err
             (Kind::Result(_, _), Kind::Result(_, _)) => true,
-            // Float accepts Float; unit case
+            // `none` is the absence literal: it fits any Option[T] (docs/03)
+            (Kind::Option(inner), Kind::Option(_)) if matches!(**inner, Kind::Unknown) => true,
             _ => false,
         }
     }

@@ -207,7 +207,7 @@ pub enum Expr {
 pub struct IfExpr {
     pub cond: Box<Expr>,
     pub then_block: Block,
-    pub elif: Option<(Box<Expr>, Block)>,
+    pub elif: Vec<(Box<Expr>, Block)>,
     pub else_block: Option<Block>,
 }
 

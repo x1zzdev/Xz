@@ -279,9 +279,9 @@ fn walk_expr(e: &Expr, set: &mut EffectSet, declared: &HashMap<String, EffectSet
         Expr::If(ifx) => {
             walk_expr(&ifx.cond, set, declared);
             walk_block(&ifx.then_block, set, declared);
-            match &ifx.elif {
-                Some((c, b)) => { walk_expr(c, set, declared); walk_block(b, set, declared); }
-                None => {}
+            for (c, b) in &ifx.elif {
+                walk_expr(c, set, declared);
+                walk_block(b, set, declared);
             }
             match &ifx.else_block {
                 Some(b) => walk_block(b, set, declared),
