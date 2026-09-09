@@ -112,6 +112,19 @@ The stdlib predeclares `IoError`, `DomainError`, `ParseError`, `AllocError`,
 - No boolean coercion (no truthiness of `0` or `""`)
 - Narrowing requires explicit `as` and is checked at compile time where provable
 
+The complete set of allowed casts (everything else is a compile error):
+
+| From | To | Kind |
+|---|---|---|
+| `Int` | `usize` | width-preserving; FFI-required |
+| `usize` | `Int` | width-preserving |
+| `Int` | `Float` | widening, exact for `|Int| < 2^53` |
+| `Float` | `Int` | truncation — explicitly narrowing, visible |
+| `Str` | `Bytes` | UTF-8 encode (see also `s.to_bytes()`) |
+| `Bytes` | `Str` | UTF-8 decode (see also `b.to_str()`) |
+
+A cast from any other pair (e.g. `Bool as Int`) is rejected with a diagnostic.
+
 ```
 let i: Int = 7
 let f: Float = i as Float     // explicit, visible
