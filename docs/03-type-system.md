@@ -140,6 +140,24 @@ func max[T: Ordered](a: T, b: T) -> T {
 }
 ```
 
+Rules:
+
+- **Declaration** — `func name[T, U](...)`: type parameters are named with a
+  single uppercase letter by convention, listed in square brackets after the
+  name. An optional constraint (`T: Ordered`) names a trait the argument type
+  must satisfy; constraints are checked where provable and otherwise require
+  the same proof/trust path as contracts.
+- **Use** — a type parameter `T` may appear anywhere a type can: parameters,
+  return type, `Option[T]`/`Result[T, E]` nesting.
+- **Call sites infer** — `max(1, 2)` instantiates `T = Int`; `max(1.0, 2.0)`
+  instantiates `T = Float`. Type inference is bounded to the call argument
+  list; there is no inference inside bodies (contract-point explicitness).
+- **Bodies check with a fresh type variable** — inside the body, `T` is a
+  distinct unknown type; operations on it must be justified by the constraint
+  or the body stays parametric (it is proven correct for all `T`).
+- **Explicit instantiation** — `max[Int](1, 2)` is allowed and must match the
+  inferred argument types.
+
 ## Units & domain types (planned)
 
 Unit-typed numbers (`Meters`, `Seconds`) make review stronger: arithmetic across incompatible units is a compile error unless explicitly converted.

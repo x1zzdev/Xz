@@ -98,12 +98,15 @@ program         := top_level*
 top_level       := func_decl | task_decl | chan_decl | extern_decl
                  | record_decl | enum_decl
 
-func_decl       := "async"? "func" IDENT "(" params ")" ("->" type)? contract* block
+func_decl       := "async"? "func" IDENT type_params? "(" params ")" ("->" type)? contract* block
 task_decl       := "task" IDENT block
 chan_decl       := "chan" IDENT ":" "Chan[" type "]"
-extern_decl     := "extern" "func" IDENT "(" params ")" ("->" type)?
+extern_decl     := "extern" "func" IDENT type_params? "(" params ")" ("->" type)?
 record_decl     := "record" IDENT "{" field* "}"
 enum_decl       := "enum" IDENT "{" variant+ "}"
+
+type_params     := "[" type_param ("," type_param)* "]"
+type_param      := IDENT (":" IDENT)?            // T or T: Ordered
 
 params          := param ("," param)*
 param           := ("mut")? IDENT ":" type
@@ -194,6 +197,10 @@ The grammar alone is not the whole contract. The compiler also enforces:
 - **Effect honesty** — the derived effect profile must equal `@effects`
   ([09-intent-verification.md](09-intent-verification.md)).
 - **Claim pairing** — `@requires`/`@ensures` pair (in order) with `pre`/`post`.
+- **Generic inference** — a call to `f[T, U](...)` infers each type argument
+  from the argument list (a parameter typed `T` binds `T` to that argument's
+  type); the return type is instantiated with the bindings
+  ([03-type-system.md](03-type-system.md)).
 
 ## What is deliberately not specified here
 
