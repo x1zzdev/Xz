@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ast;
-use crate::ast::{Program, Item, Type, Expr, Stmt, BinOp, UnaryOp};
+use crate::ast::{Program, Item, Type, Expr, Stmt, BinOp, UnaryOp, Contract};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
@@ -203,12 +203,13 @@ impl TypeChecker {
 Item::Func(f) => {
                     let param_tys: Vec<Kind> = f.params.iter().map(|p| self.from_ast(&p.ty)).collect();
                     let ret_ty: Option<Kind> = match &f.ret { Some(t) => Some(self.from_ast(t)), None => None };
-                    self.funcs.insert(f.name.clone(), (param_tys.clone(), ret_ty));
+                    self.funcs.insert(f.name.clone(), (param_tys.clone(), ret_ty.clone()));
                     let mut env: HashMap<String, Kind> = HashMap::new();
                     for p in &f.params {
                         env.insert(p.name.clone(), self.from_ast(&p.ty));
                     }
                     self.seed_env(&mut env);
+                    self.check_contracts(&f.contracts, &mut env, ret_ty.clone());
                     self.check_block(&f.body, &mut env);
                     
                 }
@@ -225,6 +226,39 @@ Item::Func(f) => {
     fn seed_env(&self, env: &mut HashMap<String, Kind>) {
         for (name, ty) in &self.chans {
             env.insert(name.clone(), ty.clone());
+        }
+    }
+
+    fn check_contracts(&mut self, contracts: &Vec<Contract>, env: &mut HashMap<String, Kind>, ret_ty: Option<Kind>) {
+        for c in contracts {
+            match c {
+                Contract::Pre(e) => {
+                    let t = self.check_expr(e, env);
+                    if t != Kind::Bool && t != Kind::Unknown {
+                        self.error(String::from("precondition must be a Bool expression"), "".to_string());
+                    }
+                }
+                Contract::Post(e) => {
+                    let mut post_env = env.clone();
+                    // `result` refers to the return value (see 06); give it
+                    // the declared return type so `is ok`/comparisons typecheck.
+                    let ret = match &ret_ty {
+                        Some(t) => t.clone(),
+                        None => Kind::Unknown,
+                    };
+                    post_env.insert("result".to_string(), ret);
+                    let t = self.check_expr(e, &mut post_env);
+                    if t != Kind::Bool && t != Kind::Unknown {
+                        self.error(String::from("postcondition must be a Bool expression"), "".to_string());
+                    }
+                }
+                Contract::Invariant(e) => {
+                    let t = self.check_expr(e, env);
+                    if t != Kind::Bool && t != Kind::Unknown {
+                        self.error(String::from("invariant must be a Bool expression"), "".to_string());
+                    }
+                }
+            }
         }
     }
 
@@ -473,6 +507,18 @@ Item::Func(f) => {
                                 self.error(format!("record '{}' has no field '{}'", rec, fname), "".to_string());
                                 Kind::Unknown
                             }
+                        }
+                    }
+                    // Result payload access: `result.value` under `is ok`
+                    // (docs/06). `.value` is the T payload; `.err` the E.
+                    Kind::Result(t, _) => {
+                        if fname == "value" {
+                            (**t).clone()
+                        } else if fname == "err" {
+                            Kind::Unknown
+                        } else {
+                            self.error(format!("Result has no field '{}' (use .value / .err)", fname), "".to_string());
+                            Kind::Unknown
                         }
                     }
                     Kind::Enum(_) => Kind::Unknown,
