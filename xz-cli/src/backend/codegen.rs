@@ -5,7 +5,7 @@ use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{FloatPredicate, IntPredicate};
 
-use crate::ast::{self, Expr, Pattern, Stmt, Type};
+use crate::ast::{self, Block, Expr, Pattern, Stmt, Type};
 use crate::backend::llvm_backend::{kind_from_ast, LlvmBackend};
 use crate::typecheck::Kind;
 
@@ -23,6 +23,9 @@ pub struct Codegen<'b, 'ctx> {
     /// the enclosing function's LLVM return type; None for void (Unit)
     pub ret_llvm: Option<BasicTypeEnum<'ctx>>,
     str_count: usize,
+    /// while evaluating a `let x: Option[T] = none`, the declared kind, so the
+    /// `none` literal can materialize a zero of that Option's struct
+    none_hint: Option<Kind>,
 }
 
 type GenResult<'ctx> = Result<BasicValueEnum<'ctx>, String>;
@@ -62,6 +65,72 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         self.backend.builder.build_store(a, v).unwrap();
         self.scope.insert(name.to_string(), (a, ty));
         a
+    }
+
+    /// Bind a value with an explicit declared type (used when the value's own
+    /// type is not the binding's type, e.g. `none` in `let x: Option[T]`).
+    fn bind_typed(&mut self, name: &str, ty: BasicTypeEnum<'ctx>, v: BasicValueEnum<'ctx>) {
+        let a = self.backend.builder.build_alloca(ty, name).unwrap();
+        self.backend.builder.build_store(a, v).unwrap();
+        self.scope.insert(name.to_string(), (a, ty));
+    }
+
+    /// If `cond` is `NAME is some|ok` (true → narrow to payload in the then
+    /// branch) or `NAME is none|err` (false → narrow to payload in the else),
+    /// return (name, then_payload). Mirrors the type checker's flow typing.
+    fn extract_narrow(cond: &Expr) -> Option<(String, bool)> {
+        match cond {
+            Expr::Binary(op, a, b) => {
+                let _ = b;
+                match &**a {
+                    Expr::Name(n) => {
+                        if op == &ast::BinOp::IsSome || op == &ast::BinOp::IsOk {
+                            Some((n.clone(), true))
+                        } else if op == &ast::BinOp::IsNone || op == &ast::BinOp::IsErr {
+                            Some((n.clone(), false))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Rebind `name` so it points at the payload field (index 0) of its
+    /// Option/Result struct, for a narrowed branch. Returns the old binding.
+    fn narrow_scope(&mut self, name: &str) -> Option<(String, (PointerValue<'ctx>, BasicTypeEnum<'ctx>))> {
+        match self.scope.get(name) {
+            Some((ptr, ty)) => {
+                let ptr = *ptr;
+                let ty = *ty;
+                if matches!(ty, BasicTypeEnum::StructType(_)) {
+                    let st = ty.into_struct_type();
+                    if st.count_fields() == 2 {
+                        if let Some(pty) = st.get_field_type_at_index(0) {
+                            let pptr = self
+                                .backend
+                                .builder
+                                .build_struct_gep(st, ptr, 0, &format!("{}.payload", name))
+                                .unwrap();
+                            let old = self.scope.get(name).cloned().unwrap();
+                            self.scope.insert(name.to_string(), (pptr, pty));
+                            return Some((name.to_string(), old));
+                        }
+                    }
+                }
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn restore_scope(&mut self, saved: Option<(String, (PointerValue<'ctx>, BasicTypeEnum<'ctx>))>) {
+        if let Some((name, old)) = saved {
+            self.scope.insert(name, old);
+        }
     }
 
     /// Materialize a string literal as an LLVM global; returns {ptr, len}.
@@ -128,13 +197,30 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             let _ = self.fail::<()>("channel recv (let x <- recv) is not supported in Phase 4");
             return;
         }
+        let declared_kind: Option<Kind> = match &d.ty {
+            Some(ty) => Some(kind_from_ast(ty, self.backend)),
+            None => None,
+        };
         match &d.init {
-            Some(e) => match self.gen_expr(e) {
-                Ok(v) => {
-                    self.bind_value(&d.name, v);
+            Some(e) => {
+                // Let the `none` literal know the declared Option type.
+                let saved_hint = self.none_hint.clone();
+                self.none_hint = declared_kind.clone();
+                let r = self.gen_expr(e);
+                self.none_hint = saved_hint;
+                match r {
+                    Ok(v) => match declared_kind {
+                        Some(k) => {
+                            let lty = self.backend.kind_to_llvm(&k);
+                            self.bind_typed(&d.name, lty, v);
+                        }
+                        None => {
+                            self.bind_value(&d.name, v);
+                        }
+                    },
+                    Err(_) => {}
                 }
-                Err(_) => {}
-            },
+            }
             None => {
                 // declared type, no initializer
                 match &d.ty {
@@ -282,9 +368,22 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         Ok(agg.into())
     }
 
-    /// A zero Result/Option whose payload is taken from the enclosing return.
+    /// `none` is the absence literal. With a declared Option[T] (via none_hint)
+    /// it is a zero of that Option's struct; otherwise it has no usable value.
     fn none_value(&mut self) -> BasicValueEnum<'ctx> {
-        self.backend.types.unit.const_zero().into()
+        match &self.none_hint {
+            Some(Kind::Option(inner)) => {
+                let payload = self.backend.kind_to_llvm(inner);
+                let st = self.backend.context.struct_type(&[payload.into(), self.backend.types.bool.into()], false);
+                st.const_zero().into()
+            }
+            Some(Kind::Result(t, _)) => {
+                let payload = self.backend.kind_to_llvm(t);
+                let st = self.backend.context.struct_type(&[payload.into(), self.backend.types.bool.into()], false);
+                st.const_zero().into()
+            }
+            _ => self.backend.types.unit.const_zero().into(),
+        }
     }
 
     fn gen_ok(&mut self, inner: &Option<Box<Expr>>) -> GenResult<'ctx> {
@@ -730,42 +829,79 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     // ------------------------------------------------------------------ //
 
     fn gen_if(&mut self, ifx: &ast::IfExpr) -> GenResult<'ctx> {
-        let cond = self.gen_expr(&ifx.cond)?;
-        let cond = cond.into_int_value();
-        let fnv = self.cur_fn();
-
-        let then_bb = self.backend.context.append_basic_block(fnv, "if.then");
-        let else_bb = self.backend.context.append_basic_block(fnv, "if.else");
-        let merge_bb = self.backend.context.append_basic_block(fnv, "if.merge");
-        self.backend.builder.build_conditional_branch(cond, then_bb, else_bb).unwrap();
-
-        // then
-        self.backend.builder.position_at_end(then_bb);
-        let then_val = self.gen_block(&ifx.then_block);
-        let then_bb = self.backend.builder.get_insert_block().unwrap();
-        self.backend.builder.build_unconditional_branch(merge_bb).unwrap();
-
-        // else
-        self.backend.builder.position_at_end(else_bb);
-        let else_val = match &ifx.else_block {
-            Some(b) => self.gen_block(b),
-            None => None,
-        };
-        let else_bb = self.backend.builder.get_insert_block().unwrap();
-        self.backend.builder.build_unconditional_branch(merge_bb).unwrap();
-
-        self.backend.builder.position_at_end(merge_bb);
-
-        match (then_val, else_val) {
-            (Some(t), Some(el)) => {
-                let ty = self.basic_type_of(t);
-                let phi = self.backend.builder.build_phi(ty, "if.phi").unwrap();
-                phi.add_incoming(&[(&t, then_bb), (&el, else_bb)]);
-                Ok(phi.as_basic_value())
+        // Lower an if/elif/else chain into nested ifs so codegen only ever
+        // needs the two-branch form. `if c1 {A} elif c2 {B} else {C}` becomes
+        // `if c1 {A} else { if c2 {B} else {C} }`.
+        match ifx.elif.first() {
+            Some((c, b)) => {
+                let inner_else = if ifx.else_block.is_some() { ifx.else_block.clone() } else { None };
+                let inner = ast::IfExpr {
+                    cond: (*c).clone(),
+                    then_block: (*b).clone(),
+                    elif: ifx.elif.iter().skip(1).map(|(c2, b2)| ((*c2).clone(), (*b2).clone())).collect(),
+                    else_block: inner_else,
+                };
+                let outer = ast::IfExpr {
+                    cond: ifx.cond.clone(),
+                    then_block: ifx.then_block.clone(),
+                    elif: vec![],
+                    else_block: Some(Block { stmts: vec![Stmt::Expr(Expr::If(inner))], span: ifx.then_block.span.clone() }),
+                };
+                self.gen_if(&outer)
             }
-            (Some(t), None) => Ok(t),
-            (None, Some(el)) => Ok(el),
-            (None, None) => Ok(self.backend.types.unit.const_zero().into()),
+            None => {
+                let cond = self.gen_expr(&ifx.cond)?;
+                let cond = cond.into_int_value();
+                let fnv = self.cur_fn();
+
+                let then_bb = self.backend.context.append_basic_block(fnv, "if.then");
+                let else_bb = self.backend.context.append_basic_block(fnv, "if.else");
+                let merge_bb = self.backend.context.append_basic_block(fnv, "if.merge");
+                self.backend.builder.build_conditional_branch(cond, then_bb, else_bb).unwrap();
+
+                // Flow typing: `x is some|ok` narrows x to its payload in the
+                // then branch; `x is none|err` narrows it in the else branch.
+                let narrow = Self::extract_narrow(&ifx.cond);
+
+                // then
+                self.backend.builder.position_at_end(then_bb);
+                let saved_then = match narrow.clone() {
+                    Some((n, true)) => self.narrow_scope(n.as_str()),
+                    _ => None,
+                };
+                let then_val = self.gen_block(&ifx.then_block);
+                self.restore_scope(saved_then);
+                let then_bb = self.backend.builder.get_insert_block().unwrap();
+                self.backend.builder.build_unconditional_branch(merge_bb).unwrap();
+
+                // else
+                self.backend.builder.position_at_end(else_bb);
+                let saved_else = match narrow.clone() {
+                    Some((n, false)) => self.narrow_scope(n.as_str()),
+                    _ => None,
+                };
+                let else_val = match &ifx.else_block {
+                    Some(b) => self.gen_block(b),
+                    None => None,
+                };
+                self.restore_scope(saved_else);
+                let else_bb = self.backend.builder.get_insert_block().unwrap();
+                self.backend.builder.build_unconditional_branch(merge_bb).unwrap();
+
+                self.backend.builder.position_at_end(merge_bb);
+
+                match (then_val, else_val) {
+                    (Some(t), Some(el)) => {
+                        let ty = self.basic_type_of(t);
+                        let phi = self.backend.builder.build_phi(ty, "if.phi").unwrap();
+                        phi.add_incoming(&[(&t, then_bb), (&el, else_bb)]);
+                        Ok(phi.as_basic_value())
+                    }
+                    (Some(t), None) => Ok(t),
+                    (None, Some(el)) => Ok(el),
+                    (None, None) => Ok(self.backend.types.unit.const_zero().into()),
+                }
+            }
         }
     }
 
@@ -932,6 +1068,7 @@ pub fn gen_function(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         ret_kind,
         ret_llvm,
         str_count: 0,
+        none_hint: None,
     };
     cg.gen_body_common(&f.name, fv, &f.params, &f.body);
 }
@@ -950,6 +1087,7 @@ pub fn gen_main(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         ret_kind,
         ret_llvm: None,
         str_count: 0,
+        none_hint: None,
     };
     cg.gen_body_common(&f.name, fv, &f.params, &f.body);
 }
