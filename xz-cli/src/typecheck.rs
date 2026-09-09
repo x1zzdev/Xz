@@ -47,6 +47,8 @@ pub struct TypeChecker {
     chans: HashMap<String, Kind>,
     /// type parameters in scope while from_ast is called (for generic sigs)
     cur_tparams: Vec<String>,
+    /// constraints of the in-scope type parameters, by index (e.g. Ordered)
+    cur_constraints: Vec<Option<String>>,
     errors: Vec<TypeError>,
 }
 
@@ -60,6 +62,7 @@ pub fn typecheck(program: &Program) -> Result<(), Vec<TypeError>> {
         record_ctors: HashMap::new(),
         chans: HashMap::new(),
         cur_tparams: vec![],
+        cur_constraints: vec![],
         errors: vec![],
     };
     tc.build_world(program);
@@ -121,6 +124,7 @@ impl TypeChecker {
             match item {
                 Item::Func(f) => {
                     self.cur_tparams = f.type_params.iter().map(|tp| tp.name.clone()).collect();
+                    self.cur_constraints = f.type_params.iter().map(|tp| tp.constraint.clone()).collect();
                     let param_tys: Vec<Kind> = f.params.iter().map(|p| self.from_ast(&p.ty)).collect();
                     let ret_ty: Option<Kind> = match &f.ret { Some(t) => Some(self.from_ast(t)), None => None };
                     let tvs: Vec<Kind> = f.type_params.iter().enumerate().map(|(i, _)| Kind::TypeVar(i)).collect();
@@ -128,6 +132,7 @@ impl TypeChecker {
                 }
                 Item::Extern(e) => {
                     self.cur_tparams = e.type_params.iter().map(|tp| tp.name.clone()).collect();
+                    self.cur_constraints = e.type_params.iter().map(|tp| tp.constraint.clone()).collect();
                     let param_tys: Vec<Kind> = e.params.iter().map(|p| self.from_ast(&p.ty)).collect();
                     let ret_ty: Option<Kind> = match &e.ret { Some(t) => Some(self.from_ast(t)), None => None };
                     let tvs: Vec<Kind> = e.type_params.iter().enumerate().map(|(i, _)| Kind::TypeVar(i)).collect();
@@ -215,6 +220,7 @@ impl TypeChecker {
             match item {
 Item::Func(f) => {
                     self.cur_tparams = f.type_params.iter().map(|tp| tp.name.clone()).collect();
+                    self.cur_constraints = f.type_params.iter().map(|tp| tp.constraint.clone()).collect();
                     let ret_ty: Option<Kind> = match &f.ret { Some(t) => Some(self.from_ast(t)), None => None };
                     let mut env: HashMap<String, Kind> = HashMap::new();
                     for p in &f.params {
@@ -232,6 +238,26 @@ Item::Func(f) => {
                 }
                 _ => {}
             }
+        }
+    }
+
+    fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
+        // A bare type parameter may be stored/passed/returned, but comparing
+        // or doing arithmetic on it requires a justifying constraint.
+        // Currently only `T: Ordered` (comparison) is defined (docs/03).
+        let idx = typevar_index(at).or_else(|| typevar_index(bt));
+        let idx = idx.unwrap();
+        let is_cmp = matches!(op, BinOp::Eq) || matches!(op, BinOp::Ne)
+            || matches!(op, BinOp::Lt) || matches!(op, BinOp::Le)
+            || matches!(op, BinOp::Gt) || matches!(op, BinOp::Ge);
+        if is_cmp {
+            let constrained = idx < self.cur_constraints.len()
+                && match &self.cur_constraints[idx] { Some(c) => c == "Ordered", None => false };
+            if !constrained {
+                self.error(format!("type parameter must be constrained (T: Ordered) to compare values of type {:?}/{:?}", at, bt), "".to_string());
+            }
+        } else {
+            self.error(format!("cannot use arithmetic on type parameter (constraint not defined)"), "".to_string());
         }
     }
 
@@ -576,6 +602,10 @@ Item::Func(f) => {
             Expr::Binary(op, a, b) => {
                 let at = self.check_expr(a, env);
                 let bt = self.check_expr(b, env);
+                // operations on a bare type parameter require a justifying constraint
+                if is_typevar(&at) || is_typevar(&bt) {
+                    self.check_tvar_op(&at, &bt, op);
+                }
                 match op {
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                         // string concat special-case
@@ -594,6 +624,7 @@ Item::Func(f) => {
                         Kind::Bool
                     }
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => Kind::Bool,
+                    BinOp::IsOk | BinOp::IsErr | BinOp::IsNone | BinOp::IsSome => Kind::Bool,
                     BinOp::IsOk | BinOp::IsErr | BinOp::IsNone | BinOp::IsSome => Kind::Bool,
                 }
             }
@@ -790,6 +821,20 @@ fn method_type(receiver: &Kind, method: &str) -> Option<Kind> {
 
 /// Substitute type-parameter bindings into a type (generic instantiation).
 /// TypeVar(i) with an unbound slot stays a fresh TypeVar (parametric).
+fn is_typevar(k: &Kind) -> bool {
+    match k {
+        Kind::TypeVar(_) => true,
+        _ => false,
+    }
+}
+
+fn typevar_index(k: &Kind) -> Option<usize> {
+    match k {
+        Kind::TypeVar(i) => Some(*i),
+        _ => None,
+    }
+}
+
 fn subst(ty: &Kind, bindings: &Vec<Option<Kind>>) -> Kind {
     match ty {
         Kind::TypeVar(i) => {
