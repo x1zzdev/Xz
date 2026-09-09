@@ -33,7 +33,8 @@ Every diagnostic is emitted as structured JSON (`xz check-json`) in addition to 
   "code": "I0020",
   "message": "declared @effects 'none' does not match derived effects 'io' on 'f'",
   "category": "intent",
-  "span": { "file": "src/main.xz", "start": [4, 6], "end": [4, 7] }
+  "span": { "file": "src/main.xz", "start": [4, 6], "end": [4, 7] },
+  "suggestion": { "fix": "extend @effects on 'f' to include 'io'", "confidence": 0.9 }
 }
 ```
 
@@ -54,7 +55,10 @@ Every diagnostic is emitted as structured JSON (`xz check-json`) in addition to 
 | `T0001` | type checker | type error |
 | `Ixxxx` | intent verification | claim/effect/trust violations (above) |
 
-Suggested fixes with confidence scores (`suggestion.fix`, `suggestion.confidence`) are a planned extension to this shape; the current schema is the stable core every tool can rely on.
+Suggested fixes with confidence scores are part of the schema:
+`"suggestion": { "fix": "...", "confidence": 0.9 }`. Today the intent
+diagnostics carry them (e.g. I0020 proposes the corrected `@effects` list);
+other phases adopt them as their error sites gain repair templates.
 
 ## Feedback to the writer (AI)
 
