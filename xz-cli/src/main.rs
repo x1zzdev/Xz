@@ -6,7 +6,6 @@ use xz_cli::typecheck::{typecheck};
 use xz_cli::intent::{check_intent, check_intent_strict};
 use xz_cli::diagnostic::{Diagnostic, Severity, Category, Span as DSpan, to_json_array};
 use xz_cli::token::{Span, Token};
-
 fn main() {
     let args = std::env::args();
     let mut argv: Vec<String> = vec![];
@@ -64,6 +63,10 @@ fn main() {
                         run_check(tokens, strict, false);
                     } else if cmd == "check-json" {
                         run_check(tokens, strict, true);
+                    } else if cmd == "build" {
+                        run_backend(tokens, false);
+                    } else if cmd == "run" {
+                        run_backend(tokens, true);
                     } else {
                         println!("unknown command: {}", cmd);
                     }
@@ -160,6 +163,56 @@ fn run_check(tokens: Vec<Token>, strict: bool, json: bool) {
 
 fn dspan(s: Span) -> DSpan {
     DSpan { file: s.file, start: s.start, end: s.end }
+}
+
+/// Phase 4 backend: run the full front-end check, then lower to LLVM IR and
+/// (for `xz run`) JIT-execute `main`.
+fn run_backend(tokens: Vec<Token>, execute: bool) {
+    let parsed = parse(tokens);
+    let program = match parsed {
+        Err(e) => {
+            println!("error: {} at {}:{}:{}", e.message, e.span.file, e.span.start.0, e.span.start.1);
+            return;
+        }
+        Ok(p) => p,
+    };
+    if let Err(errors) = resolve(&program) {
+        println!("error: {} resolution errors", errors.len());
+        return;
+    }
+    if let Err(errors) = typecheck(&program) {
+        for err in &errors {
+            println!("type error: {}", err.message);
+        }
+        println!("error: {} type errors", errors.len());
+        return;
+    }
+    if let Err(errors) = check_intent(&program) {
+        println!("error: intent: {}", errors[0].code);
+        return;
+    }
+
+    let compiled = xz_cli::backend::llvm_backend::compile(&program);
+    match compiled {
+        Err(e) => {
+            println!("error: codegen failed: {}", e);
+        }
+        Ok(backend) => {
+            if execute {
+                match xz_cli::backend::runtime::run(backend.module) {
+                    Ok(code) => {
+                        std::process::exit(code);
+                    }
+                    Err(e) => {
+                        println!("error: run failed: {}", e);
+                    }
+                }
+            } else {
+                // xz build: Phase 4 emits IR only (native output is Phase 5).
+                println!("{}", backend.module.print_to_string().to_string());
+            }
+        }
+    }
 }
 
 fn tok_name(kind: &TokKind) -> String {

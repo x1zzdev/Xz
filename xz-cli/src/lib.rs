@@ -6,3 +6,4 @@ pub mod resolve;
 pub mod typecheck;
 pub mod intent;
 pub mod diagnostic;
+pub mod backend;
