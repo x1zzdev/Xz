@@ -104,10 +104,12 @@ mutation of `Str` in Phase 4, so no free is needed.
 | `x op y` arithmetic | `build_int_*` / `build_float_*` by operand kind |
 | comparison | `build_int_compare` / `build_float_compare`; `Int` is signed (`SGT`/…), `Float` is ordered |
 | `and`/`or`/`not` | `build_and`/`build_or`/`build_not` on `i1` |
-| `if c { a } else { b }` | `build_conditional_branch`; merge with `build_phi` |
+| `if c { a } elif ... { } else { b }` | lower the elif/else chain to nested two-branch ifs; merge with `build_phi` |
 | `match` | branch on a tag (enum) or the ok-flag (Result/Option); the `match` value is a `phi` of arm values |
 | `ok(v)` / `err(e)` | struct `{ v, 1 }` / `{ zero, 0 }` |
+| `none` | a zero of the declared `Option[T]` struct (the binding's type is the payload's source) |
 | `expr?` | branch on the ok-flag; on err, return a zero aggregate (early return) |
+| `x is some` / `x is ok` in `if` | flow typing: the branch narrows `x` to a pointer at its payload field, matching the type checker |
 | `x.value` under `is ok` | `extract_value` the payload |
 | record field access | `extract_value` (records are by-value structs) |
 | record construction | `insert_value` into a zero struct, in field order |
@@ -137,6 +139,7 @@ so the runtime never observes an error value here.
 - `task`, `async`/`await`, `chan`/`send`/`recv`, `for`, `loop` — Phase 6
   (concurrency runtime), no IR lowering here.
 - `extern`/`Ptr`/`transfer`, shared-library output, `xz bind` — Phase 5 (FFI).
+- `for`/`loop`/`break`/`continue` — Phase 6 (concurrency runtime), no IR lowering here.
 - Generic function instantiation (`max[T: Ordered]`, `Point[T]`) — the front
   end typechecks them, but Phase 4 lowers only *concrete* function signatures.
   A generic call is not yet code-generated.
