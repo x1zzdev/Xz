@@ -154,6 +154,7 @@ impl TypeChecker {
 
     fn predeclare_stdlib(&mut self) {
         self.funcs.insert("print".to_string(), (vec![Kind::Str], Some(Kind::Unit), vec![]));
+        self.funcs.insert("approx_sqrt".to_string(), (vec![Kind::Float], Some(Kind::Float), vec![]));
     }
 
     fn from_ast(&mut self, ty: &crate::ast::Type) -> Kind {
@@ -730,9 +731,32 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                 result_ty
             }
             Expr::If(ifx) => {
-                let _ = self.check_expr(&ifx.cond, env);
-                let _ = self.check_block(&ifx.then_block, env);
-                // cond etc ignored for type
+                let cond_ty = self.check_expr(&ifx.cond, env);
+                let _ = cond_ty;
+                // flow typing: a positive test narrows the bound name inside
+                // the then-branch; the else branch is the complement.
+                let pos_narrow = extract_narrowing(&ifx.cond);
+                let mut then_env = env.clone();
+                apply_narrowing(&mut then_env, &pos_narrow);
+                let _ = self.check_block(&ifx.then_block, &mut then_env);
+                match &ifx.elif {
+                    Some((c, b)) => {
+                        let _ = self.check_expr(c, env);
+                        let mut s = env.clone();
+                        let n = extract_narrowing(c);
+                        apply_narrowing(&mut s, &n);
+                        let _ = self.check_block(b, &mut s);
+                    }
+                    None => {}
+                }
+                match &ifx.else_block {
+                    Some(b) => {
+                        let mut s = env.clone();
+                        apply_complement(&mut s, &pos_narrow);
+                        let _ = self.check_block(b, &mut s);
+                    }
+                    None => {}
+                }
                 Kind::Unknown
             }
             Expr::Loop(b) => {
@@ -875,6 +899,96 @@ fn typevar_index(k: &Kind) -> Option<usize> {
     match k {
         Kind::TypeVar(i) => Some(*i),
         _ => None,
+    }
+}
+
+/// What a positive `is` test narrows to, for flow typing inside `if`/`elif`.
+enum NarrowKind {
+    Some,      // x is some  -> Option[T] narrows to T
+    None,      // x is none  -> narrows to "absent" (no value type)
+    Ok,        // x is ok    -> Result[T,E] narrows to T
+    Err,       // x is err   -> narrows to "error" (payload unused)
+}
+
+/// If `cond` is `NAME is some|none|ok|err`, return (name, narrowing).
+fn extract_narrowing(cond: &Expr) -> Option<(String, NarrowKind)> {
+    match cond {
+        Expr::Binary(op, a, b) => {
+            let _ = b;
+            match &**a {
+                Expr::Name(n) => {
+                    if op == &BinOp::IsSome {
+                        Some((n.clone(), NarrowKind::Some))
+                    } else if op == &BinOp::IsNone {
+                        Some((n.clone(), NarrowKind::None))
+                    } else if op == &BinOp::IsOk {
+                        Some((n.clone(), NarrowKind::Ok))
+                    } else if op == &BinOp::IsErr {
+                        Some((n.clone(), NarrowKind::Err))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Apply a positive narrowing: bind `name` to its unwrapped type.
+fn apply_narrowing(env: &mut HashMap<String, Kind>, narrow: &Option<(String, NarrowKind)>) {
+    match narrow {
+        Some((name, kind)) => {
+            match env.get(name) {
+                Some(ty) => {
+                    match kind {
+                        NarrowKind::Some => {
+                            match ty {
+                                Kind::Option(inner) => { let _ = env.insert(name.clone(), (**inner).clone()); }
+                                _ => {}
+                            }
+                        }
+                        NarrowKind::Ok => {
+                            match ty {
+                                Kind::Result(t, _) => { let _ = env.insert(name.clone(), (**t).clone()); }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                None => {}
+            }
+        }
+        None => {}
+    }
+}
+
+/// The else branch sees the complement: `is none` / `is err` narrow the name
+/// to the absent case (an empty type is not expressible, so we leave it).
+fn apply_complement(env: &mut HashMap<String, Kind>, narrow: &Option<(String, NarrowKind)>) {
+    match narrow {
+        Some((name, kind)) => {
+            match kind {
+                NarrowKind::None | NarrowKind::Err => {
+                    // x is none / x is err: in the else branch x has a value;
+                    // narrow Option/Result to the payload.
+                    match env.get(name) {
+                        Some(ty) => {
+                            match ty {
+                                Kind::Option(inner) => { let _ = env.insert(name.clone(), (**inner).clone()); }
+                                Kind::Result(t, _) => { let _ = env.insert(name.clone(), (**t).clone()); }
+                                _ => {}
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        None => {}
     }
 }
 
