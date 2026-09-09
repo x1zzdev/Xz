@@ -1,5 +1,5 @@
 use crate::ast::{Program, Item, FuncDecl, TaskDecl, ChanDecl, ExternDecl, RecordDecl, EnumDecl};
-use crate::ast::{Param, Field, Variant, Contract, Block, Stmt, Decl, Assign, AssignTarget, AssignOp};
+use crate::ast::{Param, Field, Variant, TypeParam, Contract, Block, Stmt, Decl, Assign, AssignTarget, AssignOp};
 use crate::ast::{DocComment, DocClaim, Type, Expr, IfExpr, Pattern, UnaryOp, BinOp, PropKind};
 use crate::token::{TokKind, Token, Span, DocTag};
 
@@ -171,6 +171,7 @@ let mut trusted = false;
         let is_async = self.eat(TokKind::Async).is_some();
         self.expect(TokKind::Func, String::from("'func'")).unwrap();
         let name_tok = self.expect_ident().unwrap();
+        let type_params = self.type_params().unwrap();
         self.expect(TokKind::LParen, String::from("'('")).unwrap();
         let params = self.params().unwrap();
         self.expect(TokKind::RParen, String::from("')'")).unwrap();
@@ -187,7 +188,29 @@ let mut trusted = false;
         } else {
             None
         };
-        Ok(FuncDecl { is_async: is_async, name: name_tok.text.clone(), params: params, ret: ret, contracts: contracts, body: body, doc: doc, span: name_tok.span })
+        Ok(FuncDecl { is_async: is_async, name: name_tok.text.clone(), type_params: type_params, params: params, ret: ret, contracts: contracts, body: body, doc: doc, span: name_tok.span })
+    }
+
+    fn type_params(&mut self) -> Result<Vec<TypeParam>, ParseError> {
+        let mut out: Vec<TypeParam> = vec![];
+        if !self.at(TokKind::LBracket) {
+            return Ok(out);
+        }
+        self.i += 1;
+        loop {
+            let name_tok = self.expect_ident().unwrap();
+            let mut constraint: Option<String> = None;
+            if self.eat(TokKind::Colon).is_some() {
+                let c_tok = self.expect_ident().unwrap();
+                constraint = Some(c_tok.text.clone());
+            }
+            out.push(TypeParam { name: name_tok.text.clone(), constraint: constraint, span: name_tok.span });
+            if !self.eat(TokKind::Comma).is_some() {
+                break;
+            }
+        }
+        self.expect(TokKind::RBracket, String::from("']'")).unwrap();
+        Ok(out)
     }
 
     fn task_decl(&mut self, docs: Vec<DocClaim>) -> Result<TaskDecl, ParseError> {
@@ -223,6 +246,7 @@ let mut trusted = false;
         self.expect(TokKind::Extern, String::from("'extern'")).unwrap();
         self.expect(TokKind::Func, String::from("'func'")).unwrap();
         let name_tok = self.expect_ident().unwrap();
+        let type_params = self.type_params().unwrap();
         self.expect(TokKind::LParen, String::from("'('")).unwrap();
         let params = self.params().unwrap();
         self.expect(TokKind::RParen, String::from("')'")).unwrap();
@@ -232,7 +256,7 @@ let mut trusted = false;
         } else {
             None
         };
-        Ok(ExternDecl { name: name_tok.text.clone(), params: params, ret: ret, span: start })
+        Ok(ExternDecl { name: name_tok.text.clone(), type_params: type_params, params: params, ret: ret, span: start })
     }
 
     fn record_decl(&mut self) -> Result<RecordDecl, ParseError> {

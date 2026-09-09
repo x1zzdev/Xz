@@ -19,11 +19,19 @@ pub enum Item {
 pub struct FuncDecl {
     pub is_async: bool,
     pub name: String,
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub ret: Option<Type>,
     pub contracts: Vec<Contract>,
     pub body: Block,
     pub doc: Option<DocComment>,
+    pub span: Span,
+}
+
+#[derive(Clone)]
+pub struct TypeParam {
+    pub name: String,
+    pub constraint: Option<String>,
     pub span: Span,
 }
 
@@ -45,6 +53,7 @@ pub struct ChanDecl {
 #[derive(Clone)]
 pub struct ExternDecl {
     pub name: String,
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub ret: Option<Type>,
     pub span: Span,

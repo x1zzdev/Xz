@@ -39,12 +39,14 @@ pub struct TypeChecker {
     variants: HashMap<String, (String, Vec<Kind>)>,
     /// enum name -> variant names (for exhaustiveness)
     enum_variants: HashMap<String, Vec<String>>,
-    /// function signatures: name -> (params, ret)
-    funcs: HashMap<String, (Vec<Kind>, Option<Kind>)>,
+    /// function signatures: name -> (params, ret, type-parameter list)
+    funcs: HashMap<String, (Vec<Kind>, Option<Kind>, Vec<Kind>)>,
     /// record constructor -> field types in order
     record_ctors: HashMap<String, Vec<Kind>>,
     /// channels: name -> payload type
     chans: HashMap<String, Kind>,
+    /// type parameters in scope while from_ast is called (for generic sigs)
+    cur_tparams: Vec<String>,
     errors: Vec<TypeError>,
 }
 
@@ -57,6 +59,7 @@ pub fn typecheck(program: &Program) -> Result<(), Vec<TypeError>> {
         funcs: HashMap::new(),
         record_ctors: HashMap::new(),
         chans: HashMap::new(),
+        cur_tparams: vec![],
         errors: vec![],
     };
     tc.build_world(program);
@@ -117,14 +120,18 @@ impl TypeChecker {
         for item in &program.items {
             match item {
                 Item::Func(f) => {
+                    self.cur_tparams = f.type_params.iter().map(|tp| tp.name.clone()).collect();
                     let param_tys: Vec<Kind> = f.params.iter().map(|p| self.from_ast(&p.ty)).collect();
                     let ret_ty: Option<Kind> = match &f.ret { Some(t) => Some(self.from_ast(t)), None => None };
-                    self.funcs.insert(f.name.clone(), (param_tys, ret_ty));
+                    let tvs: Vec<Kind> = f.type_params.iter().enumerate().map(|(i, _)| Kind::TypeVar(i)).collect();
+                    self.funcs.insert(f.name.clone(), (param_tys, ret_ty, tvs));
                 }
                 Item::Extern(e) => {
+                    self.cur_tparams = e.type_params.iter().map(|tp| tp.name.clone()).collect();
                     let param_tys: Vec<Kind> = e.params.iter().map(|p| self.from_ast(&p.ty)).collect();
                     let ret_ty: Option<Kind> = match &e.ret { Some(t) => Some(self.from_ast(t)), None => None };
-                    self.funcs.insert(e.name.clone(), (param_tys, ret_ty));
+                    let tvs: Vec<Kind> = e.type_params.iter().enumerate().map(|(i, _)| Kind::TypeVar(i)).collect();
+                    self.funcs.insert(e.name.clone(), (param_tys, ret_ty, tvs));
                 }
                 Item::Chan(c) => {
                     let payload = self.from_ast(&c.payload);
@@ -137,7 +144,7 @@ impl TypeChecker {
     }
 
     fn predeclare_stdlib(&mut self) {
-        self.funcs.insert("print".to_string(), (vec![Kind::Str], Some(Kind::Unit)));
+        self.funcs.insert("print".to_string(), (vec![Kind::Str], Some(Kind::Unit), vec![]));
     }
 
     fn from_ast(&mut self, ty: &crate::ast::Type) -> Kind {
@@ -183,6 +190,12 @@ impl TypeChecker {
             }
             "Err" => Kind::Err,
             _ => {
+                // type parameter in scope (generic signature/body)
+                for (i, tp) in self.cur_tparams.iter().enumerate() {
+                    if *tp == *name {
+                        return Kind::TypeVar(i);
+                    }
+                }
                 // record/enum/error type by name
                 match self.decls.get(name) {
                     Some(t) => return t.clone(),
@@ -201,15 +214,14 @@ impl TypeChecker {
         for item in &program.items {
             match item {
 Item::Func(f) => {
-                    let param_tys: Vec<Kind> = f.params.iter().map(|p| self.from_ast(&p.ty)).collect();
+                    self.cur_tparams = f.type_params.iter().map(|tp| tp.name.clone()).collect();
                     let ret_ty: Option<Kind> = match &f.ret { Some(t) => Some(self.from_ast(t)), None => None };
-                    self.funcs.insert(f.name.clone(), (param_tys.clone(), ret_ty.clone()));
                     let mut env: HashMap<String, Kind> = HashMap::new();
                     for p in &f.params {
                         env.insert(p.name.clone(), self.from_ast(&p.ty));
                     }
                     self.seed_env(&mut env);
-                    self.check_contracts(&f.contracts, &mut env, ret_ty.clone());
+                    self.check_contracts(&f.contracts, &mut env, ret_ty);
                     self.check_block(&f.body, &mut env);
                     
                 }
@@ -279,7 +291,7 @@ Item::Func(f) => {
         if self.variants.contains_key(n) {
             return Kind::Enum("".to_string());
         }
-        if let Some(ret) = self.funcs.get(n).and_then(|(_, r)| r.clone()) {
+        if let Some(ret) = self.funcs.get(n).and_then(|(_, r, _)| r.clone()) {
             return ret;
         }
         Kind::Unknown
@@ -450,20 +462,28 @@ Item::Func(f) => {
                         }
                         // regular function call
                         match self.funcs.get(n).cloned() {
-                            Some((params, ret)) => {
+                            Some((params, ret, _tvs)) => {
                                 if args.len() != params.len() {
                                     self.error(format!("function '{}' expects {} args, got {}", n, params.len(), args.len()), "".to_string());
                                 }
+                                // infer type arguments from the argument list:
+                                // wherever a parameter is TypeVar(i), bind it to the arg's type
+                                let mut bindings: Vec<Option<Kind>> = vec![];
                                 for (i, a) in args.iter().enumerate() {
                                     let at = self.check_expr(a, env);
                                     if i < params.len() {
-                                        if !self.accepts(&at, &params[i]) {
+                                        if let Kind::TypeVar(ti) = &params[i] {
+                                            while bindings.len() <= *ti {
+                                                bindings.push(None);
+                                            }
+                                            bindings[*ti] = Some(at.clone());
+                                        } else if !self.accepts(&at, &params[i]) {
                                             self.error(format!("argument {} to '{}' type mismatch", i, n), "".to_string());
                                         }
                                     }
                                 }
                                 match ret {
-                                    Some(t) => t.clone(),
+                                    Some(t) => subst(&t, &bindings),
                                     None => Kind::Unit,
                                 }
                             }
@@ -767,3 +787,26 @@ fn method_type(receiver: &Kind, method: &str) -> Option<Kind> {
     None
 }
 
+
+/// Substitute type-parameter bindings into a type (generic instantiation).
+/// TypeVar(i) with an unbound slot stays a fresh TypeVar (parametric).
+fn subst(ty: &Kind, bindings: &Vec<Option<Kind>>) -> Kind {
+    match ty {
+        Kind::TypeVar(i) => {
+            if *i < bindings.len() {
+                match &bindings[*i] {
+                    Some(t) => return t.clone(),
+                    None => {}
+                }
+            }
+            Kind::TypeVar(*i)
+        }
+        Kind::Option(inner) => Kind::Option(Box::new(subst(inner, bindings))),
+        Kind::Result(t, e) => Kind::Result(Box::new(subst(t, bindings)), Box::new(subst(e, bindings))),
+        Kind::Chan(inner) => Kind::Chan(Box::new(subst(inner, bindings))),
+        Kind::Record(_) | Kind::Enum(_) => ty.clone(),
+        Kind::Bool | Kind::Int | Kind::Usize | Kind::Float | Kind::Char
+        | Kind::Str | Kind::Bytes | Kind::Unit | Kind::Ptr | Kind::Err
+        | Kind::Unknown | Kind::Never => ty.clone(),
+    }
+}
