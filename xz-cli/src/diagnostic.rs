@@ -36,6 +36,12 @@ pub struct Span {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct Suggestion {
+    pub fix: String,
+    pub confidence: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Diagnostic {
     pub version: u32,
     pub severity: Severity,
@@ -43,6 +49,7 @@ pub struct Diagnostic {
     pub message: String,
     pub category: Category,
     pub span: Span,
+    pub suggestion: Option<Suggestion>,
 }
 
 pub fn json_escape(s: &str) -> String {
@@ -84,10 +91,20 @@ impl Diagnostic {
             Category::Type => "type".to_string(),
             Category::Intent => "intent".to_string(),
         };
-        format!(
+        let base = format!(
             "{{\"version\":{},\"severity\":\"{sev}\",\"code\":\"{}\",\"message\":\"{}\",\"category\":\"{cat}\",\"span\":{}}}",
             self.version, self.code, json_escape(&self.message), self.span.to_json()
-        )
+        );
+        match &self.suggestion {
+            Some(s) => {
+                let head = String::from(&base[..base.len() - 1]);
+                format!(
+                    "{}, \"suggestion\":{{\"fix\":\"{}\",\"confidence\":{}}}",
+                    head, json_escape(&s.fix), s.confidence
+                ) + "}"
+            }
+            None => base,
+        }
     }
 }
 

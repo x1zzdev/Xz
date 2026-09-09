@@ -207,6 +207,7 @@ fn json_emits_spec_shape() {
         message: "declared @effects 'none' does not match derived effects 'io' on 'f'".to_string(),
         category: Category::Intent,
         span: xz_cli::diagnostic::Span { file: "a.xz".to_string(), start: (4, 6), end: (4, 7) },
+        suggestion: Some(xz_cli::diagnostic::Suggestion { fix: "extend @effects to 'io'".to_string(), confidence: 0.9 }),
     };
     let arr = to_json_array(&vec![d]);
     if !arr.contains("\"version\":1") {
@@ -227,6 +228,10 @@ fn json_emits_spec_shape() {
     }
     if !arr.contains("\"file\":\"a.xz\"") || !arr.contains("\"start\":[4,6]") {
         println!("FAIL json: malformed span");
+        return;
+    }
+    if !arr.contains("\"suggestion\":{\"fix\":\"extend @effects to 'io'\",\"confidence\":0.9") {
+        println!("FAIL json: missing suggestion");
         return;
     }
 }

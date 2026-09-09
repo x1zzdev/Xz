@@ -85,6 +85,7 @@ fn run_check(tokens: Vec<Token>, strict: bool, json: bool) {
                 message: e.message.clone(),
                 category: Category::Parse,
                 span: dspan(e.span),
+                suggestion: None,
             });
         }
         Ok(program) => {
@@ -98,6 +99,7 @@ fn run_check(tokens: Vec<Token>, strict: bool, json: bool) {
                             message: err.message.clone(),
                             category: Category::Resolve,
                             span: dspan(err.span),
+                            suggestion: None,
                         });
                     }
                 }
@@ -112,6 +114,7 @@ fn run_check(tokens: Vec<Token>, strict: bool, json: bool) {
                                     message: err.message.clone(),
                                     category: Category::Type,
                                     span: DSpan { file: err.file.clone(), start: (0, 0), end: (0, 0) },
+                                    suggestion: None,
                                 });
                             }
                         }
@@ -120,6 +123,10 @@ fn run_check(tokens: Vec<Token>, strict: bool, json: bool) {
                             match intent {
                                 Err(errors) => {
                                     for err in errors {
+                                        let suggestion: Option<xz_cli::diagnostic::Suggestion> = match &err.suggestion {
+                                            Some(s) => Some(xz_cli::diagnostic::Suggestion { fix: s.fix.clone(), confidence: s.confidence }),
+                                            None => None,
+                                        };
                                         diags.push(Diagnostic {
                                             version: 1,
                                             severity: Severity::Error,
@@ -127,6 +134,7 @@ fn run_check(tokens: Vec<Token>, strict: bool, json: bool) {
                                             message: err.message.clone(),
                                             category: Category::Intent,
                                             span: dspan(err.span),
+                                            suggestion: suggestion,
                                         });
                                     }
                                 }

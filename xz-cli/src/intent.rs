@@ -8,6 +8,12 @@ pub struct IntentError {
     pub code: String,
     pub message: String,
     pub span: Span,
+    pub suggestion: Option<IntentSuggestion>,
+}
+
+pub struct IntentSuggestion {
+    pub fix: String,
+    pub confidence: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -91,7 +97,16 @@ impl IntentChecker {
     }
 
     fn error(&mut self, code: &str, message: String, span: Span) {
-        self.errors.push(IntentError { code: code.to_string(), message: message, span: span });
+        self.errors.push(IntentError { code: code.to_string(), message: message, span: span, suggestion: None });
+    }
+
+    fn error_suggest(&mut self, code: &str, message: String, span: Span, fix: String, confidence: f64) {
+        self.errors.push(IntentError {
+            code: code.to_string(),
+            message: message,
+            span: span,
+            suggestion: Some(IntentSuggestion { fix: fix, confidence: confidence }),
+        });
     }
 
     fn check_task(&mut self, t: &ast::TaskDecl) {
@@ -165,7 +180,12 @@ impl IntentChecker {
         if dl != dd {
             let d_str = if dd.len() == 0 { "none".to_string() } else { dd.join(",") };
             let p_str = if dl.len() == 0 { "none".to_string() } else { dl.join(",") };
-            self.error("I0020", format!("declared @effects '{p_str}' does not match derived effects '{d_str}' on '{name}'"), span);
+            let fix = if dd.len() > dl.len() {
+                format!("extend @effects on '{}' to include '{}'", name, d_str)
+            } else {
+                format!("narrow @effects on '{}' to '{}' (or remove the effect)", name, d_str)
+            };
+            self.error_suggest("I0020", format!("declared @effects '{p_str}' does not match derived effects '{d_str}' on '{name}'"), span, fix, 0.9);
         }
     }
 }
