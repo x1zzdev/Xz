@@ -2,10 +2,18 @@
 name = "xz-cli"
 version = "0.1.0"
 edition = "2024"
-description = "Xz language compiler CLI (Phase 1: front end)"
+description = "Xz language compiler CLI (Phase 1-4: front end + LLVM backend)"
 
 [[bin]]
 name = "xz"
 path = "src/main.rs"
 
 [dependencies]
+inkwell = "0.10.0"
+
+# LLVM 17 feature selection. See .cargo/config.toml (env pinning) and
+# docs/13-codegen.md for how LLVM_SYS_170_PREFIX / LIBRARY_PATH are set.
+[features]
+default = ["llvm17-0", "llvm17-0-prefer-dynamic"]
+llvm17-0 = ["inkwell/llvm17-0"]
+llvm17-0-prefer-dynamic = ["inkwell/llvm17-0-prefer-dynamic"]

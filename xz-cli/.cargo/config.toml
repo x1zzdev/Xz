@@ -1,0 +1,13 @@
+# Local, machine-specific build configuration for the portable LLVM 17 toolchain.
+#
+# These paths are environment-specific (no root, home-directory portable LLVM).
+# They are pinned here so `cargo build`/`cargo test`/`xz run` in this directory
+# work without exporting anything by hand. Adjust the two paths if the portable
+# LLVM lives elsewhere on another machine (see scripts/setup-llvm.sh).
+[env]
+LLVM_SYS_170_PREFIX = { value = "/home/x1zz/.local/share/xz-llvm17/debroot/usr/lib/llvm-17", force = true }
+LIBRARY_PATH = { value = "/home/x1zz/.local/share/xz-llvm17/debroot/usr/lib/x86_64-linux-gnu", force = true }
+
+# Keeps inkwell/llvm-sys from spawning too many jobs and running low on memory.
+[build]
+jobs = 2
