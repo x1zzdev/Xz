@@ -295,7 +295,10 @@ impl Lexer {
             }
         }
         if is_float {
-            let value = digits.parse::<f64>().unwrap();
+            // Parse the full literal (mantissa + fraction + exponent), not the
+            // concatenated digit runs (which would turn `5.0` into `50`).
+            let clean: String = text.chars().filter(|c| *c != '_').collect();
+            let value = clean.parse::<f64>().unwrap();
             self.push(TokKind::Float(value), start, text);
         } else {
             let value = digits.parse::<u64>().unwrap();
