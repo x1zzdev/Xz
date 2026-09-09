@@ -293,6 +293,79 @@ func main() {
 }
 
 #[test]
+fn prop_acceptance_rule() {
+    // exact channel: ok
+    expect_ok(
+        r#"record NetError { message: Str }
+
+/// Reads.
+/// @intent  Returns a string.
+/// @effects none
+func read() -> Result[Str, NetError] {
+    err(NetError("nope"))
+}
+
+/// Wraps read.
+/// @intent  Propagates.
+/// @effects none
+func wrap() -> Result[Str, NetError] {
+    let s = read()?
+    ok(s)
+}"#,
+        "? exact error channel",
+    );
+    // union member: ok
+    expect_ok(
+        r#"record NetError { message: Str }
+record CfgError { message: Str }
+
+/// Reads.
+/// @intent  Returns a string.
+/// @effects none
+func read() -> Result[Str, NetError] {
+    err(NetError("nope"))
+}
+
+/// Wraps read.
+/// @intent  Propagates.
+/// @effects none
+func wrap() -> Result[Str, NetError | CfgError] {
+    let s = read()?
+    ok(s)
+}"#,
+        "? union member",
+    );
+    // mismatched: rejected
+    let err = check_source(
+        r#"record NetError { message: Str }
+record CfgError { message: Str }
+
+/// Reads.
+/// @intent  Returns a string.
+/// @effects none
+func read() -> Result[Str, NetError] {
+    err(NetError("nope"))
+}
+
+/// Wraps read.
+/// @intent  Propagates.
+/// @effects none
+func wrap() -> Result[Str, CfgError] {
+    let s = read()?
+    ok(s)
+}"#,
+    );
+    match err {
+        Some(e) => {
+            if !e.contains("cannot propagate") {
+                println!("FAIL prop_acceptance: unexpected error {}", e);
+            }
+        }
+        None => println!("FAIL prop_acceptance: allowed NetError via ? into CfgError channel"),
+    }
+}
+
+#[test]
 fn json_emits_spec_shape() {
     // build one diagnostic and verify the JSON carries the spec fields
     let d = Diagnostic {
