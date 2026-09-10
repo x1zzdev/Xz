@@ -45,6 +45,9 @@ and `xz run` work on the example programs. Phases 5–8 are not yet implemented.
 - [x] Example programs execute: `hello.xz`, `contracts.xz`
 - [x] LLVM optimization pipeline on the JIT path (O3 + `globaldce`; program
   functions internal so DCE drops the dead ones — see [13-codegen.md](13-codegen.md))
+- [x] Conservative Str buffer reclamation (registry-guarded `xz_str_free`;
+  unique-owned bindings freed at overwrite/exit, aliases leak — see
+  [13-codegen.md](13-codegen.md))
 - [ ] Native binary output
 - [ ] JSON diagnostics emission
 

@@ -18,17 +18,50 @@ pub struct Codegen<'b, 'ctx> {
     pub backend: &'b mut LlvmBackend<'ctx>,
     /// name -> (alloca, its LLVM type) for loads and assignments
     pub scope: HashMap<String, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
-    /// the enclosing function's declared return kind (for ok/err payloads)
+    /// the enclosing function's declared return type (for ok/err payloads)
     pub ret_kind: Option<Kind>,
     /// the enclosing function's LLVM return type; None for void (Unit)
     pub ret_llvm: Option<BasicTypeEnum<'ctx>>,
     str_count: usize,
-    /// while evaluating a `let x: Option[T] = none`, the declared kind, so the
+    /// while evaluating a `let name: Option[T] = none`, the declared kind, so the
     /// `none` literal can materialize a zero of that Option's struct
     none_hint: Option<Kind>,
+    /// name -> owns a heap-allocated Str buffer, meaning this binding is the
+    /// only reference to it (safe to free on overwrite / scope exit). A value
+    /// is recorded here only when it was produced by concat/to_str in this
+    /// function and has not been copied since. Absence means "static or
+    /// shared — never free" (see docs/13-codegen.md § Str memory).
+    owns: HashMap<String, bool>,
+    /// true when the enclosing function can escape Str storage through its
+    /// return value (return type is or contains Str). Under that rule the
+    /// function's Str bindings are never released at exit — conservative leak
+    /// that keeps every returned buffer alive for the caller.
+    leak_strs: bool,
 }
 
 type GenResult<'ctx> = Result<BasicValueEnum<'ctx>, String>;
+
+/// `true` when `k` is or transitively contains a `Str`/`Bytes`. A function
+/// whose return type is, or contains, Str can escape an owned buffer through
+/// its return value, so its Str bindings are never freed at exit (the caller
+/// owns them — conservative leak that keeps the contract sound).
+fn kind_contains_str(k: &Kind, backend: &LlvmBackend<'_>) -> bool {
+    match k {
+        Kind::Str | Kind::Bytes => true,
+        Kind::Option(t) | Kind::Result(t, _) => kind_contains_str(t, backend),
+        Kind::Record(name) => backend
+            .record_fields
+            .get(name)
+            .map(|fs| fs.iter().any(|f| kind_contains_str(f, backend)))
+            .unwrap_or(false),
+        Kind::Enum(name) => backend
+            .variants
+            .values()
+            .any(|(en, _, fields)| en == name && fields.iter().any(|f| kind_contains_str(f, backend))),
+        Kind::ErrUnion(members) => members.iter().any(|m| kind_contains_str(m, backend)),
+        _ => false,
+    }
+}
 
 impl<'b, 'ctx> Codegen<'b, 'ctx> {
     fn fail<T>(&mut self, msg: &str) -> Result<T, String> {
@@ -153,6 +186,184 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         (ptr, len)
     }
 
+    /// Emit `xz_str_free(ptr, len)` for a Str value. The runtime no-ops for
+    /// literals and already-freed buffers, so the only unsound use is freeing
+    /// a *shared* heap buffer (see adopt_ownership / free_owned_bindings).
+    fn emit_str_free(&mut self, v: BasicValueEnum<'ctx>) {
+        if !self.is_str(v) {
+            return;
+        }
+        let (p, l) = self.str_parts(v);
+        if let Some(f) = self.backend.module.get_function("xz_str_free") {
+            let _ = self
+                .backend
+                .builder
+                .build_direct_call(f, &[p.into(), l.into()], "strfree")
+                .unwrap();
+        }
+    }
+
+    /// Is `e` an expression whose value is a *fresh* heap Str buffer that no
+    /// binding holds? Concat and scalar-to_str produce new buffers; `Str.to_str()`
+    /// is identity, so a Str-typed base means the result aliases the base (not
+    /// a fresh buffer). Used to recognize the "temp passed straight to a call"
+    /// pattern (e.g. `print(n.to_str())`) and to keep `print(s)` where `s` is a
+    /// live binding alive for its own scope-exit release.
+    fn is_fresh_temp(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Str(_) | Expr::RawStr(_) => false,
+            Expr::Binary(op, ..) if op == &ast::BinOp::Add => true,
+            Expr::Call(callee, _) => match &**callee {
+                Expr::Field(recv, m) if m == "to_str" => {
+                    if self.base_is_str(recv) {
+                        self.is_fresh_temp(recv)
+                    } else {
+                        true // scalar.to_str(): a new buffer
+                    }
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    fn base_is_str(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Str(_) | Expr::RawStr(_) => true,
+            Expr::Name(n) => matches!(self.scope.get(n), Some((_, ty)) if *ty == self.backend.types.xz_str.into()),
+            _ => false,
+        }
+    }
+
+    /// The binding a Str expression reads from, if any (a copy alias). Used to
+    /// downgrade the source binding's ownership when it is copied.
+    fn alias_source(&self, e: &Expr) -> Option<String> {
+        match e {
+            Expr::Name(n) => Some(n.clone()),
+            Expr::Call(callee, _) => match &**callee {
+                Expr::Field(recv, m) if m == "to_str" && self.base_is_str(recv) => self.alias_source(recv),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// After binding `name` to `v` (a Str), record whether it is a unique
+    /// heap-owning binding, and mark any existing binding it copied as no
+    /// longer (the buffer is now shared → never free).
+    fn adopt_ownership(&mut self, name: &str, init: &Expr) {
+        if let Some(base) = self.alias_source(init) {
+            self.owns.remove(&base);
+        }
+        if self.is_fresh_temp(init) {
+            self.owns.insert(name.to_string(), true);
+        } else {
+            self.owns.remove(name);
+        }
+    }
+
+    /// Mark every owned binding reachable through `e` (a Name, or nested in a
+    /// larger expression) as shared. Used when a Str value flows into an
+    /// aggregate or phi we do not track: the target may outlive this binding,
+    /// so the source buffer must not be freed underneath it.
+    fn degrade_str_expr(&mut self, e: &Expr) {
+        match e {
+            Expr::Name(n) => {
+                self.owns.remove(n);
+            }
+            Expr::Binary(_op, a, b) => {
+                self.degrade_str_expr(a);
+                self.degrade_str_expr(b);
+            }
+            Expr::Call(callee, args) => {
+                self.degrade_str_expr(callee);
+                for a in args {
+                    self.degrade_str_expr(a);
+                }
+            }
+            Expr::Field(base, _) => self.degrade_str_expr(base),
+            Expr::Prop(base, _) => self.degrade_str_expr(base),
+            Expr::Unary(_op, a) => self.degrade_str_expr(a),
+            Expr::Cast(a, _) => self.degrade_str_expr(a),
+            Expr::Some(a) => self.degrade_str_expr(a),
+            Expr::Ok(inner) => {
+                if let Some(a) = inner {
+                    self.degrade_str_expr(a);
+                }
+            }
+            Expr::If(ifx) => {
+                self.degrade_str_expr(&ifx.cond);
+                self.degrade_block(&ifx.then_block);
+                if let Some(b) = &ifx.else_block {
+                    self.degrade_block(b);
+                }
+                for (c, b) in &ifx.elif {
+                    self.degrade_str_expr(c);
+                    self.degrade_block(b);
+                }
+            }
+            Expr::Match(sub, arms) => {
+                self.degrade_str_expr(sub);
+                for (_p, b) in arms {
+                    self.degrade_str_expr(b);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn snapshot_owned(&self) -> std::collections::HashSet<String> {
+        self.owns.keys().cloned().collect()
+    }
+
+    /// Drop ownership of any binding that was *created inside* a conditional
+    /// arm. On other branch paths its alloca may be uninitialized, so freeing
+    /// it at a later function exit (or `?`) would read a garbage/poison buffer.
+    /// Such bindings leak instead (conservative but sound).
+    fn after_branch(&mut self, before: &std::collections::HashSet<String>) {
+        let cur: Vec<String> = self.owns.keys().cloned().collect();
+        for k in cur {
+            if !before.contains(&k) {
+                self.owns.remove(&k);
+            }
+        }
+    }
+
+    fn degrade_block(&mut self, b: &Block) {
+        for s in &b.stmts {
+            match s {
+                Stmt::Expr(e) => self.degrade_str_expr(e),
+                Stmt::Decl(d) => {
+                    if let Some(init) = &d.init {
+                        self.degrade_str_expr(init);
+                    }
+                }
+                Stmt::Assign(a) => self.degrade_str_expr(&a.value),
+                _ => {}
+            }
+        }
+    }
+
+    /// Free every Str binding this function frame uniquely owns (fresh heap
+    /// buffers that were never copied). Called just before each return path.
+    /// Bindings whose shared buffers were copied or that came from aliased
+    /// sources are deliberately left to leak (never freed).
+    fn free_owned_bindings(&mut self) {
+        if self.leak_strs {
+            return;
+        }
+        let owned: Vec<String> = self.owns.keys().cloned().collect();
+        for n in owned {
+            if let Some((ptr, ty)) = self.scope.get(&n).map(|(p, t)| (*p, *t)) {
+                if matches!(ty, BasicTypeEnum::StructType(st) if st == self.backend.types.xz_str) {
+                    let v = self.build_load(ty, ptr, &n);
+                    self.emit_str_free(v);
+                }
+            }
+        }
+        self.owns.clear();
+    }
+
     fn concat_str(&mut self, a: BasicValueEnum<'ctx>, b: BasicValueEnum<'ctx>) -> GenResult<'ctx> {
         let (ap, al) = self.str_parts(a);
         let (bp, bl) = self.str_parts(b);
@@ -220,6 +431,10 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                     },
                     Err(_) => {}
                 }
+                // Track Str ownership: a fresh buffer bound to `name` becomes
+                // this binding's, freed at scope exit; an alias downgrades the
+                // source binding so neither is freed.
+                self.adopt_ownership(&d.name, e);
             }
             None => {
                 // declared type, no initializer
@@ -246,7 +461,17 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                         Some((ptr, ty)) => {
                             let ptr = *ptr;
                             let ty = *ty;
+                            // Overwriting a binding that uniquely owns a heap
+                            // buffer with a *fresh* Str: free the old buffer.
+                            // If the new value is an alias (name/identity), the
+                            // binding is being shared, so keep the old one
+                            // alive (leak) rather than free underneath.
+                            if self.owns.contains_key(n) && self.is_fresh_temp(&a.value) {
+                                let old = self.build_load(ty, ptr, "old");
+                                self.emit_str_free(old);
+                            }
                             let _ = self.apply_assign_op(&a.op, ty, ptr, v);
+                            self.adopt_ownership(n, &a.value);
                         }
                         None => {
                             let _ = self.fail::<()>(&format!("unknown name '{}' in assignment", n));
@@ -334,6 +559,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 self.gen_err()
             }
             Expr::Some(a) => {
+                self.degrade_str_expr(a);
                 let v = self.gen_expr(a)?;
                 self.result_value(v, true)
             }
@@ -389,6 +615,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     fn gen_ok(&mut self, inner: &Option<Box<Expr>>) -> GenResult<'ctx> {
         match inner {
             Some(e) => {
+                self.degrade_str_expr(e);
                 let v = self.gen_expr(e)?;
                 self.result_value(v, true)
             }
@@ -429,6 +656,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         self.backend.builder.build_conditional_branch(ok, then_bb, err_bb).unwrap();
 
         self.backend.builder.position_at_end(err_bb);
+        self.free_owned_bindings();
         self.early_return()?;
         self.backend.builder.position_at_end(then_bb);
         let payload = self.backend.builder.build_extract_value(st, 0, "prop.val").unwrap();
@@ -617,6 +845,9 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     fn gen_named_call(&mut self, name: &str, args: &[Expr]) -> GenResult<'ctx> {
         // record constructor
         if let Some(st) = self.backend.record_types.get(name).copied() {
+            for a in args {
+                self.degrade_str_expr(a);
+            }
             let mut agg = st.const_zero();
             for (i, a) in args.iter().enumerate() {
                 let v = self.gen_expr(a)?;
@@ -660,6 +891,12 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 .builder
                 .build_direct_call(f, &[ptr.into(), len.into()], "print")
                 .unwrap();
+            // A fresh heap temp (concat/to_str result) passed directly to
+            // print is consumed here: free it right after the call. A name or
+            // literal is not a temp — the binding handles its own release.
+            if self.is_fresh_temp(&args[0]) {
+                self.emit_str_free(v);
+            }
             return Ok(self.backend.types.unit.const_zero().into());
         }
         // stdlib approx_sqrt -> host xz_sqrt (libm sqrt)
@@ -690,6 +927,9 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         let field_tys: Vec<BasicTypeEnum<'ctx>> = fields.iter().map(|k| self.backend.kind_to_llvm(k)).collect();
         let vt = self.backend.context.struct_type(&field_tys, false);
         let box_ptr = self.backend.builder.build_malloc(vt, &format!("{}.box", name)).unwrap();
+        for a in args {
+            self.degrade_str_expr(a);
+        }
         for (i, a) in args.iter().enumerate() {
             let v = self.gen_expr(a)?;
             let fptr = self.backend.builder.build_struct_gep(vt, box_ptr, i as u32, "fptr").unwrap();
@@ -864,17 +1104,20 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 let narrow = Self::extract_narrow(&ifx.cond);
 
                 // then
+                let pre_then = self.snapshot_owned();
                 self.backend.builder.position_at_end(then_bb);
                 let saved_then = match narrow.clone() {
                     Some((n, true)) => self.narrow_scope(n.as_str()),
                     _ => None,
                 };
                 let then_val = self.gen_block(&ifx.then_block);
+                self.after_branch(&pre_then);
                 self.restore_scope(saved_then);
                 let then_bb = self.backend.builder.get_insert_block().unwrap();
                 self.backend.builder.build_unconditional_branch(merge_bb).unwrap();
 
                 // else
+                let pre_else = self.snapshot_owned();
                 self.backend.builder.position_at_end(else_bb);
                 let saved_else = match narrow.clone() {
                     Some((n, false)) => self.narrow_scope(n.as_str()),
@@ -884,6 +1127,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                     Some(b) => self.gen_block(b),
                     None => None,
                 };
+                self.after_branch(&pre_else);
                 self.restore_scope(saved_else);
                 let else_bb = self.backend.builder.get_insert_block().unwrap();
                 self.backend.builder.build_unconditional_branch(merge_bb).unwrap();
@@ -892,6 +1136,13 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
 
                 match (then_val, else_val) {
                     (Some(t), Some(el)) => {
+                        // The phi merges both arm values: any owned Str buffer
+                        // the arms referenced is now potentially held by the
+                        // merge result too, so downgrade those bindings.
+                        self.degrade_block(&ifx.then_block);
+                        if let Some(b) = &ifx.else_block {
+                            self.degrade_block(b);
+                        }
                         let ty = self.basic_type_of(t);
                         let phi = self.backend.builder.build_phi(ty, "if.phi").unwrap();
                         phi.add_incoming(&[(&t, then_bb), (&el, else_bb)]);
@@ -934,8 +1185,11 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 self.backend.builder.build_conditional_branch(test, arm_bb, target).unwrap();
 
                 self.backend.builder.position_at_end(arm_bb);
+                let pre_arm = self.snapshot_owned();
                 self.bind_variant(subj, pat)?;
+                self.degrade_str_expr(body);
                 let v = self.gen_expr(body)?;
+                self.after_branch(&pre_arm);
                 if first_type.is_none() {
                     first_type = Some(self.basic_type_of(v));
                 }
@@ -953,8 +1207,11 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             } else {
                 // catch-all arm (Name / Wildcard / none)
                 self.backend.builder.position_at_end(dispatch);
+                let pre_arm = self.snapshot_owned();
                 self.bind_catchall(subj, pat);
+                self.degrade_str_expr(body);
                 let v = self.gen_expr(body)?;
+                self.after_branch(&pre_arm);
                 if first_type.is_none() {
                     first_type = Some(self.basic_type_of(v));
                 }
@@ -1061,6 +1318,7 @@ pub fn gen_function(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
     };
     let ret_kind = backend.sigs.get(&f.name).and_then(|s| s.xz_ret.clone());
     let ret_llvm = backend.sigs.get(&f.name).and_then(|s| s.ret);
+    let leak_strs = ret_kind.as_ref().map(|k| kind_contains_str(k, backend)).unwrap_or(false);
 
     let mut cg = Codegen {
         backend,
@@ -1069,6 +1327,8 @@ pub fn gen_function(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         ret_llvm,
         str_count: 0,
         none_hint: None,
+        owns: HashMap::new(),
+        leak_strs,
     };
     cg.gen_body_common(&f.name, fv, &f.params, &f.body);
 }
@@ -1081,6 +1341,7 @@ pub fn gen_main(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         None => return,
     };
     let ret_kind = f.ret.as_ref().map(|t| kind_from_ast(t, backend));
+    let leak_strs = ret_kind.as_ref().map(|k| kind_contains_str(k, backend)).unwrap_or(false);
     let mut cg = Codegen {
         backend,
         scope: HashMap::new(),
@@ -1088,6 +1349,8 @@ pub fn gen_main(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         ret_llvm: None,
         str_count: 0,
         none_hint: None,
+        owns: HashMap::new(),
+        leak_strs,
     };
     cg.gen_body_common(&f.name, fv, &f.params, &f.body);
 }
@@ -1112,6 +1375,10 @@ impl<'ctx> Codegen<'_, 'ctx> {
             }
         }
         let val = self.gen_block(body);
+        // Release any Str buffers this function's bindings uniquely own
+        // (unless the return type can escape Str storage, in which case the
+        // return value may alias a binding and those stay live for the caller).
+        self.free_owned_bindings();
         let ret_llvm = self.ret_llvm;
         match (ret_llvm, val) {
             (Some(_rt), Some(v)) => {

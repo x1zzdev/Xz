@@ -47,18 +47,35 @@ The backend therefore declares `main` with a **void** ABI regardless of its
 declared return, and `gen_main` uses a void return. Every other function gets
 its declared return type. `?` early-returns in `main` become `ret void`.
 
-## 4. `Str` as `{ i8*, i64 }` with process-lifetime buffers
+## 4. `Str` as `{ i8*, i64 }` with bounded reclamation
 
-`Str` maps to a two-word struct `{ ptr, len }`. The pointer must stay valid for
-the whole run, so:
+`Str` maps to a two-word struct `{ ptr, len }`.
 
 - string literals → module-level globals (`build_global_string_ptr`);
-- `to_str()` results and concatenations → **leaked heap buffers** in the host
-  (`std::alloc`), never freed;
+- `to_str()` results and concatenations → heap buffers in the host (`std::alloc`);
 - `Str.len()` → the byte length field (the stdlib says "character count";
   for the ASCII examples this is equal — documented limitation).
 
-There is no mutation of `Str` in Phase 4, so "never free" is sound.
+Memory is reclaimed **conservatively but soundly**:
+
+- Every host allocation is recorded in a global registry
+  (`LIVE_STR`). `xz_str_free(ptr, len)` deallocates **only** if `ptr` is still
+  in the registry, so freeing a literal, an unknown pointer, or an
+  already-freed buffer is a no-op. This makes the generated IR safe to be
+  sloppy: the registry is the backstop against double-frees.
+- Codegen marks a binding as the **unique owner** of a fresh buffer only when
+  the buffer was created by this function (`concat`, `to_str`) and never
+  copied. Unique owners are freed at overwrite and function exit.
+- Any copy or embed — `let y = x`, identity `x.to_str()`, a `Str` inside
+  `Option`/`Result`/record/enum, or a `Str` through an `if`/`match` phi —
+  *downgrades* the source to shared, so it leaks instead of being freed. This
+  is the sound trade: aliased buffers leak rather than risk a use-after-free.
+- A function whose return type **is or contains `Str`** never frees at exit
+  (the return value may alias a local buffer that must outlive the call).
+- Fresh temps passed directly into `print` are freed right after the call.
+
+`wasm`/native phases can take the next step: a per-frame arena (free the whole
+frame at exit) or real reference counting, once `Str` mutation/loops exist.
 
 ## 5. The C ABI for host functions
 

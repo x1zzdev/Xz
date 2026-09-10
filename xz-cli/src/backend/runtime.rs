@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+
 use inkwell::module::Module;
 use inkwell::OptimizationLevel;
 
@@ -10,13 +13,25 @@ pub struct XzStr {
     pub len: usize,
 }
 
+/// Every heap-allocated Str buffer that has not yet been freed, keyed by its
+/// byte pointer. `xz_str_free` only frees pointers in this registry, so the
+/// compiler can conservatively emit `xz_str_free` for any Str slot: freeing a
+/// string literal, an unknown-provenance pointer, or an already-freed buffer
+/// is a sound no-op. This is the runtime backstop for the compiler's
+/// conservative ownership rules (docs/13-codegen.md).
+static LIVE_STR: LazyLock<Mutex<HashMap<usize, usize>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
 fn copy_to_leaked(src: &[u8]) -> usize {
-    let layout = std::alloc::Layout::array::<u8>(src.len()).unwrap();
+    let len = src.len().max(1);
+    let layout = std::alloc::Layout::array::<u8>(len).unwrap();
     let dst = unsafe { std::alloc::alloc(layout) };
     for (i, b) in src.iter().enumerate() {
         unsafe { *((dst as usize + i) as *mut u8) = *b };
     }
-    dst as usize
+    let ptr = dst as usize;
+    let mut live = LIVE_STR.lock().unwrap();
+    live.insert(ptr, len);
+    ptr
 }
 
 fn write_stdout(ptr: usize, len: usize) {
@@ -73,6 +88,17 @@ extern "C" fn xz_char_to_str(v: i8) -> XzStr {
     XzStr { ptr: copy_to_leaked(&bytes), len: 1 }
 }
 
+/// Free a heap-allocated Str buffer. No-op unless the pointer is still live in
+/// the registry, so it is safe to call on literals or already-freed buffers.
+#[unsafe(no_mangle)]
+extern "C" fn xz_str_free(ptr: usize, _len: usize) {
+    let mut live = LIVE_STR.lock().unwrap();
+    if let Some(len) = live.remove(&ptr) {
+        let layout = std::alloc::Layout::array::<u8>(len).unwrap();
+        unsafe { std::alloc::dealloc(ptr as *mut u8, layout) };
+    }
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn xz_i64_abs(v: i64) -> i64 {
     v.abs()
@@ -110,6 +136,8 @@ pub fn run(module: Module) -> Result<i32, String> {
     let iabs: unsafe extern "C" fn(i64) -> i64 = xz_i64_abs;
     let fabs: unsafe extern "C" fn(f64) -> f64 = xz_f64_abs;
     let sqrt: unsafe extern "C" fn(f64) -> f64 = xz_sqrt;
+    let sfree: unsafe extern "C" fn(usize, usize) -> () = xz_str_free;
+    bind(&module, &ee, "xz_str_free", sfree as usize);
     bind(&module, &ee, "xz_print", p as usize);
     bind(&module, &ee, "xz_concat", c as usize);
     bind(&module, &ee, "xz_i64_to_str", i2s as usize);

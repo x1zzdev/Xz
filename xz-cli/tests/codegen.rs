@@ -212,6 +212,48 @@ fn scalar_to_str_runs() {
 }
 
 #[test]
+fn str_reclamation_runs_without_use_after_free() {
+    // Exercise the conservative Str reclamation rules: temp-through-print
+    // frees, alias downgrades, overwrite of an owned binding, `?` early
+    // return with a live buffer, and a Str-returning function (leak-safe).
+    // The runtime registry turns a mistaken double-free into a no-op, so the
+    // main failure mode (use-after-free) would crash the process.
+    expect_exec(
+        r#"/// Adds a marker around a value.
+/// @intent  Returns "[n]".
+/// @effects none
+func labeled(n: Int) -> Str {
+    "[" + n.to_str() + "]"
+}
+
+/// Always fails.
+/// @intent  Returns an error.
+/// @effects none
+func fail() -> Result[Int, Err] {
+    err(DomainError("boom"))
+}
+
+func main() -> Result[Unit, Err] {
+    let a = "x" + "y"
+    let b = a
+    print(a)
+    print(" ")
+    a = "z"
+    print(a)
+    print(" ")
+    print(b)
+    print(" ")
+    print(labeled(7))
+    print(" ")
+    let v = fail()?
+    print(v.to_str())
+    ok()
+}"#,
+        "str reclamation",
+    );
+}
+
+#[test]
 fn optimization_pipeline_inlines_and_dces() -> Result<(), String> {
     // The JIT path runs `llvm_backend::optimize` (default<O3>) before codegen.
     // After the pass pipeline the trivial `sq` helper must be inlined away (its

@@ -366,6 +366,8 @@ pub fn compile(program: &Program) -> Result<LlvmBackend<'static>, String> {
         let i1 = backend.types.bool;
         // print(ptr, len) -> void
         backend.declare_extern("xz_print", &[ptr.into(), i64.into()], None);
+        // str_free(ptr, len) -> void (registry-guarded; see runtime.rs)
+        backend.declare_extern("xz_str_free", &[ptr.into(), i64.into()], None);
         // concat(aptr, alen, bptr, blen) -> XzStr
         backend.declare_extern("xz_concat", &[ptr.into(), i64.into(), ptr.into(), i64.into()], Some(xstr.into()));
         // scalar -> XzStr

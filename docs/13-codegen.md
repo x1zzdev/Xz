@@ -77,21 +77,39 @@ system linker.
 | `xz_f64_to_str` | `fn(f64) -> XzStr` | `Float.to_str()` |
 | `xz_char_to_str` | `fn(i8) -> XzStr` | `Char.to_str()` |
 | `xz_bool_to_str` | `fn(i1) -> XzStr` | `Bool.to_str()` |
+| `xz_str_free` | `fn(i8*, i64) -> ()` | frees a heap Str buffer (registry-guarded) |
 | `xz_sqrt` | `fn(f64) -> f64` | `sqrt` → `libm sqrt` (contracts.xz) |
 
 `XzStr` is `#[repr(C)] { ptr: usize, len: usize }`. Each host `to_str` builds a
-`String`, copies its bytes into a leaked heap buffer, and returns
-`{ ptr, len }`. The returned memory is never freed (process-scoped, acceptable
-for `xz run`).
+`String`, copies its bytes into a heap buffer, and returns `{ ptr, len }`.
 
 ### Str ownership in codegen
 
-The front end treats `Str` as a value, but the backend needs *stable* byte
-memory across calls. The rule: **a `Str` value is a `{ ptr, len }` pair pointing
-at an immutable, process-lifetime buffer.** String literals are emitted as LLVM
-globals. `Int.to_str()` / `Float.to_str()` / concatenation allocate a fresh
-leaked buffer. Concatenation allocates once and copies both halves. There is no
-mutation of `Str` in Phase 4, so no free is needed.
+`Str` is a value, but the backend needs *stable* byte memory across calls. The
+rule: **a `Str` value is a `{ ptr, len }` pair pointing at an immutable
+buffer.** The kinds of buffer:
+
+- **Literal** — an LLVM global byte array; valid for the process lifetime.
+- **Fresh heap** — allocated by `xz_concat` / each to_str host function with
+  `std::alloc`; every allocation is recorded in a runtime registry.
+  `xz_str_free(ptr, len)` deallocates *only* if the pointer is still in the
+  registry — so calling it on a literal or an already-freed buffer is a no-op.
+- **Shared/unknown** — copies of another binding's buffer, values read from
+  records/aggregates, or the result of a user function call.
+
+The compiler tracks, per binding, the buffers it **uniquely owns** (fresh
+allocation that has not been copied). Only those are freed, and only at:
+- overwriting the binding (`x = fresh`);
+- function exit / `?` early return (unless the function's return type is or
+  contains `Str`, in which case the return value may alias a binding and the
+  buffer must outlive the call, so nothing is freed — conservative).
+
+A binding's ownership is *downgraded* (never freed) the moment the value is
+copied or embedded — `let y = x`, `let y = x.to_str()` (identity), a `Str`
+passed into `Option`/`Result`/record/enum construction, or any `Str` flowing
+through an `if`/`match` phi. This is conservative: shared buffers leak rather
+than risking a use-after-free. Fresh temps passed directly into `print` are
+freed right after the call. See also docs/14-codegen-notes.md § Str memory.
 
 ## Codegen rules (Expr → IR)
 
