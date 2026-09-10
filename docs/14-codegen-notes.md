@@ -110,7 +110,7 @@ fields by GEP; `match` branches on the tag and re-derives the fields from the
 box. Boxing keeps variant payloads uniformly sized so the enum is a value
 type that can be passed/returned by value, matching the docs' value semantics.
 
-## 7. Codegen is untyped — it dispatches on LLVM value types
+## 7. Codegen is untyped — and its type dispatch is compile-time
 
 The AST carries no types (they live in the type checker). Codegen decides what
 to do by inspecting each value's LLVM type: `i64`/`i1`/`i8`/`double`/struct,
@@ -118,13 +118,40 @@ and distinguishes a record (named struct) from `Result`/`Option` (anonymous
 struct) by the struct's name. This keeps the backend a mechanical lowering
 without re-typing the program.
 
-## 8. Result/Option as `{ payload, i1 }`
+Two clarifications matter for review:
+
+- **The dispatch is `compile-time`.** `is_str(a)`, `is_float(a)`, `is_struct(a)`
+  and the `to_str` host-function pick by bit width are Rust `match` on
+  `v.get_type()` — they run in the *compiler*, never at runtime. LLVM sees one
+  statically chosen lowering per construct; there is no runtime tag test. A
+  review reading these as "분기 at codegen" is correct, but as "runtime
+  branches" it is not: the emitted IR has no such conditional.
+- **IR quality in the cases that do re-derive types is fixed by the
+  optimizer.** `kind_to_llvm`/`is_str` re-derive a type from the zero-initialized
+  struct each time; the O3 pipeline (Unit 1) folds those into constants. The
+  single maintainability trade-off — the backend re-derives types instead of
+  carrying `Kind` through — is deliberate: it keeps the lowering purely
+  mechanical, and re-typing the AST is a refactor without runtime benefit.
+
+## 8. Result/Option as `{ payload, i1 }`, and the padding decision
 
 `Result[T, E]` and `Option[T]` are `struct { payload, i1 }` (an ok-flag). `?`
 branches on the flag and early-returns a zero aggregate on the error path.
 `err(e)` **never evaluates `e`** — the error payload is unreachable at runtime
 (only the flag matters), so the `DomainError("...")` constructor is skipped
 entirely. This is why no error-record constructors need codegen.
+
+**Padding, and why it's accepted (feedback point 5).** For a scalar payload,
+`{ payload, i1 }` has ABI padding: `{ i64, i1 }` is 16 bytes in memory (7 bytes
+of tail padding). Field order (`{ i1, payload }`) does not help — the payload's
+alignment forces the same size. This is a per-value ABI cost, not a heap cost;
+in registers LLVM passes `{ i64, i1 }` as one value and the O3 pipeline's
+SROA/scalarization often removes the stack round-trip entirely. The real
+compaction — **niche optimization (NPO)** on the null pointer for
+`Option[Ptr]` / `Option[&T]` (8 bytes: `null` = `none`) — is deferred to Phase 5
+(FFI), where the payload set is known and one specific niche covers the common
+case. Redesigning the ABI now would ripple through every call site and the
+host for no measurable Phase-4 win.
 
 ## 9. A real front-end bug surfaced by execution
 
