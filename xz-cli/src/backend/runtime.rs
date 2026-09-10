@@ -92,7 +92,10 @@ extern "C" fn xz_sqrt(v: f64) -> f64 {
 /// `main` is a no-arg C function (possibly declared `void`); a non-zero exit is
 /// returned only when the host reports an execution problem.
 pub fn run(module: Module) -> Result<i32, String> {
-    let ee = module.create_jit_execution_engine(OptimizationLevel::None).map_err(|e| {
+    // Optimize the module (inlining, mem2reg/SROA, DCE, constant folding, ...)
+    // before JIT codegen, and let the engine compile at the aggressive level.
+    crate::backend::llvm_backend::optimize(&module)?;
+    let ee = module.create_jit_execution_engine(OptimizationLevel::Aggressive).map_err(|e| {
         e.to_str().map(|s| s.to_string()).unwrap_or_else(|_| "LLVM error".to_string())
     })?;
 

@@ -2,10 +2,13 @@ use std::collections::HashMap;
 
 use inkwell::builder::Builder;
 use inkwell::context::Context;
+use inkwell::module::Linkage;
 use inkwell::module::Module;
+use inkwell::passes::PassBuilderOptions;
+use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};
 use inkwell::values::FunctionValue;
-use inkwell::AddressSpace;
+use inkwell::{AddressSpace, OptimizationLevel};
 
 use crate::ast::{self, Item, Program, Type};
 use crate::typecheck::Kind;
@@ -318,10 +321,14 @@ pub fn compile(program: &Program) -> Result<LlvmBackend<'static>, String> {
                 // `main` is called by the runtime as a void, no-arg C function
                 // regardless of its declared `Result[Unit, Err]` return.
                 if f.name == "main" {
-                    backend.declare_function(&f.name, &param_kinds, &None, None);
+                    let _ = backend.declare_function(&f.name, &param_kinds, &None, None);
                 } else {
                     let ret = f.ret.as_ref().map(|t| kind_from_ast(t, &backend));
-                    backend.declare_function(&f.name, &param_kinds, &ret, None);
+                    let fv = backend.declare_function(&f.name, &param_kinds, &ret, None);
+                    // Program functions are module-internal so the optimizer's
+                    // global DCE can drop them when they become dead (e.g. after
+                    // inlining). `main` stays external — the runtime calls it.
+                    fv.set_linkage(Linkage::Internal);
                 }
             }
             Item::Extern(e) => {
@@ -415,4 +422,41 @@ pub fn compile(program: &Program) -> Result<LlvmBackend<'static>, String> {
     }
 
     Ok(backend)
+}
+
+/// Run the LLVM optimization pipeline over a compiled module: the default pass
+/// set at O3 (inlining, mem2reg/SROA, GVN, instcombine, DCE, tail-call
+/// elimination, constant folding) followed by aggressive codegen in the JIT
+/// engine. This is what turns the mechanical Phase 4 lowering into native
+/// speed — an unoptimized LLVM backend is slower than plain C (see
+/// docs/13-codegen.md). `xz build` emits the unoptimized IR; `xz run` and the
+/// Phase 5 native path apply this pipeline first.
+pub fn optimize(module: &Module<'_>) -> Result<(), String> {
+    let _ = Target::initialize_native(&InitializationConfig::default())?;
+    let triple = TargetMachine::get_default_triple();
+    let target = Target::from_triple(&triple).map_err(|e| {
+        e.to_str().map(|s| s.to_string()).unwrap_or_else(|_| "unknown host target".to_string())
+    })?;
+    let machine = match target.create_target_machine(
+        &triple,
+        "",
+        "",
+        OptimizationLevel::Aggressive,
+        RelocMode::Default,
+        CodeModel::Default,
+    ) {
+        Some(m) => m,
+        None => return Err("cannot create a target machine for the host triple".to_string()),
+    };
+    let options = PassBuilderOptions::create();
+    options.set_verify_each(true);
+    // Program functions are declared with internal linkage (compile()), so the
+    // pipeline's global DCE drops any that become dead after inlining; host
+    // declarations are left alone.
+    module
+        .run_passes("default<O3>,globaldce", &machine, options)
+        .map_err(|e| {
+            e.to_str().map(|s| s.to_string()).unwrap_or_else(|_| "LLVM pass error".to_string())
+        })?;
+    Ok(())
 }

@@ -113,3 +113,37 @@ bugs, and it is why `xz run` is part of Phase 4.
 `LlvmBackend::compile` ends with `Module::verify()`. This caught the two
 worst codegen mistakes (a terminator-less match block and a `ret void` vs.
 `ret { {} , i1 }` type mismatch in `main`) before any JIT crash. Keep it.
+
+## 11. Optimization is a pipeline, not a flag
+
+The first version of `xz run` JIT-compiled the module directly at
+`OptimizationLevel::None` — LLVM only did instruction-selection-level cleanup.
+That is the classic "LLVM backend but no speed" failure mode: an unoptimized
+lowering of `let`/`alloca`-heavy IR is slower than plain C. The fix
+(`LlvmBackend::optimize`, run by `runtime::run`) is:
+
+- initialize the native target and build a host `TargetMachine`;
+- run the new pass manager's default O3 pipeline plus `globaldce` via
+  `Module::run_passes`, with `set_verify_each(true)` so any pass that would
+  produce invalid IR fails loudly before the JIT;
+- compile with `OptimizationLevel::Aggressive`.
+
+Two decisions made this safe:
+
+1. **Program functions are internal; `main` stays external.** `globaldce`
+   (inside the default pipeline) removes internal functions with no callers.
+   When `main` was first left external-only and `internalize` was appended, the
+   pass internalized `main` too and then DCE'd it, breaking `xz run` with "no
+   'main' function". Declaring program functions internal from the start (with
+   `set_linkage`) means the pipeline's own `globaldce` does the right thing.
+2. **`?` flow-typing pointers survive passes.** The narrow-on-`is` trick keeps
+   a *pointer into an alloca field* in the scope table. `mem2reg`/SROA leave
+   allocas whose address escapes alone (they are only promoted when provably
+   safe), so the lowering stays correct under optimization. The regression
+   test `optimization_pipeline_inlines_and_dces` pins this down: it asserts the
+   trivial `sq` helper is inlined, DCE'd, and its call site constant-folded.
+
+This pipeline is also what makes the value-semantics aggregate copies cheap:
+SROA and `mem2reg` promote small records to registers and drop the
+`alloca`/`store`/`load` round trips, which is most of the "aggregate copy
+elision" the memory model promises (docs/04-memory-model.md).

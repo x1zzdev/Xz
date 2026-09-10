@@ -24,7 +24,7 @@ re-typecheck. This keeps codegen a faithful, mechanical lowering.
 
 | File | Responsibility |
 |---|---|
-| `llvm_backend.rs` | owns the `Context`/`Module`/`Builder`; maps types; declares records/enums/functions; emits the `main` entry wrapper. Exposes `compile(program) -> CompiledModule` |
+| `llvm_backend.rs` | owns the `Context`/`Module`/`Builder`; maps types; declares records/enums/functions; emits the `main` entry wrapper. Exposes `compile(program) -> CompiledModule` and `optimize(module)` (the O3 pass pipeline, see below) |
 | `codegen.rs` | the recursive Expr/Stmt → instruction lowering (arithmetic, compare, if, match, call, let, `?`, records, enums, Str) |
 | `runtime.rs` | the JIT engine; the C-ABI host functions that implement `print`/`to_str`; locating and running `main` |
 
@@ -134,6 +134,28 @@ so the runtime never observes an error value here.
   the host functions, and calls `main`, propagating any returned error as a
   non-zero exit.
 
+## Optimization pipeline
+
+`xz run` does **not** execute the mechanical Phase 4 IR as-is. Before JIT
+codegen the module runs LLVM's default pass pipeline at O3 plus a final
+`globaldce` (`LlvmBackend::optimize` in `llvm_backend.rs`, invoked by
+`runtime::run`), then compiles with the engine at
+`OptimizationLevel::Aggressive`. The pipeline provides:
+
+- function inlining and constant folding (`sq(7)` becomes `49` at compile time);
+- `mem2reg`/SROA, which promotes the `alloca`-based `let` bindings to SSA
+  registers and scalarizes aggregate copies — this is what makes value
+  semantics cheap for small records;
+- GVN, `instcombine`, DCE, and tail-call elimination.
+
+Program functions are declared with **internal linkage** (only `main` stays
+external, because the runtime calls it), so the pipeline's `globaldce` drops
+any function that becomes dead after inlining. Host functions (`xz_print`,
+`xz_concat`, …) are declarations, never defined, and are left untouched.
+
+`xz build` still emits the unoptimized IR; the pipeline is applied by the JIT
+(`xz run`) and will be part of the Phase 5 native path.
+
 ## Scope (explicitly out of Phase 4)
 
 - `task`, `async`/`await`, `chan`/`send`/`recv`, `for`, `loop` — Phase 6
@@ -144,8 +166,8 @@ so the runtime never observes an error value here.
   end typechecks them, but Phase 4 lowers only *concrete* function signatures.
   A generic call is not yet code-generated.
 - `List`/`Map`/`Set` and collection `[]` indexing — Phase 7.
-- No optimization passes, no debug info, no bitcode file output in Phase 4
-  (`xz run` JIT-compiles at `OptimizationLevel::None`).
+- No debug info and no bitcode file output in Phase 4. (`xz run` runs the
+  optimization pipeline above; `xz build` emits unoptimized IR.)
 
 These exclusions keep the backend a reviewable, mechanical phase; each later
 phase (5/6/7) is a documented extension of this contract.

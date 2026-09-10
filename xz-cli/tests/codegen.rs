@@ -210,3 +210,38 @@ fn scalar_to_str_runs() {
         "to_str",
     );
 }
+
+#[test]
+fn optimization_pipeline_inlines_and_dces() -> Result<(), String> {
+    // The JIT path runs `llvm_backend::optimize` (default<O3>) before codegen.
+    // After the pass pipeline the trivial `sq` helper must be inlined away (its
+    // call site gone) and the result constant-folded — proving the backend no
+    // longer executes raw `OptimizationLevel::None` IR.
+    let src = r#"/// Squares a number.
+/// @intent  Returns x * x.
+/// @effects none
+func sq(x: Int) -> Int {
+    x * x
+}
+
+func main() {
+    print(sq(7).to_str())
+    print("\n")
+}"#;
+    let tokens = lex(src.to_string(), "opt.xz".to_string()).map_err(|e| e.message)?;
+    let program = parse(tokens).map_err(|e| e.message)?;
+    resolve(&program).map_err(|_| "resolve failed".to_string())?;
+    typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
+    check_intent(&program).map_err(|e| e[0].code.clone())?;
+    let backend = compile(&program)?;
+    let ir_before = backend.module.print_to_string().to_string();
+    assert!(ir_before.contains("call i64 @sq"), "test program must call sq before passes");
+
+    let _ = xz_cli::backend::llvm_backend::optimize(&backend.module)?;
+    let ir_after = backend.module.print_to_string().to_string();
+    assert!(!ir_after.contains("call i64 @sq"), "sq call site must be inlined away by O3");
+    assert!(!ir_after.contains("define i64 @sq"), "sq body must be DCE'd after inlining");
+    assert!(ir_after.contains("xz_i64_to_str(i64 49)"), "sq(7) must be constant-folded to 49");
+    let _ = run(backend.module)?;
+    Ok(())
+}

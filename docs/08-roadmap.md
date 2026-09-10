@@ -43,6 +43,8 @@ and `xz run` work on the example programs. Phases 5–8 are not yet implemented.
 - [x] JIT execution (`xz run`) with host `print`/`to_str`/`abs`/`sqrt`
 - [x] IR emission (`xz build`, Phase 4 output is IR; native binary is Phase 5)
 - [x] Example programs execute: `hello.xz`, `contracts.xz`
+- [x] LLVM optimization pipeline on the JIT path (O3 + `globaldce`; program
+  functions internal so DCE drops the dead ones — see [13-codegen.md](13-codegen.md))
 - [ ] Native binary output
 - [ ] JSON diagnostics emission
 
