@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use inkwell::basic_block::BasicBlock;
+use inkwell::intrinsics::Intrinsic;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{FloatPredicate, IntPredicate};
@@ -184,6 +185,26 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         let ptr = self.backend.builder.build_extract_value(st, 0, "sp").unwrap().into_pointer_value();
         let len = self.backend.builder.build_extract_value(st, 1, "sl").unwrap().into_int_value();
         (ptr, len)
+    }
+
+    /// Emit a call to an LLVM intrinsic. Unlike host calls, intrinsics are
+    /// understood by the optimizer and lowered inline by the backend, so
+    /// `llvm.sqrt.f64` / `llvm.fabs.f64` become native instructions (no C
+    /// ABI round-trip). `param_tys` disambiguates overloaded intrinsics.
+    fn call_intrinsic(
+        &mut self,
+        name: &str,
+        param_tys: Vec<BasicTypeEnum<'ctx>>,
+        args: &[BasicValueEnum<'ctx>],
+        label: &str,
+    ) -> GenResult<'ctx> {
+        let intr = Intrinsic::find(name).ok_or_else(|| format!("intrinsic {} unknown", name))?;
+        let fv = intr
+            .get_declaration(&self.backend.module, &param_tys)
+            .ok_or_else(|| format!("cannot declare intrinsic {}", name))?;
+        let call_args: Vec<inkwell::values::BasicMetadataValueEnum> = args.iter().map(|v| (*v).into()).collect();
+        let call = self.backend.builder.build_direct_call(fv, &call_args, label).unwrap();
+        Ok(call.try_as_basic_value().basic().unwrap())
     }
 
     /// Emit `xz_str_free(ptr, len)` for a Str value. The runtime no-ops for
@@ -899,19 +920,13 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             }
             return Ok(self.backend.types.unit.const_zero().into());
         }
-        // stdlib approx_sqrt -> host xz_sqrt (libm sqrt)
+        // stdlib approx_sqrt -> llvm.sqrt.f64 (native sqrt instruction)
         if name == "approx_sqrt" {
             if args.len() != 1 {
                 return self.fail("approx_sqrt takes one Float");
             }
             let v = self.gen_expr(&args[0])?;
-            let f = self.backend.module.get_function("xz_sqrt").ok_or("xz_sqrt missing")?;
-            let call = self
-                .backend
-                .builder
-                .build_direct_call(f, &[v.into()], "sqrt")
-                .unwrap();
-            return Ok(call.try_as_basic_value().basic().unwrap());
+            return self.call_intrinsic("llvm.sqrt.f64", vec![self.backend.types.float.into()], &[v], "sqrt");
         }
         self.fail(&format!("unknown function '{}'", name))
     }
@@ -977,23 +992,16 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             return Ok(r.into());
         }
         if method == "abs" {
+            // llvm.abs / llvm.fabs are native (fully inlineable) — no C ABI
+            // round-trip like the host abs used to be.
             if self.is_float(rv) {
-                let f = self.backend.module.get_function("xz_f64_abs").ok_or("xz_f64_abs missing")?;
-                let call = self
-                    .backend
-                    .builder
-                    .build_direct_call(f, &[rv.into()], "abs")
-                    .unwrap();
-                return Ok(call.try_as_basic_value().basic().unwrap());
-            } else {
-                let f = self.backend.module.get_function("xz_i64_abs").ok_or("xz_i64_abs missing")?;
-                let call = self
-                    .backend
-                    .builder
-                    .build_direct_call(f, &[rv.into()], "abs")
-                    .unwrap();
-                return Ok(call.try_as_basic_value().basic().unwrap());
+                return self.call_intrinsic("llvm.fabs.f64", vec![self.backend.types.float.into()], &[rv], "abs");
             }
+            let iv = rv.into_int_value();
+            // llvm.abs.i64(v, i1 is_int_min_poison=false)
+            let poison = self.backend.types.bool.const_zero();
+            let args: Vec<BasicValueEnum<'ctx>> = vec![iv.into(), poison.into()];
+            return self.call_intrinsic("llvm.abs.i64", vec![self.backend.types.int.into()], &args, "abs");
         }
         // other methods take no args
         for a in args {

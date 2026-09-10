@@ -78,7 +78,11 @@ system linker.
 | `xz_char_to_str` | `fn(i8) -> XzStr` | `Char.to_str()` |
 | `xz_bool_to_str` | `fn(i1) -> XzStr` | `Bool.to_str()` |
 | `xz_str_free` | `fn(i8*, i64) -> ()` | frees a heap Str buffer (registry-guarded) |
-| `xz_sqrt` | `fn(f64) -> f64` | `sqrt` → `libm sqrt` (contracts.xz) |
+
+`abs()` and `approx_sqrt()` are **not** host functions — they lower to LLVM
+intrinsics (`llvm.abs.i64`, `llvm.fabs.f64`, `llvm.sqrt.f64`), which the
+optimizer understands and the backend lowers to native instructions (no C-ABI
+round-trip).
 
 `XzStr` is `#[repr(C)] { ptr: usize, len: usize }`. Each host `to_str` builds a
 `String`, copies its bytes into a heap buffer, and returns `{ ptr, len }`.
@@ -133,7 +137,7 @@ freed right after the call. See also docs/14-codegen-notes.md § Str memory.
 | record construction | `insert_value` into a zero struct, in field order |
 | enum construction | allocate a heap box, store the variant's fields, build `{ box, tag }` |
 | function call | `build_direct_call` with the target's `FunctionValue` |
-| method call (`.to_str()`, `.len()`, `.abs()`) | lowered to host functions or a field op |
+| method call (`.to_str()`, `.len()`, `.abs()`) | `to_str` → host function; `len`/`is_empty` → field op; `abs`/`approx_sqrt` → LLVM intrinsics |
 | `main` body | its block is generated into the `main` `FunctionValue` |
 
 ### `?` early return

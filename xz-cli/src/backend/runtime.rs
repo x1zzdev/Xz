@@ -99,20 +99,7 @@ extern "C" fn xz_str_free(ptr: usize, _len: usize) {
     }
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn xz_i64_abs(v: i64) -> i64 {
-    v.abs()
-}
 
-#[unsafe(no_mangle)]
-extern "C" fn xz_f64_abs(v: f64) -> f64 {
-    v.abs()
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn xz_sqrt(v: f64) -> f64 {
-    v.sqrt()
-}
 
 /// Compile the module to a JIT engine, bind the host functions, and run `main`.
 /// `main` is a no-arg C function (possibly declared `void`); a non-zero exit is
@@ -133,9 +120,6 @@ pub fn run(module: Module) -> Result<i32, String> {
     let f2s: unsafe extern "C" fn(f64) -> XzStr = xz_f64_to_str;
     let b2s: unsafe extern "C" fn(i8) -> XzStr = xz_bool_to_str;
     let ch2s: unsafe extern "C" fn(i8) -> XzStr = xz_char_to_str;
-    let iabs: unsafe extern "C" fn(i64) -> i64 = xz_i64_abs;
-    let fabs: unsafe extern "C" fn(f64) -> f64 = xz_f64_abs;
-    let sqrt: unsafe extern "C" fn(f64) -> f64 = xz_sqrt;
     let sfree: unsafe extern "C" fn(usize, usize) -> () = xz_str_free;
     bind(&module, &ee, "xz_str_free", sfree as usize);
     bind(&module, &ee, "xz_print", p as usize);
@@ -144,9 +128,6 @@ pub fn run(module: Module) -> Result<i32, String> {
     bind(&module, &ee, "xz_f64_to_str", f2s as usize);
     bind(&module, &ee, "xz_bool_to_str", b2s as usize);
     bind(&module, &ee, "xz_char_to_str", ch2s as usize);
-    bind(&module, &ee, "xz_i64_abs", iabs as usize);
-    bind(&module, &ee, "xz_f64_abs", fabs as usize);
-    bind(&module, &ee, "xz_sqrt", sqrt as usize);
 
     let main = ee.get_function_value("main").map_err(|_| "no 'main' function".to_string())?;
     let _ = unsafe { ee.run_function(main, &[]) };

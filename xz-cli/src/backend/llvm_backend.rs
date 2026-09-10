@@ -375,20 +375,12 @@ pub fn compile(program: &Program) -> Result<LlvmBackend<'static>, String> {
         backend.declare_extern("xz_f64_to_str", &[f64.into()], Some(xstr.into()));
         backend.declare_extern("xz_bool_to_str", &[i1.into()], Some(xstr.into()));
         backend.declare_extern("xz_char_to_str", &[i8.into()], Some(xstr.into()));
-        // abs
-        backend.declare_extern("xz_i64_abs", &[i64.into()], Some(i64.into()));
-        backend.declare_extern("xz_f64_abs", &[f64.into()], Some(f64.into()));
-        // sqrt (approx_sqrt)
-        backend.declare_extern("xz_sqrt", &[f64.into()], Some(f64.into()));
     }
 
     // Map the stdlib function `approx_sqrt` and `print` to their host ABI.
-    // `print` is special-cased in codegen; `approx_sqrt` is a declared call.
-    if let Some(fv) = backend.functions.get("approx_sqrt").copied() {
-        let _ = fv;
-    }
-    // Extern-declared `approx_sqrt` resolves to xz_sqrt at the call site if the
-    // user wrote an extern; stdlib approx_sqrt is handled in gen_named_call.
+    // `print` is special-cased in codegen; `approx_sqrt` is enabled by the
+    // call site's `llvm.sqrt.f64` intrinsic (gen_named_call), so no extern is
+    // declared — LLVM lowers the intrinsic natively at codegen time.
     backend
         .sigs
         .entry("approx_sqrt".to_string())

@@ -40,7 +40,7 @@ and `xz run` work on the example programs. Phases 5–8 are not yet implemented.
 ## Phase 4 — Backend
 
 - [x] LLVM IR generation (inkwell) — `xz-cli/src/backend/` ([13-codegen.md](13-codegen.md))
-- [x] JIT execution (`xz run`) with host `print`/`to_str`/`abs`/`sqrt`
+- [x] JIT execution (`xz run`); host `print`/`to_str`; `abs`/`sqrt` as LLVM intrinsics
 - [x] IR emission (`xz build`, Phase 4 output is IR; native binary is Phase 5)
 - [x] Example programs execute: `hello.xz`, `contracts.xz`
 - [x] LLVM optimization pipeline on the JIT path (O3 + `globaldce`; program

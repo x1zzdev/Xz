@@ -86,10 +86,20 @@ The ABI detail that mattered: a function returning the `XzStr` struct
 struct return — it does on x86-64 SysV. The architecture test in
 `/tmp/opencode/llvmtry` proved this before the backend was written.
 
-> **Gotcha.** `ee.get_function_value(name)` failed for *declared but
+> **Gotcha.** `get_function_value(name)` failed for *declared but
 > undefined* host functions, so binding silently no-op'd and the JIT jumped to
 > a null address (segfault on `print`). Fix: look the functions up on the
 > **module**, not the execution engine.
+
+`abs` and `sqrt` were originally host calls too (`xz_i64_abs`, `xz_f64_abs`,
+`xz_sqrt`). That made every use a C-ABI round-trip the optimizer cannot see
+through. They are now LLVM intrinsics (`llvm.abs.i64`, `llvm.fabs.f64`,
+`llvm.sqrt.f64`) emitted via inkwell's `Intrinsic::find(...).get_declaration()`
+and called directly — the backend lowers them to native instructions
+(single/multi-instruction, fully scheduling) and the optimizer can fold or
+inline them. `print`/`to_str` stay host calls (they are I/O and formatting;
+inlining a format call's body is not a win and keeps the C ABI contract
+small).
 
 ## 6. Enum layout: `{ box, tag }` instead of a plain `i32`
 

@@ -287,3 +287,24 @@ func main() {
     let _ = run(backend.module)?;
     Ok(())
 }
+
+#[test]
+fn abs_and_sqrt_intrinsics_run() {
+    // abs() and approx_sqrt() lower to llvm.abs / llvm.fabs / llvm.sqrt
+    // intrinsics (native, inlineable) instead of host C ABI calls. This just
+    // verifies the lowering produces correct results.
+    expect_exec(
+        r#"func main() {
+    let i = -7
+    print(i.abs().to_str())
+    print(" ")
+    let f = -2.5
+    print(f.abs().to_str())
+    print(" ")
+    let g = approx_sqrt(9.0)
+    print(g.to_str())
+    print("\n")
+}"#,
+        "abs/sqrt intrinsics",
+    );
+}
