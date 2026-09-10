@@ -41,6 +41,9 @@ pub struct Codegen<'b, 'ctx> {
     /// the innermost enclosing loop's continue-target and break-target blocks,
     /// for `break`/`continue` statements (nested loops push/pop).
     loop_stack: Vec<(BasicBlock<'ctx>, BasicBlock<'ctx>)>,
+    /// true for `main`, which is the C entry point and returns i32 (0), not
+    /// its declared Xz return type.
+    is_main: bool,
 }
 
 type GenResult<'ctx> = Result<BasicValueEnum<'ctx>, String>;
@@ -191,6 +194,29 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         let ptr = self.backend.builder.build_extract_value(st, 0, "sp").unwrap().into_pointer_value();
         let len = self.backend.builder.build_extract_value(st, 1, "sl").unwrap().into_int_value();
         (ptr, len)
+    }
+
+    /// Allocate a heap box for an aggregate type of the given ABI size, by
+    /// calling the module's declared `malloc(i64)`. See `gen_enum_ctor`.
+    fn malloc_box(
+        &mut self,
+        ty: inkwell::types::StructType<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let size = match &self.backend.target_data {
+            Some(td) => td.get_abi_size(&ty),
+            None => {
+                return self.fail(&format!("cannot size {} box: no target data", name));
+            }
+        };
+        let f = self.backend.module.get_function("malloc").ok_or("malloc missing")?;
+        let sz = self.backend.types.int.const_int(size, false);
+        let call = self
+            .backend
+            .builder
+            .build_direct_call(f, &[sz.into()], &format!("{}.box", name))
+            .unwrap();
+        Ok(call.try_as_basic_value().basic().unwrap().into_pointer_value())
     }
 
     /// Emit a call to an LLVM intrinsic. Unlike host calls, intrinsics are
@@ -1033,7 +1059,10 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         // allocate a box for the variant's field struct
         let field_tys: Vec<BasicTypeEnum<'ctx>> = fields.iter().map(|k| self.backend.kind_to_llvm(k)).collect();
         let vt = self.backend.context.struct_type(&field_tys, false);
-        let box_ptr = self.backend.builder.build_malloc(vt, &format!("{}.box", name)).unwrap();
+        // Call libc malloc explicitly (i64 size) rather than inkwell's
+        // `build_malloc`, whose builder data layout is empty and would emit an
+        // i32-sized malloc that conflicts with the runtime's i64 declaration.
+        let box_ptr = self.malloc_box(vt, name)?;
         for a in args {
             self.degrade_str_expr(a);
         }
@@ -1556,12 +1585,14 @@ pub fn gen_function(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         owns: HashMap::new(),
         leak_strs,
         loop_stack: Vec::new(),
+        is_main: false,
     };
     cg.gen_body_common(&f.name, fv, &f.params, &f.body);
 }
 
-/// Generate `main`. `main` is called by the runtime as a void, no-arg C
-/// function regardless of its declared `Result[Unit, Err]` return.
+/// Generate `main`. `main` is the C entry point: it is declared returning i32
+/// (see `compile`) so the crt/linker is satisfied, and the body's value is
+/// discarded; `gen_body_common` emits `ret i32 0`.
 pub fn gen_main(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
     let fv = match backend.functions.get(&f.name) {
         Some(fv) => *fv,
@@ -1569,16 +1600,18 @@ pub fn gen_main(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
     };
     let ret_kind = f.ret.as_ref().map(|t| kind_from_ast(t, backend));
     let leak_strs = ret_kind.as_ref().map(|k| kind_contains_str(k, backend)).unwrap_or(false);
+    let main_ret: BasicTypeEnum<'static> = backend.context.i32_type().into();
     let mut cg = Codegen {
         backend,
         scope: HashMap::new(),
         ret_kind,
-        ret_llvm: None,
+        ret_llvm: Some(main_ret),
         str_count: 0,
         none_hint: None,
         owns: HashMap::new(),
         leak_strs,
         loop_stack: Vec::new(),
+        is_main: true,
     };
     cg.gen_body_common(&f.name, fv, &f.params, &f.body);
 }
@@ -1607,6 +1640,15 @@ impl<'ctx> Codegen<'_, 'ctx> {
         // (unless the return type can escape Str storage, in which case the
         // return value may alias a binding and those stay live for the caller).
         self.free_owned_bindings();
+        // `main` is the C entry point returning i32; discard the body value.
+        if self.is_main {
+            if !self.block_terminated() {
+                let zero = self.backend.context.i32_type().const_zero();
+                let _ = self.backend.builder.build_return(Some(&zero));
+            }
+            let _ = name;
+            return;
+        }
         let ret_llvm = self.ret_llvm;
         match (ret_llvm, val) {
             (Some(_rt), Some(v)) => {

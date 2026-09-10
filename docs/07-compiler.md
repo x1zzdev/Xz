@@ -20,11 +20,12 @@ Shared-library output (`xz build --shared`) is the interop on-ramp; `xz bind --l
 ## CLI
 
 ```
-xz build <file.xz>          # type check + contract check + codegen (Phase 4)
+xz build <file.xz>          # type check + contract check + codegen (Phase 4: emits LLVM IR)
+xz build-native <file.xz>   # emit IR + native runtime, compile with llc, link with ld -> ./xz_program
 xz check <file.xz>          # type/contract check only, no codegen
 xz check --strict <file.xz> # intent checks enforced (I0004: untrusted claims fail)
 xz check-json [--strict] <file.xz>   # same, diagnostics as a JSON array
-xz run <file.xz>            # build and execute
+xz run <file.xz>            # build and JIT-execute
 ```
 
 ## JSON Diagnostics (for LLM self-correction)

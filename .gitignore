@@ -1,2 +1,4 @@
 # Local AI-session transcripts; not part of the design record.
 session-*.md
+# Native output of `xz build-native`.
+xz-cli/xz_program

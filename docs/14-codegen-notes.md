@@ -220,3 +220,29 @@ lowering total. Collection iteration is a Phase 7 concern. The loop support
 makes iterative benchmarks measurable — the pipeline above turns the lowered
 induction-variable loop into native machine code, so a 10M-iteration
 accumulation loop runs in ~0.05s on this host (Rust/C -O2 territory).
+
+## 13. Native output: an IR runtime and a malloc/data-layout trap
+
+`xz build-native` produces a standalone executable: the module gets IR bodies
+for the `xz_*` runtime functions (calling libc `write`/`malloc`/`memcpy`/
+`free`/`snprintf`), `llc` lowers it to an object file, and `ld` links it with
+the C runtime (`crt1.o`/`crti.o`/`crtn.o`) and `-lc -lm`. `main` is declared
+returning `i32` (0) because that is what the C runtime expects; the runtime's
+`void main` and the JIT path are unchanged.
+
+Two traps surfaced:
+
+1. **`build_malloc` vs. the runtime's `malloc`.** inkwell's `build_malloc`
+   (used for enum boxes) emits a call to `malloc` sized by the *IRBuilder's*
+   data layout, which is empty and therefore 32-bit — `malloc(i32)`. The
+   native runtime declared `malloc(i64)`. The optimizer then split the two
+   into `malloc` and `malloc.1`, and the link failed on the renamed one.
+   Fix: declare one `malloc(i64)` in `compile` and call it explicitly (enum
+   boxes compute their ABI size via the module's `TargetData`), and set the
+   module's triple/data layout so all sizes are pointer-sized.
+2. **`main` must return `int`.** crt1 calls `main` and uses the return value as
+   the exit status; a `void main` leaks garbage into `$?`. Declaring `i32` and
+   emitting `ret i32 0` fixes it (the JIT ignores the value).
+
+This is the Phase 5 on-ramp: the same object/link path generalizes to
+`xz build --shared` and the FFI interop surface.

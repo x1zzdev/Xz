@@ -13,7 +13,8 @@ mapping, module layout, ABI, and the set of constructs Phase 4 supports.
 source ──► lexer ──► parser ──► AST ──► name resolution
       ──► type inference/checking ──► contract checking ──► intent verification
       ──► LLVM IR ──► JIT execution          (Phase 4: xz run)
-      ──► native binary / shared library     (Phase 5+: xz build --shared)
+      ──► object file ──► native binary      (Phase 4: xz build-native; llc + ld)
+      ──► shared library                     (Phase 5+: xz build --shared)
 ```
 
 The front end checks a whole program and collects zero diagnostics before the
@@ -60,8 +61,9 @@ returned by value — matching how the C-ABI host functions (`print`, `to_str`)
 expect them. Records and enums are *value types* ([04-memory-model.md](04-memory-model.md)),
 so a function that takes a record copies it in by value.
 
-`main` is special: it may return `Unit` or `Result[Unit, Err]`, and the runtime
-calls it with no arguments.
+`main` is special: it may return `Unit` or `Result[Unit, Err]`. In the JIT the
+runtime calls a `void` main; for `xz build-native` it is declared `i32`
+(returning 0) so the C runtime/linker accepts it as the process entry point.
 
 ## Runtime host functions (`runtime.rs`)
 
@@ -86,6 +88,19 @@ round-trip).
 
 `XzStr` is `#[repr(C)] { ptr: usize, len: usize }`. Each host `to_str` builds a
 `String`, copies its bytes into a heap buffer, and returns `{ ptr, len }`.
+
+### Native runtime (`xz build-native`)
+
+The JIT resolves the `xz_*` host functions from `runtime.rs`. A standalone
+executable cannot, so `emit_native_runtime` instead **defines** those functions
+in the module as IR that calls libc (`write`, `malloc`, `memcpy`, `free`,
+`snprintf`), and the object compiled by `llc` is linked with `ld` against the C
+runtime and libc. `print`/`to_str`/`concat`/`str_free` therefore stay one C-ABI
+call each; `abs`/`sqrt` remain native intrinsics. The JIT path is unaffected —
+`add_global_mapping` overrides these definitions when running in-process.
+
+`xz build-native <file.xz>` emits IR, runs `llc -filetype=obj`, links with
+`ld` (crt1.o/crti.o/crtn.o + `-lc -lm`), and writes `./xz_program`.
 
 ### Str ownership in codegen
 

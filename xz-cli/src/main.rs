@@ -13,7 +13,7 @@ fn main() {
         argv.push(a);
     }
     if argv.len() < 3 {
-        println!("usage: xz <lex|parse|check> [--strict] <file.xz>");
+        println!("usage: xz <lex|parse|check|check-json|build|run|build-native> [--strict] <file.xz>");
         return;
     }
     let cmd = argv[1].clone();
@@ -28,7 +28,7 @@ fn main() {
         }
     }
     if path == "" {
-        println!("usage: xz <lex|parse|check> [--strict] <file.xz>");
+        println!("usage: xz <lex|parse|check|check-json|build|run|build-native> [--strict] <file.xz>");
         return;
     }
     let source = std::fs::read_to_string(path.clone());
@@ -67,6 +67,8 @@ fn main() {
                         run_backend(tokens, false);
                     } else if cmd == "run" {
                         run_backend(tokens, true);
+                    } else if cmd == "build-native" {
+                        run_native_build(tokens);
                     } else {
                         println!("unknown command: {}", cmd);
                     }
@@ -213,6 +215,108 @@ fn run_backend(tokens: Vec<Token>, execute: bool) {
             }
         }
     }
+}
+
+/// Phase 5 native build: compile to LLVM IR, emit the native runtime bodies,
+/// optimize, then lower to an object file with `llc` and link with `ld` into a
+/// standalone executable (no Rust runtime). Requires `llc` (from the portable
+/// LLVM) and `ld`/libc on the host.
+fn run_native_build(tokens: Vec<Token>) {
+    let parsed = parse(tokens);
+    let program = match parsed {
+        Err(e) => {
+            println!("error: {} at {}:{}:{}", e.message, e.span.file, e.span.start.0, e.span.start.1);
+            return;
+        }
+        Ok(p) => p,
+    };
+    if let Err(errors) = resolve(&program) {
+        println!("error: {} resolution errors", errors.len());
+        return;
+    }
+    if let Err(errors) = typecheck(&program) {
+        for err in &errors {
+            println!("type error: {}", err.message);
+        }
+        println!("error: {} type errors", errors.len());
+        return;
+    }
+    if let Err(errors) = check_intent(&program) {
+        println!("error: intent: {}", errors[0].code);
+        return;
+    }
+
+    let mut backend = match xz_cli::backend::llvm_backend::compile(&program) {
+        Ok(b) => b,
+        Err(e) => {
+            println!("error: codegen failed: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = xz_cli::backend::llvm_backend::emit_native_runtime(&mut backend) {
+        println!("error: native runtime emission failed: {}", e);
+        return;
+    }
+    if let Err(e) = xz_cli::backend::llvm_backend::optimize(&backend.module) {
+        println!("error: optimization failed: {}", e);
+        return;
+    }
+    let module = &backend.module;
+
+    // Write the IR to a temp file.
+    let dir = std::env::temp_dir().join(format!("xz_native_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let ir_path = dir.join("prog.ll");
+    let obj_path = dir.join("prog.o");
+    let out_path = dir.join("prog");
+    std::fs::write(&ir_path, module.print_to_string().to_string()).unwrap();
+
+    // llc: IR -> object file.
+    let llc = std::env::var("LLC")
+        .unwrap_or_else(|_| "/home/x1zz/.local/share/xz-llvm17/debroot/usr/lib/llvm-17/bin/llc".to_string());
+    let st = std::process::Command::new(&llc)
+        .arg(&ir_path)
+        .arg("-filetype=obj")
+        .arg("-O3")
+        .arg("-o")
+        .arg(&obj_path)
+        .status();
+    match st {
+        Err(e) => {
+            println!("error: llc not found ({:?}); set LLC to the portable llc path", e);
+            return;
+        }
+        Ok(s) if !s.success() => {
+            println!("error: llc failed");
+            return;
+        }
+        _ => {}
+    }
+
+    // ld: link the object with the C runtime and libc into an executable.
+    let ld = std::env::var("LD").unwrap_or_else(|_| "ld".to_string());
+    let dyn_loader = "/lib64/ld-linux-x86-64.so.2";
+    let st = std::process::Command::new(&ld)
+        .args(["-o", out_path.to_str().unwrap(), "-dynamic-linker", dyn_loader])
+        .args([obj_path.to_str().unwrap(), "/usr/lib/x86_64-linux-gnu/crt1.o",
+               "/usr/lib/x86_64-linux-gnu/crti.o", "/usr/lib/x86_64-linux-gnu/crtn.o",
+               "-lc", "-lm", "--as-needed"])
+        .status();
+    match st {
+        Err(e) => {
+            println!("error: ld not found ({:?})", e);
+            return;
+        }
+        Ok(s) if !s.success() => {
+            println!("error: ld failed");
+            return;
+        }
+        _ => {}
+    }
+
+    // Copy the binary out to the current directory.
+    let _ = std::fs::copy(&out_path, "xz_program").unwrap();
+    println!("ok: wrote ./xz_program");
 }
 
 fn tok_name(kind: &TokKind) -> String {

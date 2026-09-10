@@ -356,6 +356,47 @@ func main() -> Result[Unit, Err] {
 }
 
 #[test]
+fn native_runtime_emits_valid_module() -> Result<(), String> {
+    // The native build path emits IR bodies for the xz_* runtime (libc-based)
+    // and declares `main` returning i32. Verify the resulting module (this
+    // catches malformed runtime IR without needing llc/ld, which may be absent
+    // on some hosts).
+    let src = r#"enum Shape {
+    circle(radius: Float)
+    rect(width: Float, height: Float)
+}
+
+/// Computes the area.
+/// @intent  Returns the area of a shape.
+/// @effects none
+func area(shape: Shape) -> Float {
+    match shape {
+        circle(r) -> 3.14159 * r * r
+        rect(w, h) -> w * h
+    }
+}
+
+func main() -> Result[Unit, Err] {
+    let msg = "area: " + area(circle(2.0)).to_str()
+    print(msg)
+    print("\n")
+    ok()
+}"#;
+    let tokens = lex(src.to_string(), "native.xz".to_string()).map_err(|e| e.message)?;
+    let program = parse(tokens).map_err(|e| e.message)?;
+    resolve(&program).map_err(|_| "resolve failed".to_string())?;
+    typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
+    check_intent(&program).map_err(|e| e[0].code.clone())?;
+    let mut backend = compile(&program)?;
+    xz_cli::backend::llvm_backend::emit_native_runtime(&mut backend)?;
+    backend.module.verify().map_err(|e| format!("verify: {:?}", e))?;
+    let ir = backend.module.print_to_string().to_string();
+    assert!(ir.contains("define i32 @main()"), "native main must return i32");
+    assert!(ir.contains("define") && ir.contains("@xz_print"), "runtime bodies must be defined");
+    Ok(())
+}
+
+#[test]
 fn loop_and_for_run() {
     // loop/for with break/continue must compile and execute. `for i in n`
     // iterates the Int range 0..n (exclusive).

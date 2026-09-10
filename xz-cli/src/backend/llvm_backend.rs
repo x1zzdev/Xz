@@ -5,7 +5,7 @@ use inkwell::context::Context;
 use inkwell::module::Linkage;
 use inkwell::module::Module;
 use inkwell::passes::PassBuilderOptions;
-use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetData, TargetMachine};
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};
 use inkwell::values::FunctionValue;
 use inkwell::{AddressSpace, OptimizationLevel};
@@ -79,6 +79,9 @@ pub struct LlvmBackend<'ctx> {
     pub sigs: HashMap<String, LlvmSig<'ctx>>,
     /// a shared runtime error string for codegen (not front-end diagnostics)
     pub error: Option<String>,
+    /// host target data, used to compute aggregate sizes (enum box allocation)
+    /// independently of the builder's (empty) data layout.
+    pub target_data: Option<TargetData>,
 }
 
 impl<'ctx> LlvmBackend<'ctx> {
@@ -99,6 +102,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             functions: HashMap::new(),
             sigs: HashMap::new(),
             error: None,
+            target_data: None,
         }
     }
 
@@ -300,6 +304,28 @@ pub fn compile(program: &Program) -> Result<LlvmBackend<'static>, String> {
     let context: &'static Context = Box::leak(Box::new(Context::create()));
     let mut backend = LlvmBackend::new(context);
 
+    // Pin the target triple and data layout before lowering. Without a data
+    // layout, LLVM assumes 32-bit pointers, so `build_malloc` (enum boxes)
+    // emits `malloc(i32)` while the native runtime expects `malloc(i64)` — the
+    // optimizer then splits them into `malloc`/`malloc.1` and linking fails.
+    // Setting the host layout makes every size a pointer-sized i64.
+    let _ = Target::initialize_native(&InitializationConfig::default());
+    let triple = TargetMachine::get_default_triple();
+    backend.module.set_triple(&triple);
+    if let Ok(target) = Target::from_triple(&triple) {
+        if let Some(machine) = target.create_target_machine(
+            &triple,
+            "",
+            "",
+            OptimizationLevel::Aggressive,
+            RelocMode::Default,
+            CodeModel::Default,
+        ) {
+            backend.module.set_data_layout(&machine.get_target_data().get_data_layout());
+            backend.target_data = Some(machine.get_target_data());
+        }
+    }
+
     // Pass 1: declare records and enums (types first, so function sigs resolve).
     for item in &program.items {
         match item {
@@ -318,10 +344,12 @@ pub fn compile(program: &Program) -> Result<LlvmBackend<'static>, String> {
         match item {
             Item::Func(f) => {
                 let param_kinds: Vec<Kind> = f.params.iter().map(|p| kind_from_ast(&p.ty, &backend)).collect();
-                // `main` is called by the runtime as a void, no-arg C function
-                // regardless of its declared `Result[Unit, Err]` return.
+                // `main` is the C entry point: the runtime calls it with no
+                // args and the linker/crt expects `int main()`, so it is
+                // declared returning i32 regardless of its declared
+                // `Result[Unit, Err]` return (gen_main emits `ret i32 0`).
                 if f.name == "main" {
-                    let _ = backend.declare_function(&f.name, &param_kinds, &None, None);
+                    let _ = backend.declare_function(&f.name, &param_kinds, &None, Some(backend.context.i32_type().into()));
                 } else {
                     let ret = f.ret.as_ref().map(|t| kind_from_ast(t, &backend));
                     let fv = backend.declare_function(&f.name, &param_kinds, &ret, None);
@@ -368,6 +396,10 @@ pub fn compile(program: &Program) -> Result<LlvmBackend<'static>, String> {
         backend.declare_extern("xz_print", &[ptr.into(), i64.into()], None);
         // str_free(ptr, len) -> void (registry-guarded; see runtime.rs)
         backend.declare_extern("xz_str_free", &[ptr.into(), i64.into()], None);
+        // malloc(size) -> Ptr. Declared by us (not LLVM's `build_malloc`, whose
+        // builder has an empty data layout and would emit an i32-sized malloc
+        // conflicting with the i64 size used here). Used for enum boxes.
+        backend.declare_extern("malloc", &[i64.into()], Some(ptr.into()));
         // concat(aptr, alen, bptr, blen) -> XzStr
         backend.declare_extern("xz_concat", &[ptr.into(), i64.into(), ptr.into(), i64.into()], Some(xstr.into()));
         // scalar -> XzStr
@@ -452,5 +484,193 @@ pub fn optimize(module: &Module<'_>) -> Result<(), String> {
         .map_err(|e| {
             e.to_str().map(|s| s.to_string()).unwrap_or_else(|_| "LLVM pass error".to_string())
         })?;
+    Ok(())
+}
+
+/// Emit the native runtime: define the `xz_*` host functions (currently only
+/// declared as externs for the JIT) as real IR bodies that call libc. This is
+/// what makes `xz build` output linkable into a standalone executable with
+/// `llc` + `ld` (no Rust runtime needed). The JIT path is unaffected — it
+/// still binds the Rust host functions via `add_global_mapping`, which
+/// overrides these definitions.
+pub fn emit_native_runtime(backend: &mut LlvmBackend<'static>) -> Result<(), String> {
+    let i8 = backend.types.char;
+    let i32 = backend.context.i32_type();
+    let i64 = backend.types.int;
+    let ptr = backend.types.ptr;
+    let i1 = backend.types.bool;
+    let void = backend.context.void_type();
+
+    // libc declarations. `malloc` may already exist (LLVM's `build_malloc`
+    // inserts one for enum boxes during codegen); reuse that declaration
+    // instead of adding a second one (which LLVM would rename to `malloc.1`,
+    // then fail to resolve at link time).
+    let malloc = match backend.module.get_function("malloc") {
+        Some(f) => f,
+        None => backend.module.add_function("malloc", ptr.fn_type(&[i64.into()], false), None),
+    };
+    let free = match backend.module.get_function("free") {
+        Some(f) => f,
+        None => backend.module.add_function("free", void.fn_type(&[ptr.into()], false), None),
+    };
+    let write = backend.module.add_function(
+        "write",
+        i64.fn_type(&[i32.into(), ptr.into(), i64.into()], false),
+        None,
+    );
+    let snprintf = backend
+        .module
+        .add_function("snprintf", i32.fn_type(&[ptr.into(), i64.into(), ptr.into()], true), None);
+
+    // Helper closures would fight the borrow checker; inline the bodies.
+    let mut build_str_ret = |backend: &mut LlvmBackend<'static>, _f: FunctionValue<'static>, buf: inkwell::values::PointerValue<'static>, len: inkwell::values::IntValue<'static>| {
+        let agg = backend.types.xz_str.const_zero();
+        let agg = backend.builder.build_insert_value(agg, buf, 0, "s.ptr").unwrap().into_struct_value();
+        let agg = backend.builder.build_insert_value(agg, len, 1, "s.len").unwrap().into_struct_value();
+        backend.builder.build_return(Some(&agg)).unwrap();
+    };
+
+    // xz_print(ptr, len): write(1, ptr, len)
+    if let Some(f) = backend.module.get_function("xz_print") {
+        let entry = backend.context.append_basic_block(f, "entry");
+        backend.builder.position_at_end(entry);
+        let p = f.get_nth_param(0).unwrap().into_pointer_value();
+        let l = f.get_nth_param(1).unwrap().into_int_value();
+        let fd = i32.const_int(1, false);
+        backend.builder.build_direct_call(write, &[fd.into(), p.into(), l.into()], "w").unwrap();
+        backend.builder.build_return(None).unwrap();
+    }
+
+    // xz_str_free(ptr, len): free(ptr)
+    if let Some(f) = backend.module.get_function("xz_str_free") {
+        let entry = backend.context.append_basic_block(f, "entry");
+        backend.builder.position_at_end(entry);
+        let p = f.get_nth_param(0).unwrap().into_pointer_value();
+        backend.builder.build_direct_call(free, &[p.into()], "free").unwrap();
+        backend.builder.build_return(None).unwrap();
+    }
+
+    // xz_concat(ap, al, bp, bl): malloc(total), memcpy both halves
+    if let Some(f) = backend.module.get_function("xz_concat") {
+        let entry = backend.context.append_basic_block(f, "entry");
+        backend.builder.position_at_end(entry);
+        let ap = f.get_nth_param(0).unwrap().into_pointer_value();
+        let al = f.get_nth_param(1).unwrap().into_int_value();
+        let bp = f.get_nth_param(2).unwrap().into_pointer_value();
+        let bl = f.get_nth_param(3).unwrap().into_int_value();
+        let total = backend.builder.build_int_add(al, bl, "total").unwrap();
+        let buf = backend
+            .builder
+            .build_direct_call(malloc, &[total.into()], "buf")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        let _ = backend.builder.build_memcpy(buf, 1, ap, 1, al).unwrap();
+        let dst = unsafe { backend.builder.build_in_bounds_gep(i8, buf, &[al], "dst").unwrap() };
+        let _ = backend.builder.build_memcpy(dst, 1, bp, 1, bl).unwrap();
+        build_str_ret(backend, f, buf, total);
+    }
+
+    // xz_i64_to_str(v): snprintf("%lld")
+    if let Some(f) = backend.module.get_function("xz_i64_to_str") {
+        let entry = backend.context.append_basic_block(f, "entry");
+        backend.builder.position_at_end(entry);
+        let v = f.get_nth_param(0).unwrap().into_int_value();
+        let fmt = backend.builder.build_global_string_ptr("%lld", "fmt.lld").unwrap().as_pointer_value();
+        let fmtp = unsafe { backend.builder.build_in_bounds_gep(i8, fmt, &[i64.const_zero()], "fmtp").unwrap() };
+        let null = ptr.const_null();
+        let len = backend
+            .builder
+            .build_direct_call(snprintf, &[null.into(), i64.const_zero().into(), fmtp.into(), v.into()], "len")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value();
+        let len64 = backend.builder.build_int_s_extend(len, i64, "len64").unwrap();
+        let size = backend.builder.build_int_add(len64, i64.const_int(1, false), "size").unwrap();
+        let buf = backend
+            .builder
+            .build_direct_call(malloc, &[size.into()], "buf")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        backend
+            .builder
+            .build_direct_call(snprintf, &[buf.into(), size.into(), fmtp.into(), v.into()], "fmt")
+            .unwrap();
+        build_str_ret(backend, f, buf, len64);
+    }
+
+    // xz_f64_to_str(v): snprintf("%.17g")
+    if let Some(f) = backend.module.get_function("xz_f64_to_str") {
+        let entry = backend.context.append_basic_block(f, "entry");
+        backend.builder.position_at_end(entry);
+        let v = f.get_nth_param(0).unwrap().into_float_value();
+        let fmt = backend.builder.build_global_string_ptr("%.17g", "fmt.g").unwrap().as_pointer_value();
+        let fmtp = unsafe { backend.builder.build_in_bounds_gep(i8, fmt, &[i64.const_zero()], "fmtp").unwrap() };
+        let null = ptr.const_null();
+        let len = backend
+            .builder
+            .build_direct_call(snprintf, &[null.into(), i64.const_zero().into(), fmtp.into(), v.into()], "len")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value();
+        let len64 = backend.builder.build_int_s_extend(len, i64, "len64").unwrap();
+        let size = backend.builder.build_int_add(len64, i64.const_int(1, false), "size").unwrap();
+        let buf = backend
+            .builder
+            .build_direct_call(malloc, &[size.into()], "buf")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        backend
+            .builder
+            .build_direct_call(snprintf, &[buf.into(), size.into(), fmtp.into(), v.into()], "fmt")
+            .unwrap();
+        build_str_ret(backend, f, buf, len64);
+    }
+
+    // xz_bool_to_str(v): select "true"/"false"
+    if let Some(f) = backend.module.get_function("xz_bool_to_str") {
+        let entry = backend.context.append_basic_block(f, "entry");
+        backend.builder.position_at_end(entry);
+        let v = f.get_nth_param(0).unwrap().into_int_value();
+        let t = backend.builder.build_global_string_ptr("true", "s.true").unwrap().as_pointer_value();
+        let fstr = backend.builder.build_global_string_ptr("false", "s.false").unwrap().as_pointer_value();
+        let tp = unsafe { backend.builder.build_in_bounds_gep(i8, t, &[i64.const_zero()], "tp").unwrap() };
+        let fp = unsafe { backend.builder.build_in_bounds_gep(i8, fstr, &[i64.const_zero()], "fp").unwrap() };
+        let sel = backend.builder.build_select(v, tp, fp, "sel").unwrap();
+        let selp = sel.into_pointer_value();
+        let len = backend.builder.build_select(v, i64.const_int(4, false), i64.const_int(5, false), "len").unwrap();
+        let leni = len.into_int_value();
+        build_str_ret(backend, f, selp, leni);
+    }
+
+    // xz_char_to_str(v): malloc(1), store the byte
+    if let Some(f) = backend.module.get_function("xz_char_to_str") {
+        let entry = backend.context.append_basic_block(f, "entry");
+        backend.builder.position_at_end(entry);
+        let v = f.get_nth_param(0).unwrap().into_int_value();
+        let buf = backend
+            .builder
+            .build_direct_call(malloc, &[i64.const_int(1, false).into()], "buf")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        backend.builder.build_store(buf, v).unwrap();
+        build_str_ret(backend, f, buf, i64.const_int(1, false));
+    }
+
     Ok(())
 }

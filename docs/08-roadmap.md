@@ -53,7 +53,8 @@ and `xz run` work on the example programs. Phases 5–8 are not yet implemented.
   ~0.05s, see [13-codegen.md](13-codegen.md))
 - [x] JSON diagnostics emission (`xz check-json`; structured JSON for the AI
   toolchain loop)
-- [ ] Native binary output
+- [x] Native binary output (`xz build-native`: emit IR + native libc runtime,
+  compile with `llc`, link with `ld` — a standalone executable, no Rust runtime)
 
 ## Phase 5 — FFI & interop (early, by design)
 
