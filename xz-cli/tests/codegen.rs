@@ -310,6 +310,52 @@ fn abs_and_sqrt_intrinsics_run() {
 }
 
 #[test]
+fn ffi_null_check_and_transfer_run() {
+    // Phase 5 FFI path: extern C calls, Ptr null checks (`p == 0`), and
+    // `transfer` (identity value move) must compile and execute. The JIT
+    // resolves `malloc`/`free` from the process (libc).
+    expect_exec(
+        r#"extern func malloc(size: usize) -> Ptr
+extern func free(ptr: Ptr)
+
+record Buffer {
+    ptr: Ptr
+    size: Int
+}
+
+/// Allocates a buffer; ok on success, err on null.
+/// @intent  Allocates size bytes and returns the buffer.
+/// @ensures result is ok implies result.value.ptr != 0
+/// @effects extern
+func alloc_buffer(size: Int) -> Result[Buffer, Err]
+    post result is ok implies result.value.ptr != 0
+{
+    let p = malloc(size as usize)
+    if p == 0 {
+        err(DomainError("oom"))
+    } else {
+        ok(Buffer(p, size))
+    }
+}
+
+/// Releases the buffer; consumes the handle.
+/// @intent  Frees the allocation.
+/// @effects extern
+func release_buffer(buf: Buffer) {
+    free(buf.ptr)
+}
+
+func main() -> Result[Unit, Err] {
+    let buf = alloc_buffer(16)?
+    print("capacity: " + buf.size.to_str())
+    release_buffer(transfer(buf))
+    ok()
+}"#,
+        "ffi null check/transfer",
+    );
+}
+
+#[test]
 fn loop_and_for_run() {
     // loop/for with break/continue must compile and execute. `for i in n`
     // iterates the Int range 0..n (exclusive).

@@ -90,6 +90,9 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             _ => false,
         }
     }
+    fn is_ptr(&self, v: BasicValueEnum<'ctx>) -> bool {
+        matches!(v.get_type(), inkwell::types::BasicTypeEnum::PointerType(_))
+    }
 
     fn build_load(&mut self, ty: BasicTypeEnum<'ctx>, ptr: PointerValue<'ctx>, name: &str) -> BasicValueEnum<'ctx> {
         self.backend.builder.build_load(ty, ptr, name).unwrap()
@@ -580,8 +583,14 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             Expr::If(ifx) => self.gen_if(ifx),
             Expr::Loop(b) => self.gen_loop(b),
             Expr::For(name, iter, b) => self.gen_for(name, iter, b),
-            Expr::Await(_) | Expr::Send(_, _) | Expr::Recv(_) | Expr::Transfer(_) => {
-                self.fail("async/channel/transfer are not supported in Phase 4")
+            Expr::Await(_) | Expr::Send(_, _) | Expr::Recv(_) => {
+                self.fail("async/channel are not supported in Phase 4")
+            }
+            Expr::Transfer(a) => {
+                // `transfer(x)` hands a handle to a callee. At runtime a handle
+                // is passed by value, so the transfer is an identity move — the
+                // ownership bookkeeping is a compile-time concern (docs/10).
+                self.gen_expr(a)
             }
             Expr::Ok(inner) => self.gen_ok(inner),
             Expr::Err(a) => {
@@ -819,6 +828,11 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 .build_float_compare(pred_float, a.into_float_value(), b.into_float_value(), "cmp")
                 .unwrap();
             Ok(r.into())
+        } else if self.is_ptr(a) || self.is_ptr(b) {
+            // Pointer comparison. The Phase 4 FFI pattern is a null check
+            // (`p == 0` / `p != 0`); pointer-to-pointer equality is lowered by
+            // comparing the addresses as integers.
+            self.compare_ptrs(op, a, b)
         } else {
             let r = self
                 .backend
@@ -827,6 +841,63 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 .unwrap();
             Ok(r.into())
         }
+    }
+
+    /// Lower a comparison involving at least one pointer operand. `p == 0`
+    /// (Int literal zero) becomes `is_null`; `p != 0` becomes `is_not_null`;
+    /// pointer-to-pointer compares the addresses as integers.
+    fn compare_ptrs(
+        &mut self,
+        op: ast::BinOp,
+        a: BasicValueEnum<'ctx>,
+        b: BasicValueEnum<'ctx>,
+    ) -> GenResult<'ctx> {
+        use crate::ast::BinOp::*;
+        let (pv, other) = if self.is_ptr(a) { (a, b) } else { (b, a) };
+        let pv = pv.into_pointer_value();
+        // Is the non-pointer side an integer literal zero (the null check)?
+        let other_is_zero = match other {
+            BasicValueEnum::IntValue(iv) => iv.get_zero_extended_constant() == Some(0),
+            _ => false,
+        };
+        if other_is_zero {
+            let r = match op {
+                Eq => self.backend.builder.build_is_null(pv, "isnull").unwrap(),
+                Ne => self.backend.builder.build_is_not_null(pv, "notnull").unwrap(),
+                _ => {
+                    return self.fail("ordering comparison on a pointer is not supported in Phase 4");
+                }
+            };
+            return Ok(r.into());
+        }
+        if self.is_ptr(other) {
+            // ptr == ptr / ptr != ptr: compare addresses as integers.
+            let addr_ty = self.backend.types.int;
+            let ai = self
+                .backend
+                .builder
+                .build_ptr_to_int(pv, addr_ty, "p2i")
+                .unwrap();
+            let bi = self
+                .backend
+                .builder
+                .build_ptr_to_int(other.into_pointer_value(), addr_ty, "p2i")
+                .unwrap();
+            let (pred_int, _): (IntPredicate, FloatPredicate) = match op {
+                Eq => (IntPredicate::EQ, FloatPredicate::OEQ),
+                Ne => (IntPredicate::NE, FloatPredicate::ONE),
+                _ => {
+                    return self.fail("ordering comparison on a pointer is not supported in Phase 4");
+                }
+            };
+            let r = self
+                .backend
+                .builder
+                .build_int_compare(pred_int, ai, bi, "ptrcmp")
+                .unwrap();
+            return Ok(r.into());
+        }
+        self.fail("comparison between a pointer and a non-zero value is not supported in Phase 4")
     }
 
     fn gen_is(&mut self, op: ast::BinOp, a: BasicValueEnum<'ctx>) -> GenResult<'ctx> {
