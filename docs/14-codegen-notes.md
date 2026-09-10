@@ -201,3 +201,22 @@ This pipeline is also what makes the value-semantics aggregate copies cheap:
 SROA and `mem2reg` promote small records to registers and drop the
 `alloca`/`store`/`load` round trips, which is most of the "aggregate copy
 elision" the memory model promises (docs/04-memory-model.md).
+
+## 12. Loops, and the "terminator in the middle of a block" trap
+
+`loop`/`for`/`break`/`continue` lower to header/body/incr/after blocks. The
+trap: after a `break` or `continue` the current block is already terminated,
+and any code generator that unconditionally appends the loop back-edge (or an
+`if`/`match` merge branch) produces `Terminator found in the middle of a basic
+block!`. The fix is a `block_terminated()` guard used everywhere a block might
+end in a control-flow jump — `gen_block` stops emitting after a `break`, and
+`gen_if`/`gen_match`/`gen_loop`/`gen_for` only append their merge/back-edge
+branches when the block is not already terminated. `Module::verify()` catches
+any missed case.
+
+Phase 4's `for i in n` is restricted to the integer range `0..n` (n exclusive,
+`n: Int`); the type checker enforces that the iterable is an `Int`, keeping the
+lowering total. Collection iteration is a Phase 7 concern. The loop support
+makes iterative benchmarks measurable — the pipeline above turns the lowered
+induction-variable loop into native machine code, so a 10M-iteration
+accumulation loop runs in ~0.05s on this host (Rust/C -O2 territory).

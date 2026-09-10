@@ -762,8 +762,13 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
             }
             Expr::For(name, iter, b) => {
                 let it = self.check_expr(iter, env);
-                let _ = it;
-                env.insert(name.clone(), Kind::Unknown);
+                // Phase 4: `for i in n` iterates the Int range 0..n. The loop
+                // variable is an Int; reject non-Int iterables up front so
+                // codegen's lowering is total.
+                if it != Kind::Int && it != Kind::Unknown {
+                    self.error(format!("for-in iterable must be an Int (Phase 4: range 0..n), got {:?}", it), "".to_string());
+                }
+                env.insert(name.clone(), Kind::Int);
                 self.check_block(b, env);
                 Kind::Never
             }

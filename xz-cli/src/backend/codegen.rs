@@ -38,6 +38,9 @@ pub struct Codegen<'b, 'ctx> {
     /// function's Str bindings are never released at exit — conservative leak
     /// that keeps every returned buffer alive for the caller.
     leak_strs: bool,
+    /// the innermost enclosing loop's continue-target and break-target blocks,
+    /// for `break`/`continue` statements (nested loops push/pop).
+    loop_stack: Vec<(BasicBlock<'ctx>, BasicBlock<'ctx>)>,
 }
 
 type GenResult<'ctx> = Result<BasicValueEnum<'ctx>, String>;
@@ -407,6 +410,12 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         let mut last: Option<BasicValueEnum<'ctx>> = None;
         let n = block.stmts.len();
         for (i, stmt) in block.stmts.iter().enumerate() {
+            // After a `break`/`continue`, the current block is already
+            // terminated; the remaining statements in this block (and any
+            // fall-through value) are unreachable and must not be lowered.
+            if self.block_terminated() {
+                break;
+            }
             match stmt {
                 Stmt::Decl(d) => self.gen_decl(d),
                 Stmt::Assign(a) => self.gen_assign(a),
@@ -416,8 +425,11 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                         last = v.ok();
                     }
                 }
-                Stmt::Break | Stmt::Continue => {
-                    let _ = self.fail::<()>("break/continue (loops) are not supported in Phase 4");
+                Stmt::Break => {
+                    let _ = self.gen_break();
+                }
+                Stmt::Continue => {
+                    let _ = self.gen_continue();
                 }
             }
         }
@@ -566,9 +578,8 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             }
             Expr::Match(subject, arms) => self.gen_match(subject, arms),
             Expr::If(ifx) => self.gen_if(ifx),
-            Expr::Loop(_) | Expr::For(_, _, _) => {
-                self.fail("loop/for are not supported in Phase 4")
-            }
+            Expr::Loop(b) => self.gen_loop(b),
+            Expr::For(name, iter, b) => self.gen_for(name, iter, b),
             Expr::Await(_) | Expr::Send(_, _) | Expr::Recv(_) | Expr::Transfer(_) => {
                 self.fail("async/channel/transfer are not supported in Phase 4")
             }
@@ -703,6 +714,16 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         // we reconstruct it from the insert block's parent.
         let bb = self.backend.builder.get_insert_block().unwrap();
         bb.get_parent().unwrap()
+    }
+
+    /// Whether the current insert block already ends in a terminator (a `break`
+    /// / `continue` / `return` inside the block we just generated). If so, we
+    /// must not append another branch to it.
+    fn block_terminated(&self) -> bool {
+        match self.backend.builder.get_insert_block() {
+            Some(bb) => bb.get_terminator().is_some(),
+            None => true,
+        }
     }
 
     fn gen_unary(&mut self, op: &ast::UnaryOp, a: &Expr) -> GenResult<'ctx> {
@@ -1122,7 +1143,9 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 self.after_branch(&pre_then);
                 self.restore_scope(saved_then);
                 let then_bb = self.backend.builder.get_insert_block().unwrap();
-                self.backend.builder.build_unconditional_branch(merge_bb).unwrap();
+                if !self.block_terminated() {
+                    self.backend.builder.build_unconditional_branch(merge_bb).unwrap();
+                }
 
                 // else
                 let pre_else = self.snapshot_owned();
@@ -1138,7 +1161,9 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 self.after_branch(&pre_else);
                 self.restore_scope(saved_else);
                 let else_bb = self.backend.builder.get_insert_block().unwrap();
-                self.backend.builder.build_unconditional_branch(merge_bb).unwrap();
+                if !self.block_terminated() {
+                    self.backend.builder.build_unconditional_branch(merge_bb).unwrap();
+                }
 
                 self.backend.builder.position_at_end(merge_bb);
 
@@ -1162,6 +1187,122 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 }
             }
         }
+    }
+
+    /// `break` — branch to the innermost enclosing loop's break target.
+    fn gen_break(&mut self) -> GenResult<'ctx> {
+        match self.loop_stack.last() {
+            Some((_, brk)) => {
+                self.backend.builder.build_unconditional_branch(*brk).unwrap();
+            }
+            None => {
+                let _ = self.fail::<()>("break outside of a loop");
+            }
+        }
+        Ok(self.backend.types.unit.const_zero().into())
+    }
+
+    /// `continue` — branch to the innermost enclosing loop's continue target.
+    fn gen_continue(&mut self) -> GenResult<'ctx> {
+        match self.loop_stack.last() {
+            Some((cont, _)) => {
+                self.backend.builder.build_unconditional_branch(*cont).unwrap();
+            }
+            None => {
+                let _ = self.fail::<()>("continue outside of a loop");
+            }
+        }
+        Ok(self.backend.types.unit.const_zero().into())
+    }
+
+    /// `loop { ... }` — an infinite loop; the body branches back to the header
+    /// (after `continue` targets it), `break` exits to the after block. Like
+    /// the type checker, the loop's value is never used (Kind::Never), so we
+    /// return a Unit zero.
+    fn gen_loop(&mut self, block: &ast::Block) -> GenResult<'ctx> {
+        let fnv = self.cur_fn();
+        let header = self.backend.context.append_basic_block(fnv, "loop.header");
+        let body_bb = self.backend.context.append_basic_block(fnv, "loop.body");
+        let after = self.backend.context.append_basic_block(fnv, "loop.after");
+
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        // header: fall through to the body. `continue` jumps here (then falls
+        // through again); `break` jumps to `after`.
+        self.backend.builder.position_at_end(header);
+        self.backend.builder.build_unconditional_branch(body_bb).unwrap();
+
+        self.backend.builder.position_at_end(body_bb);
+        self.loop_stack.push((header, after));
+        let _ = self.gen_block(block);
+        self.loop_stack.pop();
+        if !self.block_terminated() {
+            self.backend.builder.build_unconditional_branch(header).unwrap();
+        }
+
+        self.backend.builder.position_at_end(after);
+        Ok(self.backend.types.unit.const_zero().into())
+    }
+
+    /// `for i in n { ... }` — Phase 4 range: iterate `i` over 0..n (n Int,
+    /// exclusive). Lowered as an induction-variable loop with a header compare
+    /// and increment; `continue` jumps to the increment, `break` to after.
+    fn gen_for(&mut self, name: &str, iter: &Expr, block: &ast::Block) -> GenResult<'ctx> {
+        let n = self.gen_expr(iter)?;
+        let n = n.into_int_value();
+        let fnv = self.cur_fn();
+        let header = self.backend.context.append_basic_block(fnv, "for.header");
+        let body_bb = self.backend.context.append_basic_block(fnv, "for.body");
+        let incr = self.backend.context.append_basic_block(fnv, "for.incr");
+        let after = self.backend.context.append_basic_block(fnv, "for.after");
+
+        // entry: i = 0; if n <= 0, skip the body
+        let i_ty = self.backend.types.int;
+        let i_ty_bt: BasicTypeEnum<'ctx> = i_ty.into();
+        let i_ptr = self.backend.builder.build_alloca(i_ty, name).unwrap();
+        self.backend.builder.build_store(i_ptr, i_ty.const_int(0, false)).unwrap();
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        // header: i < n ? body : after
+        self.backend.builder.position_at_end(header);
+        let i_cur = self.build_load(i_ty_bt, i_ptr, name);
+        let cond = self
+            .backend
+            .builder
+            .build_int_compare(IntPredicate::SLT, i_cur.into_int_value(), n, "for.cond")
+            .unwrap();
+        self.backend.builder.build_conditional_branch(cond, body_bb, after).unwrap();
+
+        // body
+        self.backend.builder.position_at_end(body_bb);
+        let saved = self.scope.insert(name.to_string(), (i_ptr, i_ty_bt));
+        self.loop_stack.push((incr, after));
+        let _ = self.gen_block(block);
+        self.loop_stack.pop();
+        match saved {
+            Some((p, t)) => {
+                self.scope.insert(name.to_string(), (p, t));
+            }
+            None => {
+                self.scope.remove(name);
+            }
+        }
+        if !self.block_terminated() {
+            self.backend.builder.build_unconditional_branch(incr).unwrap();
+        }
+
+        // incr: i += 1; jump back to header
+        self.backend.builder.position_at_end(incr);
+        let i_next = self
+            .backend
+            .builder
+            .build_int_add(i_cur.into_int_value(), i_ty.const_int(1, false), "for.next")
+            .unwrap();
+        self.backend.builder.build_store(i_ptr, i_next).unwrap();
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        self.backend.builder.position_at_end(after);
+        Ok(self.backend.types.unit.const_zero().into())
     }
 
     fn gen_match(&mut self, subject: &Expr, arms: &[(Pattern, Box<Expr>)]) -> GenResult<'ctx> {
@@ -1201,8 +1342,12 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 if first_type.is_none() {
                     first_type = Some(self.basic_type_of(v));
                 }
-                incoming.push((v, arm_bb));
-                self.backend.builder.build_unconditional_branch(merge_bb).unwrap();
+                // An arm that `break`s/`continue`s/`return`s leaves the block
+                // terminated — it contributes no incoming value to the phi.
+                if !self.block_terminated() {
+                    incoming.push((v, arm_bb));
+                    self.backend.builder.build_unconditional_branch(merge_bb).unwrap();
+                }
 
                 if is_last {
                     // no further arms; the dispatch chain ends here
@@ -1223,8 +1368,10 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 if first_type.is_none() {
                     first_type = Some(self.basic_type_of(v));
                 }
-                incoming.push((v, dispatch));
-                self.backend.builder.build_unconditional_branch(merge_bb).unwrap();
+                if !self.block_terminated() {
+                    incoming.push((v, dispatch));
+                    self.backend.builder.build_unconditional_branch(merge_bb).unwrap();
+                }
                 dispatch = merge_bb;
                 self.backend.builder.position_at_end(dispatch);
             }
@@ -1337,6 +1484,7 @@ pub fn gen_function(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         none_hint: None,
         owns: HashMap::new(),
         leak_strs,
+        loop_stack: Vec::new(),
     };
     cg.gen_body_common(&f.name, fv, &f.params, &f.body);
 }
@@ -1359,6 +1507,7 @@ pub fn gen_main(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         none_hint: None,
         owns: HashMap::new(),
         leak_strs,
+        loop_stack: Vec::new(),
     };
     cg.gen_body_common(&f.name, fv, &f.params, &f.body);
 }

@@ -48,8 +48,12 @@ and `xz run` work on the example programs. Phases 5–8 are not yet implemented.
 - [x] Conservative Str buffer reclamation (registry-guarded `xz_str_free`;
   unique-owned bindings freed at overwrite/exit, aliases leak — see
   [13-codegen.md](13-codegen.md))
+- [x] Loop support (`loop` + `for i in n` range + `break`/`continue`) —
+  iterative benchmarks now measurable (~C/Rust speed: 10M-iteration loop in
+  ~0.05s, see [13-codegen.md](13-codegen.md))
+- [x] JSON diagnostics emission (`xz check-json`; structured JSON for the AI
+  toolchain loop)
 - [ ] Native binary output
-- [ ] JSON diagnostics emission
 
 ## Phase 5 — FFI & interop (early, by design)
 

@@ -152,6 +152,12 @@ for item in items {
 }
 ```
 
+> **Phase 4 scope.** The backend implements `loop { ... }` with `break` /
+> `continue`, and `for i in n { ... }` iterating the integer range `0..n`
+> (n exclusive, `n: Int`). Collection iteration (`for item in items`) awaits
+> the Phase 7 collections stdlib; the type checker rejects non-Int iterables
+> for now (see [13-codegen.md](13-codegen.md)).
+
 ## Concurrency
 
 ```

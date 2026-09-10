@@ -308,3 +308,36 @@ fn abs_and_sqrt_intrinsics_run() {
         "abs/sqrt intrinsics",
     );
 }
+
+#[test]
+fn loop_and_for_run() {
+    // loop/for with break/continue must compile and execute. `for i in n`
+    // iterates the Int range 0..n (exclusive).
+    expect_exec(
+        r#"func main() {
+    let total = 0
+    for i in 10 {
+        if i == 3 {
+            continue
+        }
+        if i == 6 {
+            break
+        }
+        total = total + i
+    }
+    print(total.to_str())
+    print(" ")
+
+    let n = 0
+    loop {
+        n = n + 1
+        if n == 5 {
+            break
+        }
+    }
+    print(n.to_str())
+    print("\n")
+}"#,
+        "loop/for",
+    );
+}

@@ -127,6 +127,8 @@ freed right after the call. See also docs/14-codegen-notes.md § Str memory.
 | comparison | `build_int_compare` / `build_float_compare`; `Int` is signed (`SGT`/…), `Float` is ordered |
 | `and`/`or`/`not` | `build_and`/`build_or`/`build_not` on `i1` |
 | `if c { a } elif ... { } else { b }` | lower the elif/else chain to nested two-branch ifs; merge with `build_phi` |
+| `loop { ... }` | header/body/after blocks; `break` → after, `continue` → header |
+| `for i in n { ... }` | Phase 4 range `0..n` (n Int, exclusive): induction variable `i`, header compare `i < n`, increment block; `break`/`continue` target after/incr |
 | `match` | branch on a tag (enum) or the ok-flag (Result/Option); the `match` value is a `phi` of arm values |
 | `ok(v)` / `err(e)` | struct `{ v, 1 }` / `{ zero, 0 }` |
 | `none` | a zero of the declared `Option[T]` struct (the binding's type is the payload's source) |
