@@ -35,6 +35,7 @@ fn main() {
     match source {
         Err(e) => {
             println!("error: cannot read {}: {}", path, e);
+            std::process::exit(1);
         }
         Ok(src) => {
             let result = lex(src, path.clone());
@@ -42,6 +43,7 @@ fn main() {
                 Err(e) => {
                     let (l, c) = e.span.start;
                     println!("error: {} at {}:{}:{}", e.message, e.span.file, l, c);
+                    std::process::exit(1);
                 }
                 Ok(tokens) => {
                     if cmd == "lex" {
@@ -54,23 +56,25 @@ fn main() {
                             Err(e) => {
                                 let (l, c) = e.span.start;
                                 println!("error: {} at {}:{}:{}", e.message, e.span.file, l, c);
+                                std::process::exit(1);
                             }
                             Ok(program) => {
                                 println!("ok: parsed {} top-level declarations", program.items.len());
                             }
                         }
                     } else if cmd == "check" {
-                        run_check(tokens, strict, false);
+                        std::process::exit(run_check(tokens, strict, false));
                     } else if cmd == "check-json" {
-                        run_check(tokens, strict, true);
+                        std::process::exit(run_check(tokens, strict, true));
                     } else if cmd == "build" {
-                        run_backend(tokens, false);
+                        std::process::exit(run_backend(tokens, false));
                     } else if cmd == "run" {
-                        run_backend(tokens, true);
+                        std::process::exit(run_backend(tokens, true));
                     } else if cmd == "build-native" {
-                        run_native_build(tokens);
+                        std::process::exit(run_native_build(tokens));
                     } else {
                         println!("unknown command: {}", cmd);
+                        std::process::exit(1);
                     }
                 }
             }
@@ -78,7 +82,7 @@ fn main() {
     }
 }
 
-fn run_check(tokens: Vec<Token>, strict: bool, json: bool) {
+fn run_check(tokens: Vec<Token>, strict: bool, json: bool) -> i32 {
     let mut diags: Vec<Diagnostic> = vec![];
     let parsed = parse(tokens);
     match parsed {
@@ -151,9 +155,10 @@ fn run_check(tokens: Vec<Token>, strict: bool, json: bool) {
             }
         }
     }
+    let failed = !diags.is_empty();
     if json {
         println!("{}", to_json_array(&diags));
-    } else if diags.len() > 0 {
+    } else if failed {
         for d in diags {
             let (sl, sc) = d.span.start;
             println!("  [{}] {} at {}:{}:{}", d.code, d.message, d.span.file, sl, sc);
@@ -161,6 +166,7 @@ fn run_check(tokens: Vec<Token>, strict: bool, json: bool) {
     } else {
         println!("ok: all checks passed");
     }
+    if failed { 1 } else { 0 }
 }
 
 fn dspan(s: Span) -> DSpan {
@@ -169,49 +175,50 @@ fn dspan(s: Span) -> DSpan {
 
 /// Phase 4 backend: run the full front-end check, then lower to LLVM IR and
 /// (for `xz run`) JIT-execute `main`.
-fn run_backend(tokens: Vec<Token>, execute: bool) {
+fn run_backend(tokens: Vec<Token>, execute: bool) -> i32 {
     let parsed = parse(tokens);
     let program = match parsed {
         Err(e) => {
             println!("error: {} at {}:{}:{}", e.message, e.span.file, e.span.start.0, e.span.start.1);
-            return;
+            return 1;
         }
         Ok(p) => p,
     };
     if let Err(errors) = resolve(&program) {
         println!("error: {} resolution errors", errors.len());
-        return;
+        return 1;
     }
     if let Err(errors) = typecheck(&program) {
         for err in &errors {
             println!("type error: {}", err.message);
         }
         println!("error: {} type errors", errors.len());
-        return;
+        return 1;
     }
     if let Err(errors) = check_intent(&program) {
         println!("error: intent: {}", errors[0].code);
-        return;
+        return 1;
     }
 
     let compiled = xz_cli::backend::llvm_backend::compile(&program);
     match compiled {
         Err(e) => {
             println!("error: codegen failed: {}", e);
+            1
         }
         Ok(backend) => {
             if execute {
                 match xz_cli::backend::runtime::run(backend.module) {
-                    Ok(code) => {
-                        std::process::exit(code);
-                    }
+                    Ok(code) => code,
                     Err(e) => {
                         println!("error: run failed: {}", e);
+                        1
                     }
                 }
             } else {
-                // xz build: Phase 4 emits IR only (native output is Phase 5).
+                // xz build: emit the (unoptimized) LLVM IR.
                 println!("{}", backend.module.print_to_string().to_string());
+                0
             }
         }
     }
@@ -221,55 +228,61 @@ fn run_backend(tokens: Vec<Token>, execute: bool) {
 /// optimize, then lower to an object file with `llc` and link with `ld` into a
 /// standalone executable (no Rust runtime). Requires `llc` (from the portable
 /// LLVM) and `ld`/libc on the host.
-fn run_native_build(tokens: Vec<Token>) {
+fn run_native_build(tokens: Vec<Token>) -> i32 {
     let parsed = parse(tokens);
     let program = match parsed {
         Err(e) => {
             println!("error: {} at {}:{}:{}", e.message, e.span.file, e.span.start.0, e.span.start.1);
-            return;
+            return 1;
         }
         Ok(p) => p,
     };
     if let Err(errors) = resolve(&program) {
         println!("error: {} resolution errors", errors.len());
-        return;
+        return 1;
     }
     if let Err(errors) = typecheck(&program) {
         for err in &errors {
             println!("type error: {}", err.message);
         }
         println!("error: {} type errors", errors.len());
-        return;
+        return 1;
     }
     if let Err(errors) = check_intent(&program) {
         println!("error: intent: {}", errors[0].code);
-        return;
+        return 1;
     }
 
     let mut backend = match xz_cli::backend::llvm_backend::compile(&program) {
         Ok(b) => b,
         Err(e) => {
             println!("error: codegen failed: {}", e);
-            return;
+            return 1;
         }
     };
     if let Err(e) = xz_cli::backend::llvm_backend::emit_native_runtime(&mut backend) {
         println!("error: native runtime emission failed: {}", e);
-        return;
+        return 1;
     }
     if let Err(e) = xz_cli::backend::llvm_backend::optimize(&backend.module) {
         println!("error: optimization failed: {}", e);
-        return;
+        return 1;
     }
     let module = &backend.module;
 
     // Write the IR to a temp file.
     let dir = std::env::temp_dir().join(format!("xz_native_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        println!("error: cannot create temp dir: {}", e);
+        return 1;
+    }
     let ir_path = dir.join("prog.ll");
     let obj_path = dir.join("prog.o");
     let out_path = dir.join("prog");
-    std::fs::write(&ir_path, module.print_to_string().to_string()).unwrap();
+    if let Err(e) = std::fs::write(&ir_path, module.print_to_string().to_string()) {
+        println!("error: cannot write IR: {}", e);
+        return 1;
+    }
 
     // llc: IR -> object file.
     let llc = std::env::var("LLC")
@@ -284,11 +297,11 @@ fn run_native_build(tokens: Vec<Token>) {
     match st {
         Err(e) => {
             println!("error: llc not found ({:?}); set LLC to the portable llc path", e);
-            return;
+            return 1;
         }
         Ok(s) if !s.success() => {
             println!("error: llc failed");
-            return;
+            return 1;
         }
         _ => {}
     }
@@ -305,18 +318,22 @@ fn run_native_build(tokens: Vec<Token>) {
     match st {
         Err(e) => {
             println!("error: ld not found ({:?})", e);
-            return;
+            return 1;
         }
         Ok(s) if !s.success() => {
             println!("error: ld failed");
-            return;
+            return 1;
         }
         _ => {}
     }
 
     // Copy the binary out to the current directory.
-    let _ = std::fs::copy(&out_path, "xz_program").unwrap();
+    if let Err(e) = std::fs::copy(&out_path, "xz_program") {
+        println!("error: cannot write ./xz_program: {}", e);
+        return 1;
+    }
     println!("ok: wrote ./xz_program");
+    0
 }
 
 fn tok_name(kind: &TokKind) -> String {
