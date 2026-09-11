@@ -3,17 +3,20 @@
 Design-validation programs. They exist to validate ergonomics and to give the
 implementation a concrete target.
 
-**Runnable** (Phase 4): `hello.xz` and `contracts.xz` pass the full front end
-and execute via the LLVM JIT backend:
+**Runnable** (Phase 4): `hello.xz`, `contracts.xz`, `ffi.xz`, and `lists.xz`
+pass the full front end and execute via the LLVM JIT (and, for these, the
+native path):
 
 ```
 cd ../xz-cli
 cargo run -- run ../examples/hello.xz      # Hello, Xz!length: 10
 cargo run -- run ../examples/contracts.xz  # distance/final x/area
+cargo run -- run ../examples/ffi.xz        # capacity: 16
+cargo run -- run ../examples/lists.xz      # sum/grown/first/empty first
 ```
 
-`concurrency.xz` and `ffi.xz` typecheck but are **not runnable yet**: the
-concurrency runtime is Phase 6 and FFI is Phase 5.
+`concurrency.xz` typechecks but is **not runnable yet**: the concurrency
+runtime is Phase 6.
 
 | File | Demonstrates |
 |---|---|
@@ -21,6 +24,7 @@ concurrency runtime is Phase 6 and FFI is Phase 5.
 | `contracts.xz` | `record`/`enum`, `match`, `pre`/`post`, `Result` + `?`, error unions (`E1 \| E2`) |
 | `concurrency.xz` | `task`, typed channels `Chan[T]`, `send`/`recv`, deterministic completion |
 | `ffi.xz` | `extern` declarations, `Ptr`/`usize`, handle types, `transfer` |
+| `lists.xz` | `List[T]` literals, bounds-checked `xs[i]`, `append`, `for x in xs` |
 
 Conventions used throughout:
 

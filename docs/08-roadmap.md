@@ -71,7 +71,9 @@ and `xz run` work on the example programs. Phases 5–8 are not yet implemented.
 
 ## Phase 7 — Standard library
 
-- Collections, I/O, math, time
+- [x] `List[T]` first slice — literal `[a, b, c]`, bounds-checked `xs[i]`,
+  non-mutating `append`, `len`/`is_empty`, `for x in xs`
+- Collections (`Map`/`Set`), I/O, math, time
 - Networking (HTTP)
 
 ## Phase 8 — Tooling
