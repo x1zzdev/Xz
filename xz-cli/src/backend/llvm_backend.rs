@@ -19,6 +19,9 @@ pub struct LlvmSig<'ctx> {
     pub params: Vec<BasicTypeEnum<'ctx>>,
     pub ret: Option<BasicTypeEnum<'ctx>>,
     pub xz_ret: Option<Kind>,
+    /// the param kinds (post-check), for call-argument type hints (e.g. an
+    /// empty `[]` argument whose element type comes from the parameter).
+    pub param_kinds: Vec<Kind>,
 }
 
 /// The lowered LLVM type of an Xz `Kind`. Only `BasicTypeEnum` (i.e. a value
@@ -217,6 +220,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             params: param_tys.iter().map(|t| *t).collect(),
             ret: ret_ty,
             xz_ret: ret.clone(),
+            param_kinds: param_kinds.to_vec(),
         };
         self.sigs.insert(name.to_string(), sig);
 
@@ -386,6 +390,7 @@ pub fn compile(program: &Program) -> Result<LlvmBackend<'static>, String> {
                         params: param_tys,
                         ret: ret_ty,
                         xz_ret: ret,
+                        param_kinds,
                     },
                 );
             }
@@ -430,6 +435,7 @@ pub fn compile(program: &Program) -> Result<LlvmBackend<'static>, String> {
             params: vec![backend.types.float.into()],
             ret: Some(backend.types.float.into()),
             xz_ret: Some(Kind::Float),
+            param_kinds: vec![Kind::Float],
         });
 
     // Pass 3: lower bodies.

@@ -1147,9 +1147,19 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         }
         // regular function / extern
         if let Some(fv) = self.backend.functions.get(name).copied() {
+            let param_kinds = self.backend.sigs.get(name).map(|s| s.param_kinds.clone()).unwrap_or_default();
             let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> = Vec::new();
-            for a in args {
+            for (i, a) in args.iter().enumerate() {
+                // Give the argument the callee's declared param type as a hint
+                // (so an empty `[]` argument can materialize its element type).
+                let hint = param_kinds.get(i).cloned();
+                let saved_list_hint = self.list_hint.clone();
+                let saved_none_hint = self.none_hint.clone();
+                self.list_hint = hint.clone();
+                self.none_hint = hint;
                 let v = self.gen_expr(a)?;
+                self.list_hint = saved_list_hint;
+                self.none_hint = saved_none_hint;
                 call_args.push(v.into());
             }
             let call = self.backend.builder.build_direct_call(fv, &call_args, "call").unwrap();
@@ -1905,6 +1915,10 @@ impl<'ctx> Codegen<'_, 'ctx> {
                 let alloca = self.backend.builder.build_alloca(ty, &p.name).unwrap();
                 self.backend.builder.build_store(alloca, pv).unwrap();
                 self.scope.insert(p.name.clone(), (alloca, ty));
+                // Record a List parameter's element kind for iteration/indexing.
+                if let Kind::List(t) = kind_from_ast(&p.ty, self.backend) {
+                    self.list_elems.insert(p.name.clone(), *t);
+                }
             }
         }
         let val = self.gen_block(body);
