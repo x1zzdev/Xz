@@ -57,6 +57,11 @@ and `xz run` work on the example programs. Phases 5–8 are not yet implemented.
   toolchain loop)
 - [x] Native binary output (`xz build-native`: emit IR + native libc runtime,
   compile with `llc`, link with `ld` — a standalone executable, no Rust runtime)
+- [x] Record field assignment (`p.x = ...`) and the full `Str` method surface
+  (`at`/`to_upper`/`to_lower`/`to_bytes`)
+- [x] CLI exits non-zero on errors; the parser reports malformed input instead
+  of panicking
+- [ ] Enforce `mut` for assignment/field assignment (currently unenforced)
 
 ## Phase 5 — FFI & interop (early, by design)
 
