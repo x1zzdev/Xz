@@ -391,6 +391,32 @@ fn list_literal_index_and_iteration_run() {
 }
 
 #[test]
+fn mutable_record_field_assignment_runs() {
+    // Field assignment (p.x = ...) mutates only the target binding; a copy is
+    // independent (value semantics, docs/04).
+    expect_exec(
+        r#"record Point {
+    x: Int
+    y: Int
+}
+
+func main() {
+    let a = Point(1, 2)
+    mut b = a
+    b.x = 99
+    b.y = b.y + 5
+    print(a.x.to_str())
+    print(" ")
+    print(b.x.to_str())
+    print(" ")
+    print(b.y.to_str())
+    print("\n")
+}"#,
+        "field assignment",
+    );
+}
+
+#[test]
 fn generic_functions_monomorphize_and_run() {
     // Generic functions are monomorphized per concrete argument type at the
     // call site (a distinct LLVM function per type-argument tuple).

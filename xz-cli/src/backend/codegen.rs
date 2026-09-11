@@ -691,11 +691,50 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                     Err(_) => {}
                 }
             }
-            ast::AssignTarget::Field(base, _fname) => {
-                let _ = self.gen_expr(base);
-                let _ = self.fail::<()>("field assignment is not supported in Phase 4");
+            ast::AssignTarget::Field(base, fname) => {
+                match self.gen_expr(&a.value) {
+                    Ok(v) => match self.field_lvalue(base, fname) {
+                        Ok((fptr, fty)) => {
+                            let _ = self.apply_assign_op(&a.op, fty, fptr, v);
+                        }
+                        Err(_) => {}
+                    },
+                    Err(_) => {}
+                }
             }
         }
+    }
+
+    /// The address and LLVM type of a record field lvalue (`p.x`, `a.b.c`).
+    /// The base must be a record binding or a nested record field.
+    fn field_lvalue(
+        &mut self,
+        base: &Expr,
+        fname: &str,
+    ) -> Result<(PointerValue<'ctx>, BasicTypeEnum<'ctx>), String> {
+        let (base_ptr, base_ty) = match base {
+            Expr::Name(n) => match self.scope.get(n) {
+                Some((p, t)) => (*p, *t),
+                None => return self.fail(&format!("unknown name '{}' in field assignment", n)),
+            },
+            Expr::Field(inner, iname) => self.field_lvalue(inner, iname)?,
+            _ => return self.fail("field assignment target must be a record binding or field"),
+        };
+        let st = match base_ty {
+            BasicTypeEnum::StructType(st) => st,
+            _ => return self.fail("field assignment on a non-record"),
+        };
+        let rec_name = match st.get_name() {
+            Some(n) => n.to_str().unwrap().to_string(),
+            None => return self.fail("field assignment on an anonymous struct"),
+        };
+        let idx = match self.backend.record_field_index(&rec_name, fname) {
+            Some(i) => i,
+            None => return self.fail(&format!("record '{}' has no field '{}'", rec_name, fname)),
+        };
+        let fty = st.get_field_type_at_index(idx).ok_or("field type missing")?;
+        let fptr = self.backend.builder.build_struct_gep(st, base_ptr, idx, fname).unwrap();
+        Ok((fptr, fty))
     }
 
     fn apply_assign_op(
