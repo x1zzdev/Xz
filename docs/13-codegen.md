@@ -79,6 +79,7 @@ system linker.
 | `xz_i64_to_str` | `fn(i64) -> XzStr` | `Int.to_str()` |
 | `xz_f64_to_str` | `fn(f64) -> XzStr` | `Float.to_str()` |
 | `xz_char_to_str` | `fn(i8) -> XzStr` | `Char.to_str()` |
+| `xz_str_to_upper` / `xz_str_to_lower` | `fn(i8*, i64) -> XzStr` | `Str.to_upper()` / `to_lower()` — a fresh byte buffer |
 | `xz_bool_to_str` | `fn(i1) -> XzStr` | `Bool.to_str()` |
 | `xz_str_free` | `fn(i8*, i64) -> ()` | frees a heap Str buffer (registry-guarded) |
 
@@ -161,6 +162,8 @@ freed right after the call. See also docs/14-codegen-notes.md § Str memory.
 | enum construction | allocate a heap box, store the variant's fields, build `{ box, tag }` |
 | function call | `build_direct_call` with the target's `FunctionValue` |
 | method call (`.to_str()`, `.len()`, `.abs()`) | `to_str` → host function; `len`/`is_empty` → field op; `abs`/`approx_sqrt` → LLVM intrinsics |
+| `s.at(i)` / `s.to_bytes()` | `at` → bounds-checked `Result[Char, IndexError]` (shared index helper); `to_bytes` → layout identity (no copy) |
+| `s.to_upper()` / `s.to_lower()` | host `xz_str_to_upper` / `xz_str_to_lower` (libc `toupper`/`tolower` loop in the native runtime) |
 | `main` body | its block is generated into the `main` `FunctionValue` |
 
 ### `?` early return
