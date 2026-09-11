@@ -391,6 +391,32 @@ fn list_literal_index_and_iteration_run() {
 }
 
 #[test]
+fn string_methods_run() {
+    // Str.to_upper / to_lower (new heap buffer), Str.at (bounds-checked
+    // Result[Char, IndexError]), and Str.to_bytes (layout identity).
+    expect_exec(
+        r#"func main() -> Result[Unit, Err] {
+    print("hello".to_upper())
+    print(" ")
+    print("WORLD".to_lower())
+    print(" ")
+    let c = "abc".at(1)?
+    print(c.to_str())
+    print(" ")
+    let bad = "abc".at(99)
+    if bad is ok {
+        print("unexpected")
+    } else {
+        print("bounds")
+    }
+    print("\n")
+    ok()
+}"#,
+        "string methods",
+    );
+}
+
+#[test]
 fn mutable_record_field_assignment_runs() {
     // Field assignment (p.x = ...) mutates only the target binding; a copy is
     // independent (value semantics, docs/04).

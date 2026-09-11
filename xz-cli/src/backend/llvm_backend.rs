@@ -556,6 +556,9 @@ pub fn compile(program: &Program) -> Result<LlvmBackend<'static>, String> {
         backend.declare_extern("xz_f64_to_str", &[f64.into()], Some(xstr.into()));
         backend.declare_extern("xz_bool_to_str", &[i1.into()], Some(xstr.into()));
         backend.declare_extern("xz_char_to_str", &[i8.into()], Some(xstr.into()));
+        // case conversion (Str.to_upper / Str.to_lower) -> fresh XzStr
+        backend.declare_extern("xz_str_to_upper", &[ptr.into(), i64.into()], Some(xstr.into()));
+        backend.declare_extern("xz_str_to_lower", &[ptr.into(), i64.into()], Some(xstr.into()));
     }
 
     // Map the stdlib function `approx_sqrt` and `print` to their host ABI.
@@ -827,6 +830,72 @@ pub fn emit_native_runtime(backend: &mut LlvmBackend<'static>) -> Result<(), Str
             .into_pointer_value();
         backend.builder.build_store(buf, v).unwrap();
         build_str_ret(backend, f, buf, i64.const_int(1, false));
+    }
+
+    // xz_str_to_upper / xz_str_to_lower: allocate len bytes and map each byte
+    // through libc toupper/tolower.
+    let toupper = backend.module.add_function("toupper", i32.fn_type(&[i32.into()], false), None);
+    let tolower = backend.module.add_function("tolower", i32.fn_type(&[i32.into()], false), None);
+    for (fname, cfun) in [("xz_str_to_upper", toupper), ("xz_str_to_lower", tolower)] {
+        if let Some(f) = backend.module.get_function(fname) {
+            let ptr = f.get_nth_param(0).unwrap().into_pointer_value();
+            let len = f.get_nth_param(1).unwrap().into_int_value();
+            let entry = backend.context.append_basic_block(f, "entry");
+            let loop_bb = backend.context.append_basic_block(f, "loop");
+            let body_bb = backend.context.append_basic_block(f, "body");
+            let done_bb = backend.context.append_basic_block(f, "done");
+            let one = i64.const_int(1, false);
+            let zero = i64.const_zero();
+
+            backend.builder.position_at_end(entry);
+            // malloc(max(len, 1)) so a zero-length string still gets a pointer.
+            let nonempty = backend
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SGT, len, zero, "nonempty")
+                .unwrap();
+            let size = backend.builder.build_select(nonempty, len, one, "sz").unwrap().into_int_value();
+            let buf = backend
+                .builder
+                .build_direct_call(malloc, &[size.into()], "buf")
+                .unwrap()
+                .try_as_basic_value()
+                .basic()
+                .unwrap()
+                .into_pointer_value();
+            backend.builder.build_unconditional_branch(loop_bb).unwrap();
+
+            backend.builder.position_at_end(loop_bb);
+            let i_phi = backend.builder.build_phi(i64, "i").unwrap();
+            i_phi.add_incoming(&[(&zero, entry)]);
+            let i_val = i_phi.as_basic_value().into_int_value();
+            let cond = backend
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, i_val, len, "cond")
+                .unwrap();
+            backend.builder.build_conditional_branch(cond, body_bb, done_bb).unwrap();
+
+            backend.builder.position_at_end(body_bb);
+            let src = unsafe { backend.builder.build_in_bounds_gep(i8, ptr, &[i_val], "src").unwrap() };
+            let ch = backend.builder.build_load(i8, src, "ch").unwrap().into_int_value();
+            let chi = backend.builder.build_int_s_extend(ch, i32, "chi").unwrap();
+            let mapped = backend
+                .builder
+                .build_direct_call(cfun, &[chi.into()], "case")
+                .unwrap()
+                .try_as_basic_value()
+                .basic()
+                .unwrap()
+                .into_int_value();
+            let mapped8 = backend.builder.build_int_truncate(mapped, i8, "m8").unwrap();
+            let dst = unsafe { backend.builder.build_in_bounds_gep(i8, buf, &[i_val], "dst").unwrap() };
+            backend.builder.build_store(dst, mapped8).unwrap();
+            let inext = backend.builder.build_int_add(i_val, one, "inext").unwrap();
+            backend.builder.build_unconditional_branch(loop_bb).unwrap();
+            i_phi.add_incoming(&[(&inext, body_bb)]);
+
+            backend.builder.position_at_end(done_bb);
+            build_str_ret(backend, f, buf, len);
+        }
     }
 
     Ok(())

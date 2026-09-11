@@ -88,6 +88,24 @@ extern "C" fn xz_char_to_str(v: i8) -> XzStr {
     XzStr { ptr: copy_to_leaked(&bytes), len: 1 }
 }
 
+#[unsafe(no_mangle)]
+extern "C" fn xz_str_to_upper(ptr: usize, len: usize) -> XzStr {
+    let mut bytes: Vec<u8> = Vec::with_capacity(len);
+    for i in 0..len {
+        bytes.push(unsafe { *((ptr + i) as *const u8) }.to_ascii_uppercase());
+    }
+    XzStr { ptr: copy_to_leaked(&bytes), len: bytes.len() }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn xz_str_to_lower(ptr: usize, len: usize) -> XzStr {
+    let mut bytes: Vec<u8> = Vec::with_capacity(len);
+    for i in 0..len {
+        bytes.push(unsafe { *((ptr + i) as *const u8) }.to_ascii_lowercase());
+    }
+    XzStr { ptr: copy_to_leaked(&bytes), len: bytes.len() }
+}
+
 /// Free a heap-allocated Str buffer. No-op unless the pointer is still live in
 /// the registry, so it is safe to call on literals or already-freed buffers.
 #[unsafe(no_mangle)]
@@ -120,6 +138,8 @@ pub fn run(module: Module) -> Result<i32, String> {
     let f2s: unsafe extern "C" fn(f64) -> XzStr = xz_f64_to_str;
     let b2s: unsafe extern "C" fn(i8) -> XzStr = xz_bool_to_str;
     let ch2s: unsafe extern "C" fn(i8) -> XzStr = xz_char_to_str;
+    let upper: unsafe extern "C" fn(usize, usize) -> XzStr = xz_str_to_upper;
+    let lower: unsafe extern "C" fn(usize, usize) -> XzStr = xz_str_to_lower;
     let sfree: unsafe extern "C" fn(usize, usize) -> () = xz_str_free;
     bind(&module, &ee, "xz_str_free", sfree as usize);
     bind(&module, &ee, "xz_print", p as usize);
@@ -128,6 +148,8 @@ pub fn run(module: Module) -> Result<i32, String> {
     bind(&module, &ee, "xz_f64_to_str", f2s as usize);
     bind(&module, &ee, "xz_bool_to_str", b2s as usize);
     bind(&module, &ee, "xz_char_to_str", ch2s as usize);
+    bind(&module, &ee, "xz_str_to_upper", upper as usize);
+    bind(&module, &ee, "xz_str_to_lower", lower as usize);
 
     let main = ee.get_function_value("main").map_err(|_| "no 'main' function".to_string())?;
     let _ = unsafe { ee.run_function(main, &[]) };

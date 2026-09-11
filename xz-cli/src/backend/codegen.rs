@@ -323,6 +323,18 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         let elem_bt = self.backend.kind_to_llvm(&elem);
         let (buf, len) = self.str_parts(base_val);
         let idx = idx_val.into_int_value();
+        self.bounds_checked_index(buf, len, idx, elem_bt)
+    }
+
+    /// Build `Result[T, IndexError]` for `buf[idx]`, bounds-checked against
+    /// `len` elements of `elem_bt`. Shared by `List[T]` indexing and `Str.at`.
+    fn bounds_checked_index(
+        &mut self,
+        buf: PointerValue<'ctx>,
+        len: inkwell::values::IntValue<'ctx>,
+        idx: inkwell::values::IntValue<'ctx>,
+        elem_bt: BasicTypeEnum<'ctx>,
+    ) -> GenResult<'ctx> {
         let zero = self.backend.types.int.const_int(0, false);
         let ge = self.backend.builder.build_int_compare(IntPredicate::SGE, idx, zero, "idx.ge").unwrap();
         let lt = self.backend.builder.build_int_compare(IntPredicate::SLT, idx, len, "idx.lt").unwrap();
@@ -335,8 +347,8 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         self.backend.builder.build_conditional_branch(in_range, ok_bb, err_bb).unwrap();
 
         self.backend.builder.position_at_end(ok_bb);
-        let slot = unsafe { self.backend.builder.build_in_bounds_gep(elem_bt, buf, &[idx], "list.slot").unwrap() };
-        let v = self.backend.builder.build_load(elem_bt, slot, "list.val").unwrap();
+        let slot = unsafe { self.backend.builder.build_in_bounds_gep(elem_bt, buf, &[idx], "index.slot").unwrap() };
+        let v = self.backend.builder.build_load(elem_bt, slot, "index.val").unwrap();
         let ok_agg = self.result_value(v, true)?;
         self.backend.builder.build_unconditional_branch(merge).unwrap();
 
@@ -1417,6 +1429,31 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             let poison = self.backend.types.bool.const_zero();
             let args: Vec<BasicValueEnum<'ctx>> = vec![iv.into(), poison.into()];
             return self.call_intrinsic("llvm.abs.i64", vec![self.backend.types.int.into()], &args, "abs");
+        }
+        if method == "at" {
+            // Str.at(i) -> Result[Char, IndexError], bounds-checked.
+            if args.len() != 1 {
+                return self.fail("at takes one argument");
+            }
+            let iv = self.gen_expr(&args[0])?;
+            let (buf, len) = self.str_parts(rv);
+            let char_bt: BasicTypeEnum<'ctx> = self.backend.types.char.into();
+            return self.bounds_checked_index(buf, len, iv.into_int_value(), char_bt);
+        }
+        if method == "to_bytes" {
+            // Str and Bytes share the { ptr, len } layout: no copy at runtime.
+            return Ok(rv);
+        }
+        if method == "to_upper" || method == "to_lower" {
+            let (ptr, len) = self.str_parts(rv);
+            let fname = if method == "to_upper" { "xz_str_to_upper" } else { "xz_str_to_lower" };
+            let f = self.backend.module.get_function(fname).ok_or(fname)?;
+            let call = self
+                .backend
+                .builder
+                .build_direct_call(f, &[ptr.into(), len.into()], "case")
+                .unwrap();
+            return Ok(call.try_as_basic_value().basic().unwrap());
         }
         // other methods take no args
         for a in args {
