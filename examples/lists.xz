@@ -1,0 +1,43 @@
+// Lists: literal construction, bounds-checked indexing, non-mutating append,
+// and iteration. See docs/12-stdlib.md and docs/02-syntax.md.
+
+/// Sums the elements of a list.
+/// @intent  Returns the sum of all elements in xs.
+/// @effects mut
+func sum_list(xs: List[Int]) -> Int {
+    mut total: Int = 0
+    for x in xs {
+        total = total + x
+    }
+    total
+}
+
+/// Returns the first element, or a fallback when the list is empty.
+/// @intent  Returns xs[0] when present, otherwise `fallback`.
+/// @effects none
+func first_or(xs: List[Int], fallback: Int) -> Int {
+    let head = xs[0]
+    if head is ok {
+        head
+    } else {
+        fallback
+    }
+}
+
+func main() -> Result[Unit, Err] {
+    let xs: List[Int] = [3, 1, 4, 1, 5]
+    print("sum: " + sum_list(xs).to_str())
+    print("\n")
+
+    let grown = xs.append(9)
+    print("grown: " + sum_list(grown).to_str())
+    print("\n")
+
+    print("first: " + first_or(xs, -1).to_str())
+    print("\n")
+
+    print("empty first: " + first_or([], -1).to_str())
+    print("\n")
+
+    ok()
+}
