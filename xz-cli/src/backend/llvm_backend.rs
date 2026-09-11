@@ -32,6 +32,7 @@ pub struct TypeMap<'ctx> {
     pub char: inkwell::types::IntType<'ctx>,
     pub xz_str: StructType<'ctx>,
     pub xz_bytes: StructType<'ctx>,
+    pub xz_list: StructType<'ctx>,
     pub unit: StructType<'ctx>,
 }
 
@@ -43,6 +44,7 @@ impl<'ctx> TypeMap<'ctx> {
         let unit = context.struct_type(&[], false);
         let xz_str = context.struct_type(&[ptr.into(), i64.into()], false);
         let xz_bytes = context.struct_type(&[ptr.into(), i64.into()], false);
+        let xz_list = context.struct_type(&[ptr.into(), i64.into()], false);
         TypeMap {
             int: i64,
             float: context.f64_type(),
@@ -51,6 +53,7 @@ impl<'ctx> TypeMap<'ctx> {
             char: i8,
             xz_str,
             xz_bytes,
+            xz_list,
             unit,
         }
     }
@@ -130,6 +133,9 @@ impl<'ctx> LlvmBackend<'ctx> {
                 let payload = self.kind_to_llvm(t);
                 self.context.struct_type(&[payload.into(), self.types.bool.into()], false).into()
             }
+            // List[T] is { ptr, i64 } regardless of T: elements live in a
+            // separately allocated buffer (opaque pointers erase T in IR).
+            Kind::List(_) => self.types.xz_list.into(),
             Kind::Err | Kind::ErrUnion(_) => self.types.unit.into(),
             Kind::Chan(_) | Kind::TypeVar(_) | Kind::Unknown | Kind::Never => self.types.unit.into(),
         }
@@ -278,6 +284,10 @@ fn kind_from_ast_named(name: &str, args: &[Type], backend: &LlvmBackend<'_>) -> 
             let t = kind_from_ast(&args[0], backend);
             let e = kind_from_ast(&args[1], backend);
             Kind::Result(Box::new(t), Box::new(e))
+        }
+        "List" => {
+            let inner = kind_from_ast(&args[0], backend);
+            Kind::List(Box::new(inner))
         }
         "Err" => Kind::Err,
         _ => {

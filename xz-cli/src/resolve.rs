@@ -267,6 +267,11 @@ impl Resolver {
                 self.resolve_expr(base, scope);
                 self.resolve_expr(idx, scope);
             }
+            Expr::ListLit(elems) => {
+                for e in elems {
+                    self.resolve_expr(e, scope);
+                }
+            }
             Expr::Prop(base, _) => self.resolve_expr(base, scope),
             Expr::Unary(op, a) => {
                 let _ = op;

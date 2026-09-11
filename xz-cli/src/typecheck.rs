@@ -16,6 +16,7 @@ pub enum Kind {
     Ptr,
     Option(Box<Kind>),
     Result(Box<Kind>, Box<Kind>),
+    List(Box<Kind>),
     Chan(Box<Kind>),
     Record(String),
     Enum(String),
@@ -195,6 +196,10 @@ impl TypeChecker {
             "Chan" => {
                 let inner = self.from_ast(&args[0]);
                 Kind::Chan(Box::new(inner))
+            }
+            "List" => {
+                let inner = self.from_ast(&args[0]);
+                Kind::List(Box::new(inner))
             }
             "Err" => Kind::Err,
             _ => {
@@ -557,8 +562,24 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         if matches!(method.as_str(), "len" | "abs" | "to_str" | "to_upper" | "to_lower" | "is_empty") && args.len() != 0 {
                             self.error(format!("method '{}' takes no arguments", method), "".to_string());
                         }
-                        for a in args {
-                            let _ = self.check_expr(a, env);
+                        if method == "append" {
+                            if args.len() != 1 {
+                                self.error(format!("append takes one argument"), "".to_string());
+                            }
+                            if let Kind::List(t) = &rt {
+                                for a in args {
+                                    let at = self.check_expr(a, env);
+                                    if !self.accepts(&at, t) {
+                                        self.error(format!("append expects {:?}, got {:?}", t, at), "".to_string());
+                                    }
+                                }
+                            } else {
+                                for a in args { let _ = self.check_expr(a, env); }
+                            }
+                        } else {
+                            for a in args {
+                                let _ = self.check_expr(a, env);
+                            }
                         }
                         match mt {
                             Some(t) => t,
@@ -605,10 +626,35 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     }
                 }
             }
+            Expr::ListLit(elems) => {
+                if elems.is_empty() {
+                    // Element type is supplied by the binding's declared type.
+                    Kind::List(Box::new(Kind::Unknown))
+                } else {
+                    let first = self.check_expr(&elems[0], env);
+                    for e in &elems[1..] {
+                        let t = self.check_expr(e, env);
+                        if t != first {
+                            self.error(format!("list literal elements must share a type: {:?} vs {:?}", first, t), "".to_string());
+                        }
+                    }
+                    Kind::List(Box::new(first))
+                }
+            }
             Expr::Index(base, idx) => {
-                let _ = self.check_expr(base, env);
-                let _ = self.check_expr(idx, env);
-                Kind::Unknown
+                let bt = self.check_expr(base, env);
+                let it = self.check_expr(idx, env);
+                if it != Kind::Int && it != Kind::Unknown {
+                    self.error(format!("index must be an Int, got {:?}", it), "".to_string());
+                }
+                match &bt {
+                    // bounds-checked indexing: Result[T, IndexError] (docs/12)
+                    Kind::List(t) => Kind::Result(t.clone(), Box::new(Kind::Err)),
+                    _ => {
+                        self.error(format!("indexing is only defined for List[T], got {:?}", bt), "".to_string());
+                        Kind::Unknown
+                    }
+                }
             }
             Expr::Prop(base, _) => {
                 let bt = self.check_expr(base, env);
@@ -762,13 +808,18 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
             }
             Expr::For(name, iter, b) => {
                 let it = self.check_expr(iter, env);
-                // Phase 4: `for i in n` iterates the Int range 0..n. The loop
-                // variable is an Int; reject non-Int iterables up front so
-                // codegen's lowering is total.
-                if it != Kind::Int && it != Kind::Unknown {
-                    self.error(format!("for-in iterable must be an Int (Phase 4: range 0..n), got {:?}", it), "".to_string());
-                }
-                env.insert(name.clone(), Kind::Int);
+                // `for i in n` iterates the Int range 0..n; `for x in xs`
+                // iterates a List[T] in order (docs/02, docs/12).
+                let elem = match &it {
+                    Kind::Int => Kind::Int,
+                    Kind::List(t) => (**t).clone(),
+                    Kind::Unknown => Kind::Unknown,
+                    _ => {
+                        self.error(format!("for-in iterable must be an Int range or a List[T], got {:?}", it), "".to_string());
+                        Kind::Unknown
+                    }
+                };
+                env.insert(name.clone(), elem);
                 self.check_block(b, env);
                 Kind::Never
             }
@@ -830,6 +881,8 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
             (Kind::Result(_, _), Kind::Result(_, _)) => true,
             // `none` is the absence literal: it fits any Option[T] (docs/03)
             (Kind::Option(inner), Kind::Option(_)) if matches!(**inner, Kind::Unknown) => true,
+            // `[]` has no element type of its own: it fits any List[T] (docs/12)
+            (Kind::List(inner), Kind::List(_)) if matches!(**inner, Kind::Unknown) => true,
             _ => false,
         }
     }
@@ -864,6 +917,14 @@ fn method_type(receiver: &Kind, method: &str) -> Option<Kind> {
         return match method {
             "len" => Some(Kind::Int),
             "abs" => Some(Kind::Int),
+            _ => None,
+        };
+    }
+    if let Kind::List(t) = r {
+        return match method {
+            "len" => Some(Kind::Int),
+            "is_empty" => Some(Kind::Bool),
+            "append" => Some(Kind::List(t.clone())),
             _ => None,
         };
     }
@@ -1008,6 +1069,7 @@ fn subst(ty: &Kind, bindings: &Vec<Option<Kind>>) -> Kind {
         }
         Kind::Option(inner) => Kind::Option(Box::new(subst(inner, bindings))),
         Kind::Result(t, e) => Kind::Result(Box::new(subst(t, bindings)), Box::new(subst(e, bindings))),
+        Kind::List(inner) => Kind::List(Box::new(subst(inner, bindings))),
         Kind::Chan(inner) => Kind::Chan(Box::new(subst(inner, bindings))),
         Kind::ErrUnion(members) => {
             let ms: Vec<Kind> = members.iter().map(|m| subst(m, bindings)).collect();

@@ -356,6 +356,41 @@ func main() -> Result[Unit, Err] {
 }
 
 #[test]
+fn list_literal_index_and_iteration_run() {
+    // List[T]: literal construction, bounds-checked indexing returning
+    // Result[T, IndexError], non-mutating append, len/is_empty, and
+    // for-in iteration over elements.
+    expect_exec(
+        r#"func main() -> Result[Unit, Err] {
+    let xs: List[Int] = [10, 20, 30]
+    print(xs.len().to_str())
+    print(" ")
+    let first = xs[0]?
+    print(first.to_str())
+    print(" ")
+    let grown = xs.append(40)
+    print(grown.len().to_str())
+    print(" ")
+    mut sum: Int = 0
+    for x in grown {
+        sum = sum + x
+    }
+    print(sum.to_str())
+    print(" ")
+    let bad = xs[9]
+    if bad is ok {
+        print("unexpected")
+    } else {
+        print("bounds")
+    }
+    print("\n")
+    ok()
+}"#,
+        "list",
+    );
+}
+
+#[test]
 fn native_runtime_emits_valid_module() -> Result<(), String> {
     // The native build path emits IR bodies for the xz_* runtime (libc-based)
     // and declares `main` returning i32. Verify the resulting module (this

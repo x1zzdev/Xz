@@ -268,6 +268,7 @@ fn walk_expr(e: &Expr, set: &mut EffectSet, declared: &HashMap<String, EffectSet
         }
         Expr::Field(base, _) => walk_expr(base, set, declared),
         Expr::Index(base, idx) => { walk_expr(base, set, declared); walk_expr(idx, set, declared); }
+        Expr::ListLit(elems) => { for e in elems { walk_expr(e, set, declared); } }
         Expr::Prop(base, _) => walk_expr(base, set, declared),
         Expr::Unary(_, a) => walk_expr(a, set, declared),
         Expr::Binary(_, a, b) => { walk_expr(a, set, declared); walk_expr(b, set, declared); }

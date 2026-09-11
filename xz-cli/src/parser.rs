@@ -716,6 +716,20 @@ let mut trusted = false;
                 let name_tok = self.expect_ident().unwrap();
                 Ok(Expr::Name(name_tok.text.clone()))
             }
+            TokKind::LBracket => {
+                self.i += 1;
+                let mut elems: Vec<Expr> = vec![];
+                if !self.at(TokKind::RBracket) {
+                    loop {
+                        elems.push(self.expr().unwrap());
+                        if self.eat(TokKind::Comma).is_none() {
+                            break;
+                        }
+                    }
+                }
+                self.expect(TokKind::RBracket, String::from("']'")).unwrap();
+                Ok(Expr::ListLit(elems))
+            }
             TokKind::LParen => {
                 self.i += 1;
                 let e = self.expr().unwrap();

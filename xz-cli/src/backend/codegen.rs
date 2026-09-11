@@ -27,6 +27,12 @@ pub struct Codegen<'b, 'ctx> {
     /// while evaluating a `let name: Option[T] = none`, the declared kind, so the
     /// `none` literal can materialize a zero of that Option's struct
     none_hint: Option<Kind>,
+    /// while evaluating a `let xs: List[T] = ...`, the declared element kind,
+    /// so an empty `[]` literal can materialize a typed buffer.
+    list_hint: Option<Kind>,
+    /// list-typed binding name -> element kind, so `for x in xs` and `xs[i]`
+    /// can load the right element type (codegen carries no types otherwise).
+    list_elems: HashMap<String, Kind>,
     /// name -> owns a heap-allocated Str buffer, meaning this binding is the
     /// only reference to it (safe to free on overwrite / scope exit). A value
     /// is recorded here only when it was produced by concat/to_str in this
@@ -56,6 +62,7 @@ fn kind_contains_str(k: &Kind, backend: &LlvmBackend<'_>) -> bool {
     match k {
         Kind::Str | Kind::Bytes => true,
         Kind::Option(t) | Kind::Result(t, _) => kind_contains_str(t, backend),
+        Kind::List(t) => kind_contains_str(t, backend),
         Kind::Record(name) => backend
             .record_fields
             .get(name)
@@ -217,6 +224,120 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             .build_direct_call(f, &[sz.into()], &format!("{}.box", name))
             .unwrap();
         Ok(call.try_as_basic_value().basic().unwrap().into_pointer_value())
+    }
+
+    /// Allocate `count` elements of `elem` (at least one byte) via the
+    /// module's libc `malloc`.
+    fn alloc_buffer(&mut self, elem: BasicTypeEnum<'ctx>, count: u64, tag: &str) -> Result<PointerValue<'ctx>, String> {
+        let elem_size = match &self.backend.target_data {
+            Some(td) => td.get_abi_size(&elem),
+            None => return self.fail("no target data for list allocation"),
+        };
+        let bytes = elem_size.saturating_mul(count).max(1);
+        let f = self.backend.module.get_function("malloc").ok_or("malloc missing")?;
+        let sz = self.backend.types.int.const_int(bytes, false);
+        let call = self.backend.builder.build_direct_call(f, &[sz.into()], tag).unwrap();
+        Ok(call.try_as_basic_value().basic().unwrap().into_pointer_value())
+    }
+
+    /// The element kind of a list-typed expression, determinable without a
+    /// full type pass: a list binding's recorded element kind, a literal's
+    /// first element, or an `append` receiver. Used by `for x in xs` and
+    /// `xs[i]`, which must load the element's LLVM type.
+    fn list_elem_kind(&self, e: &Expr) -> Option<Kind> {
+        match e {
+            Expr::Name(n) => self.list_elems.get(n).cloned(),
+            Expr::ListLit(elems) => elems.first().and_then(|x| self.scalar_kind(x)),
+            Expr::Call(callee, _) => match &**callee {
+                Expr::Field(recv, m) if m == "append" => self.list_elem_kind(recv),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// A kind for scalar literal expressions, used only to seed list element
+    /// inference.
+    fn scalar_kind(&self, e: &Expr) -> Option<Kind> {
+        match e {
+            Expr::Int(_) => Some(Kind::Int),
+            Expr::Float(_) => Some(Kind::Float),
+            Expr::Bool(_) => Some(Kind::Bool),
+            Expr::Char(_) => Some(Kind::Char),
+            Expr::Str(_) | Expr::RawStr(_) => Some(Kind::Str),
+            _ => None,
+        }
+    }
+
+    /// Lower a `[e1, e2, ...]` literal: allocate an element buffer, store the
+    /// elements, and build the `{ ptr, len }` List value.
+    fn gen_list_lit(&mut self, elems: &[Expr]) -> GenResult<'ctx> {
+        let mut vals: Vec<BasicValueEnum<'ctx>> = Vec::with_capacity(elems.len());
+        for e in elems {
+            vals.push(self.gen_expr(e)?);
+        }
+        let elem_bt: BasicTypeEnum<'ctx> = match vals.first() {
+            Some(v) => self.basic_type_of(*v),
+            None => match &self.list_hint {
+                Some(Kind::List(t)) => self.backend.kind_to_llvm(t),
+                _ => return self.fail("cannot infer the element type of an empty list literal; declare it, e.g. `let xs: List[Int] = []`"),
+            },
+        };
+        let len = vals.len() as u64;
+        let buf = self.alloc_buffer(elem_bt, len, "list.buf")?;
+        for (i, v) in vals.iter().enumerate() {
+            let idx = self.backend.types.int.const_int(i as u64, false);
+            let slot = unsafe { self.backend.builder.build_in_bounds_gep(elem_bt, buf, &[idx], "list.elem").unwrap() };
+            self.backend.builder.build_store(slot, *v).unwrap();
+        }
+        let mut agg = self.backend.types.xz_list.const_zero();
+        agg = self.backend.builder.build_insert_value(agg, buf, 0, "l.ptr").unwrap().into_struct_value();
+        let lenv = self.backend.types.int.const_int(len, false);
+        agg = self.backend.builder.build_insert_value(agg, lenv, 1, "l.len").unwrap().into_struct_value();
+        Ok(agg.into())
+    }
+
+    /// Lower bounds-checked `xs[i]` to `Result[T, IndexError]`.
+    fn gen_list_index(
+        &mut self,
+        base_val: BasicValueEnum<'ctx>,
+        idx_val: BasicValueEnum<'ctx>,
+        base: &Expr,
+    ) -> GenResult<'ctx> {
+        let elem = match self.list_elem_kind(base) {
+            Some(k) => k,
+            None => return self.fail("cannot determine the list element type for indexing; bind the list with a declared `List[T]` type"),
+        };
+        let elem_bt = self.backend.kind_to_llvm(&elem);
+        let (buf, len) = self.str_parts(base_val);
+        let idx = idx_val.into_int_value();
+        let zero = self.backend.types.int.const_int(0, false);
+        let ge = self.backend.builder.build_int_compare(IntPredicate::SGE, idx, zero, "idx.ge").unwrap();
+        let lt = self.backend.builder.build_int_compare(IntPredicate::SLT, idx, len, "idx.lt").unwrap();
+        let in_range = self.backend.builder.build_and(ge, lt, "idx.ok").unwrap();
+
+        let fnv = self.cur_fn();
+        let ok_bb = self.backend.context.append_basic_block(fnv, "index.ok");
+        let err_bb = self.backend.context.append_basic_block(fnv, "index.err");
+        let merge = self.backend.context.append_basic_block(fnv, "index.merge");
+        self.backend.builder.build_conditional_branch(in_range, ok_bb, err_bb).unwrap();
+
+        self.backend.builder.position_at_end(ok_bb);
+        let slot = unsafe { self.backend.builder.build_in_bounds_gep(elem_bt, buf, &[idx], "list.slot").unwrap() };
+        let v = self.backend.builder.build_load(elem_bt, slot, "list.val").unwrap();
+        let ok_agg = self.result_value(v, true)?;
+        self.backend.builder.build_unconditional_branch(merge).unwrap();
+
+        self.backend.builder.position_at_end(err_bb);
+        let zero_v = elem_bt.const_zero();
+        let err_agg = self.result_value(zero_v, false)?;
+        self.backend.builder.build_unconditional_branch(merge).unwrap();
+
+        self.backend.builder.position_at_end(merge);
+        let res_ty = self.basic_type_of(ok_agg);
+        let phi = self.backend.builder.build_phi(res_ty, "index.phi").unwrap();
+        phi.add_incoming(&[(&ok_agg, ok_bb), (&err_agg, err_bb)]);
+        Ok(phi.as_basic_value())
     }
 
     /// Emit a call to an LLVM intrinsic. Unlike host calls, intrinsics are
@@ -476,15 +597,18 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         };
         match &d.init {
             Some(e) => {
-                // Let the `none` literal know the declared Option type.
+                // Let `none` and an empty `[]` literal see the declared type.
                 let saved_hint = self.none_hint.clone();
+                let saved_list_hint = self.list_hint.clone();
                 self.none_hint = declared_kind.clone();
+                self.list_hint = declared_kind.clone();
                 let r = self.gen_expr(e);
                 self.none_hint = saved_hint;
+                self.list_hint = saved_list_hint;
                 match r {
-                    Ok(v) => match declared_kind {
+                    Ok(v) => match &declared_kind {
                         Some(k) => {
-                            let lty = self.backend.kind_to_llvm(&k);
+                            let lty = self.backend.kind_to_llvm(k);
                             self.bind_typed(&d.name, lty, v);
                         }
                         None => {
@@ -492,6 +616,16 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                         }
                     },
                     Err(_) => {}
+                }
+                // Track List element kinds so `for x in xs` / `xs[i]` can load
+                // the right element type. From the declared type, or inferred
+                // from a list literal / list-producing expression.
+                let elem = match &declared_kind {
+                    Some(Kind::List(t)) => Some((**t).clone()),
+                    _ => self.list_elem_kind(e),
+                };
+                if let Some(ek) = elem {
+                    self.list_elems.insert(d.name.clone(), ek);
                 }
                 // Track Str ownership: a fresh buffer bound to `name` becomes
                 // this binding's, freed at scope exit; an alias downgrades the
@@ -503,6 +637,9 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 match &d.ty {
                     Some(ty) => {
                         let k = kind_from_ast(ty, self.backend);
+                        if let Kind::List(t) = &k {
+                            self.list_elems.insert(d.name.clone(), (**t).clone());
+                        }
                         let lty = self.backend.kind_to_llvm(&k);
                         let alloca = self.backend.builder.build_alloca(lty, &d.name).unwrap();
                         self.scope.insert(d.name.clone(), (alloca, lty));
@@ -593,7 +730,12 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             Expr::Name(n) => self.gen_name(n),
             Expr::Call(callee, args) => self.gen_call(callee, args),
             Expr::Field(base, fname) => self.gen_field(base, fname),
-            Expr::Index(_, _) => self.fail("collection indexing is not supported in Phase 4"),
+            Expr::ListLit(elems) => self.gen_list_lit(elems),
+            Expr::Index(base, idx) => {
+                let bv = self.gen_expr(base)?;
+                let iv = self.gen_expr(idx)?;
+                self.gen_list_index(bv, iv, base)
+            }
             Expr::Prop(base, _) => self.gen_prop(base),
             Expr::Unary(op, a) => self.gen_unary(op, a),
             Expr::Binary(op, a, b) => {
@@ -1112,6 +1254,45 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 .unwrap();
             return Ok(r.into());
         }
+        if method == "append" {
+            // Value-returning growth: allocate len+1 elements, copy the old
+            // buffer, store the new element, return a fresh List (docs/12).
+            if args.len() != 1 {
+                return self.fail("append takes one argument");
+            }
+            let elem = match self.list_elem_kind(receiver) {
+                Some(k) => k,
+                None => return self.fail("cannot determine the list element type for append; bind the list with a declared `List[T]` type"),
+            };
+            let elem_bt = self.backend.kind_to_llvm(&elem);
+            let elem_size = match &self.backend.target_data {
+                Some(td) => td.get_abi_size(&elem_bt),
+                None => return self.fail("no target data for list allocation"),
+            };
+            let xv = self.gen_expr(&args[0])?;
+            let (buf, len) = self.str_parts(rv);
+            let int = self.backend.types.int;
+            let len1 = self.backend.builder.build_int_add(len, int.const_int(1, false), "len1").unwrap();
+            let bytes = self.backend.builder.build_int_mul(len1, int.const_int(elem_size, false), "bytes").unwrap();
+            let malloc = self.backend.module.get_function("malloc").ok_or("malloc missing")?;
+            let newbuf = self
+                .backend
+                .builder
+                .build_direct_call(malloc, &[bytes.into()], "list.appended")
+                .unwrap()
+                .try_as_basic_value()
+                .basic()
+                .unwrap()
+                .into_pointer_value();
+            let old_bytes = self.backend.builder.build_int_mul(len, int.const_int(elem_size, false), "oldbytes").unwrap();
+            let _ = self.backend.builder.build_memcpy(newbuf, 1, buf, 1, old_bytes).unwrap();
+            let slot = unsafe { self.backend.builder.build_in_bounds_gep(elem_bt, newbuf, &[len], "list.slot").unwrap() };
+            self.backend.builder.build_store(slot, xv).unwrap();
+            let mut agg = self.backend.types.xz_list.const_zero();
+            agg = self.backend.builder.build_insert_value(agg, newbuf, 0, "l.ptr").unwrap().into_struct_value();
+            agg = self.backend.builder.build_insert_value(agg, len1, 1, "l.len").unwrap().into_struct_value();
+            return Ok(agg.into());
+        }
         if method == "abs" {
             // llvm.abs / llvm.fabs are native (fully inlineable) — no C ABI
             // round-trip like the host abs used to be.
@@ -1348,8 +1529,23 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// exclusive). Lowered as an induction-variable loop with a header compare
     /// and increment; `continue` jumps to the increment, `break` to after.
     fn gen_for(&mut self, name: &str, iter: &Expr, block: &ast::Block) -> GenResult<'ctx> {
-        let n = self.gen_expr(iter)?;
-        let n = n.into_int_value();
+        let iv = self.gen_expr(iter)?;
+        // `for i in n` is an Int range; `for x in xs` is a List. The iterable's
+        // LLVM shape selects the lowering (both are checked by the type checker).
+        if matches!(iv.get_type(), BasicTypeEnum::IntType(_)) {
+            self.gen_for_range(name, iv.into_int_value(), block)
+        } else {
+            self.gen_for_list(name, iv, iter, block)
+        }
+    }
+
+    /// `for i in n` — iterate the Int range 0..n (exclusive).
+    fn gen_for_range(
+        &mut self,
+        name: &str,
+        n: inkwell::values::IntValue<'ctx>,
+        block: &ast::Block,
+    ) -> GenResult<'ctx> {
         let fnv = self.cur_fn();
         let header = self.backend.context.append_basic_block(fnv, "for.header");
         let body_bb = self.backend.context.append_basic_block(fnv, "for.body");
@@ -1399,6 +1595,78 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             .build_int_add(i_cur.into_int_value(), i_ty.const_int(1, false), "for.next")
             .unwrap();
         self.backend.builder.build_store(i_ptr, i_next).unwrap();
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        self.backend.builder.position_at_end(after);
+        Ok(self.backend.types.unit.const_zero().into())
+    }
+
+    /// `for x in xs` — iterate a `List[T]` in order, binding the element value.
+    fn gen_for_list(
+        &mut self,
+        name: &str,
+        list_val: BasicValueEnum<'ctx>,
+        iter: &Expr,
+        block: &ast::Block,
+    ) -> GenResult<'ctx> {
+        let elem = match self.list_elem_kind(iter) {
+            Some(k) => k,
+            None => return self.fail("cannot determine the list element type for iteration; bind the list with a declared `List[T]` type"),
+        };
+        let elem_bt = self.backend.kind_to_llvm(&elem);
+        let (buf, len) = self.str_parts(list_val);
+
+        let fnv = self.cur_fn();
+        let header = self.backend.context.append_basic_block(fnv, "for.header");
+        let body_bb = self.backend.context.append_basic_block(fnv, "for.body");
+        let incr = self.backend.context.append_basic_block(fnv, "for.incr");
+        let after = self.backend.context.append_basic_block(fnv, "for.after");
+
+        let i_ty = self.backend.types.int;
+        let i_ptr = self.backend.builder.build_alloca(i_ty, "for.idx").unwrap();
+        self.backend.builder.build_store(i_ptr, i_ty.const_int(0, false)).unwrap();
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        // header: idx < len ? body : after
+        self.backend.builder.position_at_end(header);
+        let i_cur = self.build_load(i_ty.into(), i_ptr, "for.idx");
+        let cond = self
+            .backend
+            .builder
+            .build_int_compare(IntPredicate::SLT, i_cur.into_int_value(), len, "for.cond")
+            .unwrap();
+        self.backend.builder.build_conditional_branch(cond, body_bb, after).unwrap();
+
+        // body: load the element at idx and bind `name` to it
+        self.backend.builder.position_at_end(body_bb);
+        let slot = unsafe { self.backend.builder.build_in_bounds_gep(elem_bt, buf, &[i_cur.into_int_value()], "for.slot").unwrap() };
+        let ev = self.backend.builder.build_load(elem_bt, slot, "for.elem").unwrap();
+        let e_ptr = self.backend.builder.build_alloca(elem_bt, name).unwrap();
+        self.backend.builder.build_store(e_ptr, ev).unwrap();
+        let saved = self.scope.insert(name.to_string(), (e_ptr, elem_bt));
+        self.loop_stack.push((incr, after));
+        let _ = self.gen_block(block);
+        self.loop_stack.pop();
+        match saved {
+            Some((p, t)) => {
+                self.scope.insert(name.to_string(), (p, t));
+            }
+            None => {
+                self.scope.remove(name);
+            }
+        }
+        if !self.block_terminated() {
+            self.backend.builder.build_unconditional_branch(incr).unwrap();
+        }
+
+        // incr
+        self.backend.builder.position_at_end(incr);
+        let next = self
+            .backend
+            .builder
+            .build_int_add(i_cur.into_int_value(), i_ty.const_int(1, false), "for.next")
+            .unwrap();
+        self.backend.builder.build_store(i_ptr, next).unwrap();
         self.backend.builder.build_unconditional_branch(header).unwrap();
 
         self.backend.builder.position_at_end(after);
@@ -1582,6 +1850,8 @@ pub fn gen_function(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         ret_llvm,
         str_count: 0,
         none_hint: None,
+        list_hint: None,
+        list_elems: HashMap::new(),
         owns: HashMap::new(),
         leak_strs,
         loop_stack: Vec::new(),
@@ -1608,6 +1878,8 @@ pub fn gen_main(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         ret_llvm: Some(main_ret),
         str_count: 0,
         none_hint: None,
+        list_hint: None,
+        list_elems: HashMap::new(),
         owns: HashMap::new(),
         leak_strs,
         loop_stack: Vec::new(),

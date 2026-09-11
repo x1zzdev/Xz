@@ -186,6 +186,7 @@ pub enum Expr {
     Call(Box<Expr>, Vec<Expr>),
     Field(Box<Expr>, String),
     Index(Box<Expr>, Box<Expr>),
+    ListLit(Vec<Expr>),
     Prop(Box<Expr>, PropKind),       // postfix `?`
     Unary(UnaryOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
