@@ -7,7 +7,7 @@ use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{FloatPredicate, IntPredicate};
 
 use crate::ast::{self, Block, Expr, Pattern, Stmt, Type};
-use crate::backend::llvm_backend::{kind_from_ast, LlvmBackend};
+use crate::backend::llvm_backend::{kind_from_ast, kind_from_ast_subst, kind_from_llvm, LlvmBackend};
 use crate::typecheck::Kind;
 
 pub const PI: f64 = 3.14159265358979323846;
@@ -50,6 +50,9 @@ pub struct Codegen<'b, 'ctx> {
     /// true for `main`, which is the C entry point and returns i32 (0), not
     /// its declared Xz return type.
     is_main: bool,
+    /// concrete type-parameter substitution for a generic specialization
+    /// (empty for ordinary functions); `kind_of` applies it to declared types.
+    subst: HashMap<String, Kind>,
 }
 
 type GenResult<'ctx> = Result<BasicValueEnum<'ctx>, String>;
@@ -90,6 +93,15 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
 
     fn is_float(&self, v: BasicValueEnum<'ctx>) -> bool {
         matches!(v.get_type(), inkwell::types::BasicTypeEnum::FloatType(_))
+    }
+    /// Re-derive a declared type as a `Kind`, applying any generic
+    /// specialization substitution in scope.
+    fn kind_of(&self, ty: &Type) -> Kind {
+        if self.subst.is_empty() {
+            kind_from_ast(ty, self.backend)
+        } else {
+            kind_from_ast_subst(ty, self.backend, &self.subst)
+        }
     }
     fn is_struct(&self, v: BasicValueEnum<'ctx>) -> bool {
         matches!(v.get_type(), inkwell::types::BasicTypeEnum::StructType(_))
@@ -592,7 +604,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             return;
         }
         let declared_kind: Option<Kind> = match &d.ty {
-            Some(ty) => Some(kind_from_ast(ty, self.backend)),
+            Some(ty) => Some(self.kind_of(ty)),
             None => None,
         };
         match &d.init {
@@ -636,7 +648,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 // declared type, no initializer
                 match &d.ty {
                     Some(ty) => {
-                        let k = kind_from_ast(ty, self.backend);
+                        let k = self.kind_of(ty);
                         if let Kind::List(t) = &k {
                             self.list_elems.insert(d.name.clone(), (**t).clone());
                         }
@@ -1085,7 +1097,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     }
 
     fn gen_cast(&mut self, v: BasicValueEnum<'ctx>, ty: &Type) -> GenResult<'ctx> {
-        let k = kind_from_ast(ty, self.backend);
+        let k = self.kind_of(ty);
         let to = self.backend.kind_to_llvm(&k);
         match (self.is_float(v), matches!(to, BasicTypeEnum::FloatType(_))) {
             (false, true) => {
@@ -1145,6 +1157,10 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         if let Some((_en, tag, fields)) = self.backend.variants.get(name).cloned() {
             return self.gen_enum_ctor(name, tag, fields, args);
         }
+        // generic function: monomorphize on the concrete argument types
+        if self.backend.generic_params.contains_key(name) {
+            return self.gen_generic_call(name, args);
+        }
         // regular function / extern
         if let Some(fv) = self.backend.functions.get(name).copied() {
             let param_kinds = self.backend.sigs.get(name).map(|s| s.param_kinds.clone()).unwrap_or_default();
@@ -1199,6 +1215,54 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             return self.call_intrinsic("llvm.sqrt.f64", vec![self.backend.types.float.into()], &[v], "sqrt");
         }
         self.fail(&format!("unknown function '{}'", name))
+    }
+
+    /// Lower a call to a generic function by monomorphizing on the concrete
+    /// argument types: infer each bare type parameter from the matching
+    /// argument's LLVM type, create/reuse the specialization, and call it.
+    fn gen_generic_call(&mut self, name: &str, args: &[Expr]) -> GenResult<'ctx> {
+        let f = self
+            .backend
+            .func_asts
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("missing AST for generic function '{}'", name))?;
+        let tparams = self.backend.generic_params.get(name).cloned().unwrap_or_default();
+        let mut vals: Vec<BasicValueEnum<'ctx>> = Vec::with_capacity(args.len());
+        for a in args {
+            vals.push(self.gen_expr(a)?);
+        }
+        let mut bound: Vec<Option<Kind>> = vec![None; tparams.len()];
+        for (i, p) in f.params.iter().enumerate() {
+            if i >= vals.len() {
+                break;
+            }
+            let bare = match &p.ty {
+                Type::NamedPlain(n) => Some(n.clone()),
+                Type::Named(n, a) if a.is_empty() => Some(n.clone()),
+                _ => None,
+            };
+            if let Some(n) = bare {
+                if let Some(idx) = tparams.iter().position(|t| *t == n) {
+                    bound[idx] = Some(kind_from_llvm(self.backend, self.basic_type_of(vals[i])));
+                }
+            }
+        }
+        if let Some(missing) = bound.iter().position(|b| b.is_none()) {
+            return self.fail(&format!(
+                "cannot infer type parameter '{}' for call to '{}' (only parameters that are a bare type parameter are supported)",
+                tparams[missing], name
+            ));
+        }
+        let type_args: Vec<Kind> = bound.into_iter().map(|b| b.unwrap()).collect();
+        let mangled = self.backend.specialize(name, &type_args)?;
+        let fv = self.backend.functions.get(&mangled).copied().ok_or("specialization not declared")?;
+        let call_args: Vec<inkwell::values::BasicMetadataValueEnum> = vals.into_iter().map(|v| v.into()).collect();
+        let call = self.backend.builder.build_direct_call(fv, &call_args, "call").unwrap();
+        match call.try_as_basic_value().basic() {
+            Some(v) => Ok(v),
+            None => Ok(self.backend.types.unit.const_zero().into()),
+        }
     }
 
     fn gen_enum_ctor(
@@ -1866,6 +1930,37 @@ pub fn gen_function(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         leak_strs,
         loop_stack: Vec::new(),
         is_main: false,
+        subst: HashMap::new(),
+    };
+    cg.gen_body_common(&f.name, fv, &f.params, &f.body);
+}
+
+/// Generate the body of a generic specialization: like `gen_function`, but the
+/// declared types are resolved through `subst` (type parameter -> concrete
+/// kind). The concrete `FunctionValue` was declared by `LlvmBackend::specialize`.
+pub fn gen_specialized(
+    backend: &mut LlvmBackend<'static>,
+    f: &ast::FuncDecl,
+    subst: HashMap<String, Kind>,
+    fv: FunctionValue<'static>,
+) {
+    let ret_kind = f.ret.as_ref().map(|t| kind_from_ast_subst(t, backend, &subst));
+    let ret_llvm = fv.get_type().get_return_type();
+    let leak_strs = ret_kind.as_ref().map(|k| kind_contains_str(k, backend)).unwrap_or(false);
+    let mut cg = Codegen {
+        backend,
+        scope: HashMap::new(),
+        ret_kind,
+        ret_llvm,
+        str_count: 0,
+        none_hint: None,
+        list_hint: None,
+        list_elems: HashMap::new(),
+        owns: HashMap::new(),
+        leak_strs,
+        loop_stack: Vec::new(),
+        is_main: false,
+        subst,
     };
     cg.gen_body_common(&f.name, fv, &f.params, &f.body);
 }
@@ -1894,6 +1989,7 @@ pub fn gen_main(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         leak_strs,
         loop_stack: Vec::new(),
         is_main: true,
+        subst: HashMap::new(),
     };
     cg.gen_body_common(&f.name, fv, &f.params, &f.body);
 }
@@ -1916,7 +2012,7 @@ impl<'ctx> Codegen<'_, 'ctx> {
                 self.backend.builder.build_store(alloca, pv).unwrap();
                 self.scope.insert(p.name.clone(), (alloca, ty));
                 // Record a List parameter's element kind for iteration/indexing.
-                if let Kind::List(t) = kind_from_ast(&p.ty, self.backend) {
+                if let Kind::List(t) = self.kind_of(&p.ty) {
                     self.list_elems.insert(p.name.clone(), *t);
                 }
             }

@@ -391,6 +391,43 @@ fn list_literal_index_and_iteration_run() {
 }
 
 #[test]
+fn generic_functions_monomorphize_and_run() {
+    // Generic functions are monomorphized per concrete argument type at the
+    // call site (a distinct LLVM function per type-argument tuple).
+    expect_exec(
+        r#"/// Identity.
+/// @intent  Returns its argument.
+/// @effects none
+func id[T](x: T) -> T {
+    x
+}
+
+/// Returns the larger value.
+/// @intent  Returns the maximum of a and b.
+/// @effects none
+func max[T: Ordered](a: T, b: T) -> T {
+    if a > b {
+        a
+    } else {
+        b
+    }
+}
+
+func main() {
+    print(id(42).to_str())
+    print(" ")
+    print(id("hi"))
+    print(" ")
+    print(max(3, 7).to_str())
+    print(" ")
+    print(max(2.5, 1.5).to_str())
+    print("\n")
+}"#,
+        "generics",
+    );
+}
+
+#[test]
 fn native_runtime_emits_valid_module() -> Result<(), String> {
     // The native build path emits IR bodies for the xz_* runtime (libc-based)
     // and declares `main` returning i32. Verify the resulting module (this

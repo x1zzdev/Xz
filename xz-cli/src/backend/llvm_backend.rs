@@ -88,6 +88,15 @@ pub struct LlvmBackend<'ctx> {
     /// host target data, used to compute aggregate sizes (enum box allocation)
     /// independently of the builder's (empty) data layout.
     pub target_data: Option<TargetData>,
+    /// generic function name -> type-parameter names, in index order
+    pub generic_params: HashMap<String, Vec<String>>,
+    /// generic function name -> its AST, used to generate specializations
+    pub func_asts: HashMap<String, ast::FuncDecl>,
+    /// mangled specialization name -> the generated FunctionValue
+    pub monos: HashMap<String, FunctionValue<'ctx>>,
+    /// specializations whose bodies still need generating (name, substitution,
+    /// function); processed after the concrete functions are lowered.
+    pub pending_monos: Vec<(String, HashMap<String, Kind>, FunctionValue<'ctx>)>,
 }
 
 impl<'ctx> LlvmBackend<'ctx> {
@@ -109,6 +118,10 @@ impl<'ctx> LlvmBackend<'ctx> {
             sigs: HashMap::new(),
             error: None,
             target_data: None,
+            generic_params: HashMap::new(),
+            func_asts: HashMap::new(),
+            monos: HashMap::new(),
+            pending_monos: Vec::new(),
         }
     }
 
@@ -254,6 +267,41 @@ impl<'ctx> LlvmBackend<'ctx> {
         let fn_type = self.make_fn_type(param_tys, ret);
         self.module.add_function(name, fn_type, None)
     }
+
+    /// Create (or reuse) a concrete specialization of a generic function for
+    /// the given type arguments. Declares the specialized LLVM function and
+    /// queues its body for generation after the concrete functions are
+    /// lowered. Returns the mangled name.
+    pub fn specialize(&mut self, name: &str, type_args: &[Kind]) -> Result<String, String> {
+        let tparams = self
+            .generic_params
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("'{}' is not a generic function", name))?;
+        let mut mangled = name.to_string();
+        for t in type_args {
+            mangled.push('$');
+            mangled.push_str(&mangle_type_tag(t));
+        }
+        if self.monos.contains_key(&mangled) {
+            return Ok(mangled);
+        }
+        let f = self
+            .func_asts
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("missing AST for generic function '{}'", name))?;
+        let subst: HashMap<String, Kind> =
+            tparams.iter().cloned().zip(type_args.iter().cloned()).collect();
+        let param_kinds: Vec<Kind> =
+            f.params.iter().map(|p| kind_from_ast_subst(&p.ty, self, &subst)).collect();
+        let ret = f.ret.as_ref().map(|t| kind_from_ast_subst(t, self, &subst));
+        let fv = self.declare_function(&mangled, &param_kinds, &ret, None);
+        fv.set_linkage(Linkage::Internal);
+        self.monos.insert(mangled.clone(), fv);
+        self.pending_monos.push((name.to_string(), subst, fv));
+        Ok(mangled)
+    }
 }
 
 /// Convert an AST type to a `Kind`. The front end already validated it, so
@@ -307,6 +355,83 @@ fn kind_from_ast_named(name: &str, args: &[Type], backend: &LlvmBackend<'_>) -> 
     }
 }
 
+/// Like `kind_from_ast`, but maps a type-parameter name to a concrete `Kind`
+/// from `subst` (used to lower a generic function's specialized body).
+pub fn kind_from_ast_subst(ty: &Type, backend: &LlvmBackend<'_>, subst: &HashMap<String, Kind>) -> Kind {
+    match ty {
+        Type::NamedPlain(n) => kind_named_subst(n, &[], backend, subst),
+        Type::Named(n, args) => kind_named_subst(n, args, backend, subst),
+        Type::Union(ms) => Kind::ErrUnion(ms.iter().map(|m| kind_from_ast_subst(m, backend, subst)).collect()),
+    }
+}
+
+fn kind_named_subst(name: &str, args: &[Type], backend: &LlvmBackend<'_>, subst: &HashMap<String, Kind>) -> Kind {
+    if let Some(k) = subst.get(name) {
+        return k.clone();
+    }
+    match name {
+        "Option" => Kind::Option(Box::new(kind_from_ast_subst(&args[0], backend, subst))),
+        "Result" => Kind::Result(
+            Box::new(kind_from_ast_subst(&args[0], backend, subst)),
+            Box::new(kind_from_ast_subst(&args[1], backend, subst)),
+        ),
+        "List" => Kind::List(Box::new(kind_from_ast_subst(&args[0], backend, subst))),
+        "Chan" => Kind::Chan(Box::new(kind_from_ast_subst(&args[0], backend, subst))),
+        _ => kind_from_ast_named(name, args, backend),
+    }
+}
+
+/// Canonical `Kind` for an LLVM value type, used to monomorphize a generic
+/// function from its concrete argument types. Structurally-equal LLVM types
+/// (e.g. `Str`/`List[T]`, both `{ ptr, i64 }`) map to the same canonical kind,
+/// which is harmless because the specialized LLVM signature is identical.
+pub fn kind_from_llvm(backend: &LlvmBackend<'_>, t: BasicTypeEnum<'_>) -> Kind {
+    match t {
+        BasicTypeEnum::IntType(it) => match it.get_bit_width() {
+            1 => Kind::Bool,
+            8 => Kind::Char,
+            _ => Kind::Int,
+        },
+        BasicTypeEnum::FloatType(_) => Kind::Float,
+        BasicTypeEnum::PointerType(_) => Kind::Ptr,
+        BasicTypeEnum::StructType(st) => {
+            if st == backend.types.xz_str {
+                Kind::Str
+            } else if st.count_fields() == 2 && st.get_field_type_at_index(1) == Some(backend.types.bool.into()) {
+                let payload = st.get_field_type_at_index(0).unwrap();
+                Kind::Option(Box::new(kind_from_llvm(backend, payload)))
+            } else if st.count_fields() == 0 {
+                Kind::Unit
+            } else {
+                Kind::Unknown
+            }
+        }
+        _ => Kind::Unknown,
+    }
+}
+
+/// A short, LLVM-safe mangled type tag for specialization names.
+pub fn mangle_type_tag(k: &Kind) -> String {
+    match k {
+        Kind::Bool => "b".into(),
+        Kind::Int => "i".into(),
+        Kind::Usize => "u".into(),
+        Kind::Float => "f".into(),
+        Kind::Char => "c".into(),
+        Kind::Str => "s".into(),
+        Kind::Bytes => "y".into(),
+        Kind::Unit => "v".into(),
+        Kind::Ptr => "p".into(),
+        Kind::Option(t) => format!("O{}", mangle_type_tag(t)),
+        Kind::Result(t, _) => format!("R{}", mangle_type_tag(t)),
+        Kind::List(t) => format!("L{}", mangle_type_tag(t)),
+        Kind::Err => "e".into(),
+        Kind::Record(n) => format!("r{}", n),
+        Kind::Enum(n) => format!("E{}", n),
+        _ => "x".into(),
+    }
+}
+
 /// The entry point: declare every top-level type and function, then lower the
 /// body of each function. `main` is declared with a `void` ABI regardless of
 /// its declared `Result[Unit, Err]` return, since the runtime calls it with no
@@ -357,6 +482,15 @@ pub fn compile(program: &Program) -> Result<LlvmBackend<'static>, String> {
     for item in &program.items {
         match item {
             Item::Func(f) => {
+                // Generic functions are not declared directly; a concrete
+                // specialization is created on demand at each call site
+                // (monomorphization). Record the AST and its type parameters.
+                if !f.type_params.is_empty() {
+                    let tps: Vec<String> = f.type_params.iter().map(|tp| tp.name.clone()).collect();
+                    backend.generic_params.insert(f.name.clone(), tps);
+                    backend.func_asts.insert(f.name.clone(), f.clone());
+                    continue;
+                }
                 let param_kinds: Vec<Kind> = f.params.iter().map(|p| kind_from_ast(&p.ty, &backend)).collect();
                 // `main` is the C entry point: the runtime calls it with no
                 // args and the linker/crt expects `int main()`, so it is
@@ -452,6 +586,14 @@ pub fn compile(program: &Program) -> Result<LlvmBackend<'static>, String> {
         }
     }
 
+    // Generate the bodies of any generic specializations requested during pass
+    // 3 (and, transitively, by later specializations).
+    while let Some((gname, subst, fv)) = backend.pending_monos.pop() {
+        if let Some(f) = backend.func_asts.get(&gname).cloned() {
+            crate::backend::codegen::gen_specialized(&mut backend, &f, subst, fv);
+        }
+    }
+
     if let Some(e) = &backend.error {
         return Err(e.clone());
     }
@@ -514,7 +656,6 @@ pub fn emit_native_runtime(backend: &mut LlvmBackend<'static>) -> Result<(), Str
     let i32 = backend.context.i32_type();
     let i64 = backend.types.int;
     let ptr = backend.types.ptr;
-    let i1 = backend.types.bool;
     let void = backend.context.void_type();
 
     // libc declarations. `malloc` may already exist (LLVM's `build_malloc`
@@ -539,7 +680,7 @@ pub fn emit_native_runtime(backend: &mut LlvmBackend<'static>) -> Result<(), Str
         .add_function("snprintf", i32.fn_type(&[ptr.into(), i64.into(), ptr.into()], true), None);
 
     // Helper closures would fight the borrow checker; inline the bodies.
-    let mut build_str_ret = |backend: &mut LlvmBackend<'static>, _f: FunctionValue<'static>, buf: inkwell::values::PointerValue<'static>, len: inkwell::values::IntValue<'static>| {
+    let build_str_ret = |backend: &mut LlvmBackend<'static>, _f: FunctionValue<'static>, buf: inkwell::values::PointerValue<'static>, len: inkwell::values::IntValue<'static>| {
         let agg = backend.types.xz_str.const_zero();
         let agg = backend.builder.build_insert_value(agg, buf, 0, "s.ptr").unwrap().into_struct_value();
         let agg = backend.builder.build_insert_value(agg, len, 1, "s.len").unwrap().into_struct_value();
