@@ -152,6 +152,7 @@ freed right after the call. See also docs/14-codegen-notes.md § Str memory.
 | `x is some` / `x is ok` in `if` | flow typing: the branch narrows `x` to a pointer at its payload field, matching the type checker |
 | `x.value` under `is ok` | `extract_value` the payload |
 | record field access | `extract_value` (records are by-value structs) |
+| record field assignment (`p.x = v`) | `struct_gep` to the field address, then store (reusing the `=`/`+=` logic) |
 | record construction | `insert_value` into a zero struct, in field order |
 | `[e1, e2, ...]` | malloc an element buffer, store elements, build a `{ ptr, len }` List value |
 | `xs[i]` | bounds-checked: `0 <= i < len` → `ok(element)` else `err(IndexError)` |
