@@ -1064,13 +1064,15 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             // (`p == 0` / `p != 0`); pointer-to-pointer equality is lowered by
             // comparing the addresses as integers.
             self.compare_ptrs(op, a, b)
-        } else {
+        } else if a.get_type().is_int_type() {
             let r = self
                 .backend
                 .builder
                 .build_int_compare(pred_int, a.into_int_value(), b.into_int_value(), "cmp")
                 .unwrap();
             Ok(r.into())
+        } else {
+            self.fail("comparison is only defined for Int, Float, and Ptr (and Str equality via `==` is not implemented)")
         }
     }
 
