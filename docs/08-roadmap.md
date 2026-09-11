@@ -51,6 +51,8 @@ and `xz run` work on the example programs. Phases 5–8 are not yet implemented.
 - [x] Loop support (`loop` + `for i in n` range + `break`/`continue`) —
   iterative benchmarks now measurable (~C/Rust speed: 10M-iteration loop in
   ~0.05s, see [13-codegen.md](13-codegen.md))
+- [x] Generic function monomorphization (per-call-site specialization from the
+  concrete argument types — see [13-codegen.md](13-codegen.md))
 - [x] JSON diagnostics emission (`xz check-json`; structured JSON for the AI
   toolchain loop)
 - [x] Native binary output (`xz build-native`: emit IR + native libc runtime,

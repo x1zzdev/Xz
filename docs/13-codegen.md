@@ -205,12 +205,29 @@ codegen, and `xz build-native` applies it before `llc`.
 - `task`, `async`/`await`, `chan`/`send`/`recv` — Phase 6 (concurrency
   runtime), no IR lowering here.
 - `Map`/`Set` — specified as type names but no stdlib surface yet.
-- Generic function instantiation (`max[T: Ordered]`, `type_params`) — the front
-  end typechecks them, but the backend lowers only *concrete* function
-  signatures. A generic call is not yet code-generated.
 - Shared-library output (`xz build --shared`) and `xz bind` — FFI follow-ups.
 - Unit types (`Meters`, `Seconds`) — not implemented.
 - No debug info and no bitcode file output.
 
 These exclusions keep the backend a reviewable, mechanical phase; each later
 phase is a documented extension of this contract.
+
+## Generic functions: monomorphization
+
+A generic function is not declared directly. Each call site infers the type
+arguments from the concrete argument types and requests a specialization:
+
+- the **type arguments** are recovered from the arguments' LLVM types via a
+  canonical `kind_from_llvm` — structurally-equal LLVM types (e.g. `Str` and
+  `List[T]`, both `{ ptr, i64 }`) map to the same canonical kind, which is
+  harmless because the specialized LLVM signature is identical;
+- a mangled function (`id$i`, `max$i`) is declared with the substituted
+  parameter/return kinds and its body lowered with the type-parameter
+  substitution in scope (`kind_of` resolves a declared `T` through `subst`);
+- specializations are generated after the concrete functions, so a generic
+  body that calls another generic transitively queues more specializations.
+
+The current inference handles parameters that *are* a bare type parameter
+(`x: T`). A parameter whose type is a generic structure (`xs: List[T]`) is not
+inferred yet — the call is rejected with a clear message rather than lowered
+incorrectly.
