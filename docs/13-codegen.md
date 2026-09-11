@@ -51,7 +51,8 @@ what `xz build` (native output, Phase 5) will reuse.
 | `enum` | `struct { i8*, i32 }` where the `i32` is the **tag** and the `i8*` is a **boxed heap pointer** to a struct of the active variant's fields (see [Notes](14-codegen-notes.md)) |
 | `Result[T, E]` | `struct { T, i1 }` — a *payload + ok-flag* (no heap; the error payload is unused by the runtime) |
 | `Option[T]` | `struct { T, i1 }` — same shape as `Result` |
-| `Chan[T]`, `Task`, `for`, `async` | not supported in Phase 4 (see Scope) |
+| `List[T]` | `struct { T*, i64 }` — pointer to an element buffer + element count; elements are immutable, so the buffer is shared by copies |
+| `Chan[T]`, `Task`, `async` | not supported (see Scope) |
 
 ### Function ABI
 
@@ -152,6 +153,10 @@ freed right after the call. See also docs/14-codegen-notes.md § Str memory.
 | `x.value` under `is ok` | `extract_value` the payload |
 | record field access | `extract_value` (records are by-value structs) |
 | record construction | `insert_value` into a zero struct, in field order |
+| `[e1, e2, ...]` | malloc an element buffer, store elements, build a `{ ptr, len }` List value |
+| `xs[i]` | bounds-checked: `0 <= i < len` → `ok(element)` else `err(IndexError)` |
+| `xs.append(x)` | malloc `len+1` elements, copy the old buffer, store `x`, return a new List |
+| `for x in xs` | induction `0..len`; load the element at each index |
 | enum construction | allocate a heap box, store the variant's fields, build `{ box, tag }` |
 | function call | `build_direct_call` with the target's `FunctionValue` |
 | method call (`.to_str()`, `.len()`, `.abs()`) | `to_str` → host function; `len`/`is_empty` → field op; `abs`/`approx_sqrt` → LLVM intrinsics |
@@ -192,21 +197,20 @@ external, because the runtime calls it), so the pipeline's `globaldce` drops
 any function that becomes dead after inlining. Host functions (`xz_print`,
 `xz_concat`, …) are declarations, never defined, and are left untouched.
 
-`xz build` still emits the unoptimized IR; the pipeline is applied by the JIT
-(`xz run`) and will be part of the Phase 5 native path.
+`xz build` emits the unoptimized IR; `xz run` applies the pipeline before JIT
+codegen, and `xz build-native` applies it before `llc`.
 
-## Scope (explicitly out of Phase 4)
+## Scope (explicitly out)
 
-- `task`, `async`/`await`, `chan`/`send`/`recv`, `for`, `loop` — Phase 6
-  (concurrency runtime), no IR lowering here.
-- `extern`/`Ptr`/`transfer`, shared-library output, `xz bind` — Phase 5 (FFI).
-- `for`/`loop`/`break`/`continue` — Phase 6 (concurrency runtime), no IR lowering here.
-- Generic function instantiation (`max[T: Ordered]`, `Point[T]`) — the front
-  end typechecks them, but Phase 4 lowers only *concrete* function signatures.
-  A generic call is not yet code-generated.
-- `List`/`Map`/`Set` and collection `[]` indexing — Phase 7.
-- No debug info and no bitcode file output in Phase 4. (`xz run` runs the
-  optimization pipeline above; `xz build` emits unoptimized IR.)
+- `task`, `async`/`await`, `chan`/`send`/`recv` — Phase 6 (concurrency
+  runtime), no IR lowering here.
+- `Map`/`Set` — specified as type names but no stdlib surface yet.
+- Generic function instantiation (`max[T: Ordered]`, `type_params`) — the front
+  end typechecks them, but the backend lowers only *concrete* function
+  signatures. A generic call is not yet code-generated.
+- Shared-library output (`xz build --shared`) and `xz bind` — FFI follow-ups.
+- Unit types (`Meters`, `Seconds`) — not implemented.
+- No debug info and no bitcode file output.
 
 These exclusions keep the backend a reviewable, mechanical phase; each later
-phase (5/6/7) is a documented extension of this contract.
+phase is a documented extension of this contract.

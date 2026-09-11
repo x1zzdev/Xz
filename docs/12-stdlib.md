@@ -1,8 +1,9 @@
 # Standard Library — Minimum Surface
 
 Status: this is the **minimum surface** needed to typecheck the example
-programs and to validate Phases 1–3. The full standard library (collections,
-file I/O, networking, time) is Phase 7 on the [roadmap](08-roadmap.md).
+programs and to validate Phases 1–3, plus the first collection slice
+(`List[T]`). The rest of the standard library (`Map`/`Set`, file I/O,
+networking, time) is Phase 7 on the [roadmap](08-roadmap.md).
 Anything not listed here does not exist yet.
 
 ## Conventions
@@ -60,6 +61,25 @@ by the language): `"job " + r.id.to_str()`.
 | `b.len() -> Int` | |
 | `b.to_str() -> Result[Str, DecodeError]` | UTF-8 decode |
 
+## `List[T]`
+
+An ordered, immutable-element sequence. Value type: assignment/argument/return
+copies it; `xs.append(x)` returns a *new* list (see
+[03-type-system.md](03-type-system.md)).
+
+| Construct | Meaning |
+|---|---|
+| `[e1, e2, ...]` | list literal (in order) |
+| `xs[i] -> Result[T, IndexError]` | 0-based, bounds-checked indexing |
+| `xs.len() -> Int` | element count |
+| `xs.is_empty() -> Bool` | |
+| `xs.append(x: T) -> List[T]` | a new list with `x` appended |
+| `for x in xs { ... }` | iterate elements in order |
+
+`[]` (empty) requires a declared element type: `let xs: List[Int] = []`.
+There is no index assignment and no `push`; growth is the explicit, value-returning
+`append`.
+
 ## Numeric
 
 | Signature | Notes |
@@ -94,6 +114,6 @@ untyped failure path. To use a value, `match` it; to assert it exists, use
 
 ## Out of scope (Phase 7)
 
-`List`, `Map`, `Set`, file I/O, networking (HTTP), time, ranges, collection
-indexing `[]`, and any module structure. The grammar reserves their syntax;
-nothing provides it yet.
+`Map`, `Set`, file I/O, networking (HTTP), time, ranges, and any module
+structure. The grammar reserves their syntax; nothing provides it yet.
+`List` (above) is the first and only collection so far.

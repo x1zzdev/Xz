@@ -79,6 +79,19 @@ part of the type contract: a reviewer must be able to predict the sequence of
 values a loop produces, so no hash-order nondeterminism is allowed into
 observable behavior.
 
+### `List[T]`
+
+`List[T]` is an ordered sequence of `T`. It is a value type: assignment, an
+argument, or a return copies it, so two bindings never share mutable storage
+(see [04-memory-model.md](04-memory-model.md)). A list's **elements are
+immutable** — there is no index assignment. The only way to grow a list is the
+non-mutating `xs.append(x)`, which returns a *new* list; this keeps value
+semantics observable without a `mut` receiver.
+
+Iteration over a `List[T]` yields its elements in order. A list's element type
+must be known at the binding site: an empty literal `[]` needs a declared type
+(`let xs: List[Int] = []`).
+
 ## Error channel
 
 `Result[T, E]` carries exactly one error type `E`. A function that can fail in

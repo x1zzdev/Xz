@@ -150,13 +150,21 @@ loop {
 for item in items {
     // ...
 }
+
+// Lists: literal, bounds-checked indexing, non-mutating append, iteration.
+let xs: List[Int] = [1, 2, 3]
+let first = xs[0]                 // Result[Int, IndexError]
+let grown = xs.append(4)          // a new List[Int]
+for x in xs {
+    print(x.to_str())
+}
 ```
 
 > **Phase 4 scope.** The backend implements `loop { ... }` with `break` /
-> `continue`, and `for i in n { ... }` iterating the integer range `0..n`
-> (n exclusive, `n: Int`). Collection iteration (`for item in items`) awaits
-> the Phase 7 collections stdlib; the type checker rejects non-Int iterables
-> for now (see [13-codegen.md](13-codegen.md)).
+> `continue`, `for i in n { ... }` iterating the integer range `0..n`
+> (n exclusive, `n: Int`), and `for x in xs { ... }` over a `List[T]`
+> (see [12-stdlib.md](12-stdlib.md)). Iterables other than `Int` and
+> `List[T]` are rejected (see [13-codegen.md](13-codegen.md)).
 
 ## Concurrency
 
