@@ -61,7 +61,7 @@ and `xz run` work on the example programs. Phases 5–8 are not yet implemented.
   (`at`/`to_upper`/`to_lower`/`to_bytes`)
 - [x] CLI exits non-zero on errors; the parser reports malformed input instead
   of panicking
-- [ ] Enforce `mut` for assignment/field assignment (currently unenforced)
+- [x] Enforce `mut` for assignment/field assignment
 
 ## Phase 5 — FFI & interop (early, by design)
 
