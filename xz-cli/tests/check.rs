@@ -54,6 +54,18 @@ fn expect_ok(src: &str, label: &str) {
     }
 }
 
+/// First typecheck error message, bypassing the intent phase so mutability
+/// rules can be tested in isolation.
+fn typecheck_error(src: &str) -> Option<String> {
+    let ts = lex(src.to_string(), "test.xz".to_string()).ok()?;
+    let p = parse(ts).ok()?;
+    resolve(&p).ok()?;
+    match typecheck(&p) {
+        Err(errors) => Some(errors[0].message.clone()),
+        Ok(_) => None,
+    }
+}
+
 fn expect_intent_code(src: &str, code: &str, label: &str) {
     let err = check_source(src);
     match err {
@@ -447,5 +459,105 @@ fn json_emits_spec_shape() {
     if !arr.contains("\"suggestion\":{\"fix\":\"extend @effects to 'io'\",\"confidence\":0.9") {
         println!("FAIL json: missing suggestion");
         return;
+    }
+}
+
+#[test]
+fn immutable_assignment_rejected() {
+    let err = typecheck_error(
+        r#"func main() {
+    let a: Int = 1
+    a = 2
+    print(a.to_str())
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("immutable binding 'a'"), "unexpected error: {}", e),
+        None => panic!("immutable assignment was allowed"),
+    }
+}
+
+#[test]
+fn mut_assignment_accepted() {
+    let err = typecheck_error(
+        r#"func main() {
+    mut a: Int = 1
+    a = 2
+    a += 3
+    print(a.to_str())
+}"#,
+    );
+    assert!(err.is_none(), "mut assignment rejected: {:?}", err);
+}
+
+#[test]
+fn immutable_field_assignment_rejected() {
+    let err = typecheck_error(
+        r#"record Point {
+    x: Int
+    y: Int
+}
+
+func main() {
+    let p = Point(1, 2)
+    p.x = 3
+    print(p.x.to_str())
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("immutable binding 'p'"), "unexpected error: {}", e),
+        None => panic!("field assignment on an immutable binding was allowed"),
+    }
+}
+
+#[test]
+fn mut_field_assignment_accepted() {
+    let err = typecheck_error(
+        r#"record Point {
+    x: Int
+    y: Int
+}
+
+func main() {
+    mut p = Point(1, 2)
+    p.x = 3
+    print(p.x.to_str())
+}"#,
+    );
+    assert!(err.is_none(), "mut field assignment rejected: {:?}", err);
+}
+
+#[test]
+fn mutable_param_assignment_accepted() {
+    let err = typecheck_error(
+        r#"func bump(mut n: Int) {
+    n = n + 1
+}
+
+func main() {
+    mut x: Int = 1
+    bump(x)
+    print(x.to_str())
+}"#,
+    );
+    assert!(err.is_none(), "mut param assignment rejected: {:?}", err);
+}
+
+#[test]
+fn immutable_param_assignment_rejected() {
+    let err = typecheck_error(
+        r#"func bump(n: Int) {
+    n = n + 1
+}
+
+func main() {
+    let x: Int = 1
+    bump(x)
+    print(x.to_str())
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("immutable binding 'n'"), "unexpected error: {}", e),
+        None => panic!("assignment to an immutable parameter was allowed"),
     }
 }

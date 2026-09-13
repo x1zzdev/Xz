@@ -234,7 +234,7 @@ func fail() -> Result[Int, Err] {
 }
 
 func main() -> Result[Unit, Err] {
-    let a = "x" + "y"
+    mut a = "x" + "y"
     let b = a
     print(a)
     print(" ")
@@ -526,7 +526,7 @@ fn loop_and_for_run() {
     // iterates the Int range 0..n (exclusive).
     expect_exec(
         r#"func main() {
-    let total = 0
+    mut total = 0
     for i in 10 {
         if i == 3 {
             continue
@@ -539,7 +539,7 @@ fn loop_and_for_run() {
     print(total.to_str())
     print(" ")
 
-    let n = 0
+    mut n = 0
     loop {
         n = n + 1
         if n == 5 {

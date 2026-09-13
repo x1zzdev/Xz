@@ -1,7 +1,38 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast;
 use crate::ast::{Program, Item, Type, Expr, Stmt, BinOp, UnaryOp, Contract};
+
+/// Scope map from name to type plus whether the binding is `mut`
+/// (docs/04, docs/11): mutation requires an explicit `mut` binding.
+#[derive(Clone, Default)]
+struct Env {
+    types: HashMap<String, Kind>,
+    mutables: HashSet<String>,
+}
+
+impl Env {
+    fn get(&self, n: &str) -> Option<&Kind> {
+        self.types.get(n)
+    }
+
+    fn insert(&mut self, n: String, ty: Kind) {
+        self.types.insert(n, ty);
+    }
+
+    fn insert_binding(&mut self, n: String, ty: Kind, mutable: bool) {
+        if mutable {
+            self.mutables.insert(n.clone());
+        } else {
+            self.mutables.remove(&n);
+        }
+        self.types.insert(n, ty);
+    }
+
+    fn is_mut(&self, n: &str) -> bool {
+        self.mutables.contains(n)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
@@ -234,9 +265,9 @@ Item::Func(f) => {
                         Some(Kind::Result(_, e)) => Some((**e).clone()),
                         _ => None,
                     };
-                    let mut env: HashMap<String, Kind> = HashMap::new();
+                    let mut env: Env = Env::default();
                     for p in &f.params {
-                        env.insert(p.name.clone(), self.from_ast(&p.ty));
+                        env.insert_binding(p.name.clone(), self.from_ast(&p.ty), p.mutable);
                     }
                     self.seed_env(&mut env);
                     self.check_contracts(&f.contracts, &mut env, ret_ty);
@@ -244,7 +275,7 @@ Item::Func(f) => {
                     
                 }
                 Item::Task(t) => {
-                    let mut env: HashMap<String, Kind> = HashMap::new();
+                    let mut env: Env = Env::default();
                     self.seed_env(&mut env);
                     self.check_block(&t.body, &mut env);
                 }
@@ -297,13 +328,13 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
         }
     }
 
-    fn seed_env(&self, env: &mut HashMap<String, Kind>) {
+    fn seed_env(&self, env: &mut Env) {
         for (name, ty) in &self.chans {
             env.insert(name.clone(), ty.clone());
         }
     }
 
-    fn check_contracts(&mut self, contracts: &Vec<Contract>, env: &mut HashMap<String, Kind>, ret_ty: Option<Kind>) {
+    fn check_contracts(&mut self, contracts: &Vec<Contract>, env: &mut Env, ret_ty: Option<Kind>) {
         for c in contracts {
             match c {
                 Contract::Pre(e) => {
@@ -336,7 +367,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
         }
     }
 
-    fn lookup_name(&self, n: &str, env: &HashMap<String, Kind>) -> Kind {
+    fn lookup_name(&self, n: &str, env: &Env) -> Kind {
         match env.get(n) {
             Some(t) => return t.clone(),
             None => {}
@@ -359,7 +390,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
         Kind::Unknown
     }
 
-    fn check_block(&mut self, block: &ast::Block, env: &mut HashMap<String, Kind>) {
+    fn check_block(&mut self, block: &ast::Block, env: &mut Env) {
         for stmt in &block.stmts {
             match stmt {
                 Stmt::Decl(d) => {
@@ -377,7 +408,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         let ch_ty = env.get(&d.chan.clone().unwrap()).cloned();
                         match ch_ty {
                             Some(Kind::Chan(inner)) => {
-                                env.insert(d.name.clone(), *inner);
+                                env.insert_binding(d.name.clone(), *inner, d.mutable);
                             }
                             Some(_) => self.error(format!("'{}' is not a channel", d.chan.clone().unwrap()), "".to_string()),
                             None => self.error(format!("unknown channel '{}'", d.chan.clone().unwrap()), "".to_string()),
@@ -389,16 +420,16 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             if !self.accepts(&it, &dt) {
                                 self.error(format!("binding '{}' declared as {:?} but initializer is {:?}", d.name, dt, it), "".to_string());
                             }
-                            env.insert(d.name.clone(), dt);
+                            env.insert_binding(d.name.clone(), dt, d.mutable);
                         }
                         (Some(dt), None) => {
-                            env.insert(d.name.clone(), dt);
+                            env.insert_binding(d.name.clone(), dt, d.mutable);
                         }
                         (None, Some(it)) => {
-                            env.insert(d.name.clone(), it);
+                            env.insert_binding(d.name.clone(), it, d.mutable);
                         }
                         (None, None) => {
-                            env.insert(d.name.clone(), Kind::Unknown);
+                            env.insert_binding(d.name.clone(), Kind::Unknown, d.mutable);
                         }
                     }
                 }
@@ -406,6 +437,9 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     let val_ty = self.check_expr(&a.value, env);
                     match &a.target {
                         ast::AssignTarget::Name(n) => {
+                            if env.get(n).is_some() && !env.is_mut(n) {
+                                self.error(format!("cannot assign to immutable binding '{}' (declare it with `mut`)", n), "".to_string());
+                            }
                             let target_ty = env.get(n).cloned();
                             match target_ty {
                                 Some(tt) => {
@@ -417,6 +451,11 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             }
                         }
                         ast::AssignTarget::Field(base, fname) => {
+                            if let Some(root) = root_name(base) {
+                                if env.get(&root).is_some() && !env.is_mut(&root) {
+                                    self.error(format!("cannot assign to field of immutable binding '{}' (declare it with `mut`)", root), "".to_string());
+                                }
+                            }
                             let base_ty = self.check_expr(base, env);
                             match &base_ty {
                                 Kind::Record(rec) => {
@@ -443,7 +482,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
         }
     }
 
-    fn check_expr(&mut self, e: &Expr, env: &mut HashMap<String, Kind>) -> Kind {
+    fn check_expr(&mut self, e: &Expr, env: &mut Env) -> Kind {
         match e {
             Expr::Int(_) => Kind::Int,
             Expr::Float(_) => Kind::Float,
@@ -1001,7 +1040,7 @@ fn extract_narrowing(cond: &Expr) -> Option<(String, NarrowKind)> {
 }
 
 /// Apply a positive narrowing: bind `name` to its unwrapped type.
-fn apply_narrowing(env: &mut HashMap<String, Kind>, narrow: &Option<(String, NarrowKind)>) {
+fn apply_narrowing(env: &mut Env, narrow: &Option<(String, NarrowKind)>) {
     match narrow {
         Some((name, kind)) => {
             match env.get(name) {
@@ -1031,7 +1070,7 @@ fn apply_narrowing(env: &mut HashMap<String, Kind>, narrow: &Option<(String, Nar
 
 /// The else branch sees the complement: `is none` / `is err` narrow the name
 /// to the absent case (an empty type is not expressible, so we leave it).
-fn apply_complement(env: &mut HashMap<String, Kind>, narrow: &Option<(String, NarrowKind)>) {
+fn apply_complement(env: &mut Env, narrow: &Option<(String, NarrowKind)>) {
     match narrow {
         Some((name, kind)) => {
             match kind {
@@ -1053,6 +1092,17 @@ fn apply_complement(env: &mut HashMap<String, Kind>, narrow: &Option<(String, Na
             }
         }
         None => {}
+    }
+}
+
+/// The root binding a field-assignment target is rooted at, e.g. `a` for
+/// `a.b.c = ...`. Field writes mutate the root binding, so `mut` is required
+/// on that binding (docs/04).
+fn root_name(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Name(n) => Some(n.clone()),
+        Expr::Field(base, _) => root_name(base),
+        _ => None,
     }
 }
 
