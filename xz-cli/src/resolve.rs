@@ -372,7 +372,8 @@ fn bind_pattern(scope: &mut Scope, pat: &Pattern) {
 
 fn is_builtin_type(name: &str) -> bool {
     match name {
-        "Bool" | "Int" | "usize" | "Float" | "Char" | "Str" | "Bytes" | "Unit" | "Ptr" => true,
+        "Bool" | "Int" | "usize" | "Float" | "Char" | "Str" | "Bytes" | "Unit" | "Ptr"
+        | "Option" | "Result" | "List" | "Chan" => true,
         _ => false,
     }
 }

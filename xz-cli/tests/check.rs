@@ -245,6 +245,23 @@ func main() -> Result[Int, Err] {
 }
 
 #[test]
+fn composite_builtin_types_resolve_in_fields_and_extern_sigs() {
+    let err = check_source(
+        r#"record R {
+    xs: List[Int]
+    maybe: Option[Int]
+}
+
+extern func get() -> Result[Int, Err]
+
+func main() {
+    print("hi")
+}"#,
+    );
+    assert!(err.is_none(), "composite builtin types rejected: {:?}", err);
+}
+
+#[test]
 fn generic_call_infers_type_argument() {
     expect_ok(
         r#"/// Returns the larger.
