@@ -67,6 +67,17 @@ func area(shape: Shape) -> Float {
 }
 ```
 
+A function prefixed with `@export` is emitted as a C ABI symbol by
+`xz build --shared` (a library's public surface). Its signature must be
+C-representable, and it may not be generic, `async`, or `main`
+(see [10-ffi-interop.md](10-ffi-interop.md)):
+
+```
+@export func add(a: Int, b: Int) -> Int {
+    a + b
+}
+```
+
 ## Contracts (Design by Contract)
 
 Public functions may declare pre/post conditions. They are part of the signature and are checked:

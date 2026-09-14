@@ -182,6 +182,14 @@ so the runtime never observes an error value here.
 - `xz run <file.xz>` runs the check pipeline, compiles to a JIT engine, links
   the host functions, and calls `main`, propagating any returned error as a
   non-zero exit.
+- `xz build --shared <file.xz>` emits a shared library. Program functions are
+  internal by default (so `globaldce` can drop dead ones); a function marked
+  `@export` gets **external** linkage and survives into the symbol table. The
+  CLI emits IR, defines the native runtime, optimizes, compiles position-
+  independent (`llc -relocation-model=pic`), links with `ld -shared` against
+  libc, and writes `libXz.so` plus a generated `libXz.h` (C signatures for the
+  exported functions, per [10-ffi-interop.md](10-ffi-interop.md)). `main`, if
+  present, stays internal in a shared build — a library has no entry point.
 
 ## Optimization pipeline
 
@@ -210,7 +218,8 @@ codegen, and `xz build-native` applies it before `llc`.
 - `task`, `async`/`await`, `chan`/`send`/`recv` — Phase 6 (concurrency
   runtime), no IR lowering here.
 - `Map`/`Set` — specified as type names but no stdlib surface yet.
-- Shared-library output (`xz build --shared`) and `xz bind` — FFI follow-ups.
+- `xz bind` (Python wrapper generation) — follow-up to the shared-library
+  output.
 - Unit types (`Meters`, `Seconds`) — not implemented.
 - No debug info and no bitcode file output.
 

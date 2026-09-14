@@ -117,6 +117,41 @@ A `@cstruct` record with a `Ptr` field is still a handle type (see
 [03-type-system.md](03-type-system.md)): C layout governs how it is passed, not
 whether it may be copied.
 
+## Exporting an Xz library (`xz build --shared`)
+
+`xz build --shared <file.xz>` emits `libXz.so` and a matching `libXz.h` for C
+callers. Only functions marked `@export` become symbols; everything else keeps
+internal linkage and stays private:
+
+```
+@export func add(a: Int, b: Int) -> Int {
+    a + b
+}
+```
+
+```c
+// libXz.h (generated)
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+
+typedef struct XzStr { const char* ptr; size_t len; } XzStr;
+
+int64_t add(int64_t a, int64_t b);
+```
+
+An exported signature must be C-representable end to end — the same types a
+`@cstruct` field may use (`Bool`, `Int`, `usize`, `Float`, `Char`, `Str`,
+`Bytes`, `Ptr`, a `@cstruct record`), with `Unit` allowed as the return only.
+An exported function may not be generic, `async`, or `main`: a type parameter,
+a `Result`/`Option`/`List`/`enum`/plain `record`, or `Chan` has no single C
+declaration. This keeps the generated header an honest, complete description of
+the library's ABI ([11-grammar.md](11-grammar.md)).
+
+`Str`/`Bytes` cross as the two-field `XzStr`/`XzBytes` structs (pointer +
+length, no NUL guarantee); `Ptr` is `void*`. The `.so` carries the same libc
+runtime as `xz build-native` and has no Rust dependency.
+
 ## Interop matrix
 
 | Source | Direction | Mechanism |

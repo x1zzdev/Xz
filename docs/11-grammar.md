@@ -98,7 +98,7 @@ program         := top_level*
 top_level       := func_decl | task_decl | chan_decl | extern_decl
                  | record_decl | enum_decl
 
-func_decl       := "async"? "func" IDENT type_params? "(" params ")" ("->" type)? contract* block
+func_decl       := "@export"? "async"? "func" IDENT type_params? "(" params ")" ("->" type)? contract* block
 task_decl       := "task" IDENT block
 chan_decl       := "chan" IDENT ":" "Chan[" type "]"
 extern_decl     := "extern" "func" IDENT type_params? "(" params ")" ("->" type)?
@@ -203,6 +203,11 @@ The grammar alone is not the whole contract. The compiler also enforces:
   field may not be `Unit`, `Option`, `Result`, `List`, `Chan`, an `enum`, a
   plain (non-`@cstruct`) `record`, or a type parameter
   ([10-ffi-interop.md](10-ffi-interop.md)).
+- **Exportability (`@export`)** — only a non-generic, non-async `func` with a
+  C-representable signature may be exported: every parameter and the return
+  type must be a primitive (`Bool`/`Int`/`usize`/`Float`/`Char`/`Str`/
+  `Bytes`/`Ptr`), a `@cstruct record`, or `Unit` (return only). `main` may not
+  be exported.
 - **Effect honesty** — the derived effect profile must equal `@effects`
   ([09-intent-verification.md](09-intent-verification.md)).
 - **Claim pairing** — `@requires`/`@ensures` pair (in order) with `pre`/`post`.
