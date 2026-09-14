@@ -41,6 +41,19 @@ enum Shape {
 }
 ```
 
+A record prefixed with `@cstruct` gets the C ABI memory layout and may cross
+the FFI boundary by value; its field types are restricted to C-representable
+ones (see [10-ffi-interop.md](10-ffi-interop.md)):
+
+```
+@cstruct record Color {
+    r: usize
+    g: usize
+    b: usize
+    a: usize
+}
+```
+
 ## Functions
 
 Signatures must declare types for all parameters and the return. Inside the body, local inference is allowed.
@@ -115,6 +128,11 @@ func deg_to_rad(deg: Float) -> Float
 ```
 extern func malloc(size: usize) -> Ptr
 extern func free(ptr: Ptr)
+
+@cstruct record Buffer {
+    ptr: Ptr
+    size: Int
+}
 
 /// Allocates a buffer; every raw FFI call sits behind a contracted wrapper.
 /// @intent  Allocates size bytes; ok(Buffer) on success, err on null.

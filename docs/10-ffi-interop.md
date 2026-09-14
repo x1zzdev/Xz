@@ -17,7 +17,7 @@ New languages die from empty ecosystems. Xz's strategy is **interop-first**: fro
 extern func malloc(size: usize) -> Ptr
 extern func free(ptr: Ptr)
 
-record Buffer {
+@cstruct record Buffer {
     ptr: Ptr
     size: Int
 }
@@ -83,6 +83,39 @@ release_buffer(transfer(a))   // ERROR: a was already transferred
 | `Bytes` | `(ptr: uint8*, len: usize)` struct |
 | `Ptr` | `void*` — a handle, never copied; only in wrappers |
 | `record` | `struct` (memory-layout option `@cstruct`) |
+
+### `@cstruct` records
+
+A plain `record` is a language-level value type; its layout is unspecified and
+it never crosses the FFI boundary. Prefixing the declaration with `@cstruct`
+requests the **C ABI struct layout** — fields in declaration order with C
+alignment and padding — and is the only record form that may be passed to or
+returned from an `extern` function by value:
+
+```
+@cstruct record Color {
+    r: usize
+    g: usize
+    b: usize
+    a: usize
+}
+```
+
+Because the layout is a promise to C, the field types must be
+C-representable:
+
+- a primitive — `Bool`, `Int`, `usize`, `Float`, `Char`, `Str`, `Bytes`, or
+  `Ptr` (each maps per the table above), or
+- another `@cstruct record` (nested by value), which must not form a cycle.
+
+`Unit`, `Option`, `Result`, `List`, `Chan`, an `enum`, a plain `record`, and a
+type parameter are rejected as `@cstruct` fields — each has a representation
+that C does not know. The compiler enforces this so a reviewer never has to
+audit a layout by hand.
+
+A `@cstruct` record with a `Ptr` field is still a handle type (see
+[03-type-system.md](03-type-system.md)): C layout governs how it is passed, not
+whether it may be copied.
 
 ## Interop matrix
 

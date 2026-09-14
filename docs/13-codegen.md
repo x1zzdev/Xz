@@ -48,6 +48,7 @@ what `xz build` (native output, Phase 5) will reuse.
 | `Str` | `struct { i8*, i64 }` — pointer + byte length |
 | `Bytes` | `struct { i8*, i64 }` (same shape as `Str`) |
 | `record` | an LLVM `struct` of the field types, in declaration order |
+| `@cstruct record` | same lowering — LLVM structs already use the C ABI layout (declaration order, natural alignment); the attribute additionally restricts field types at the front end ([10-ffi-interop.md](10-ffi-interop.md)) |
 | `enum` | `struct { i8*, i32 }` where the `i32` is the **tag** and the `i8*` is a **boxed heap pointer** to a struct of the active variant's fields (see [Notes](14-codegen-notes.md)) |
 | `Result[T, E]` | `struct { T, i1 }` — a *payload + ok-flag* (no heap; the error payload is unused by the runtime) |
 | `Option[T]` | `struct { T, i1 }` — same shape as `Result` |

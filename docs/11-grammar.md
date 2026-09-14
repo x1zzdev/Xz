@@ -102,7 +102,7 @@ func_decl       := "async"? "func" IDENT type_params? "(" params ")" ("->" type)
 task_decl       := "task" IDENT block
 chan_decl       := "chan" IDENT ":" "Chan[" type "]"
 extern_decl     := "extern" "func" IDENT type_params? "(" params ")" ("->" type)?
-record_decl     := "record" IDENT "{" field* "}"
+record_decl     := "@cstruct"? "record" IDENT "{" field* "}"
 enum_decl       := "enum" IDENT "{" variant+ "}"
 
 type_params     := "[" type_param ("," type_param)* "]"
@@ -195,6 +195,14 @@ The grammar alone is not the whole contract. The compiler also enforces:
   fall-through, no default (add `_` to ignore).
 - **Handle affinity** — `Ptr`-bearing records are never copied; handoff is
   `transfer(x)` only ([10-ffi-interop.md](10-ffi-interop.md)).
+- **C layout (`@cstruct`)** — a `@cstruct record` is guaranteed the C ABI
+  struct layout (fields in declaration order, C alignment and padding), so it
+  may cross the FFI boundary by value. Its fields must therefore be
+  C-representable: a primitive (`Bool`/`Int`/`usize`/`Float`/`Char`/`Str`/
+  `Bytes`/`Ptr`) or another non-recursive `@cstruct record`. A `@cstruct`
+  field may not be `Unit`, `Option`, `Result`, `List`, `Chan`, an `enum`, a
+  plain (non-`@cstruct`) `record`, or a type parameter
+  ([10-ffi-interop.md](10-ffi-interop.md)).
 - **Effect honesty** — the derived effect profile must equal `@effects`
   ([09-intent-verification.md](09-intent-verification.md)).
 - **Claim pairing** — `@requires`/`@ensures` pair (in order) with `pre`/`post`.
