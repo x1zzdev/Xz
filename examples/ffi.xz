@@ -5,7 +5,7 @@ extern func malloc(size: usize) -> Ptr
 extern func free(ptr: Ptr)
 extern func strlen(ptr: Ptr) -> usize
 
-record Buffer {
+@cstruct record Buffer {
     ptr: Ptr
     size: Int
 }
