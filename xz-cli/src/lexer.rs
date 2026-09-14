@@ -169,6 +169,22 @@ impl Lexer {
                 continue;
             }
 
+            // attributes (docs/11)
+            if c == '@' {
+                let start = self.pos();
+                self.advance(1);
+                let mut name: String = "".to_string();
+                while is_ident_char(self.peek(0)) {
+                    name.push(self.peek(0));
+                    self.advance(1);
+                }
+                if name == "cstruct" {
+                    self.push(TokKind::AtCstruct, start, name);
+                    continue;
+                }
+                return Err(self.err(format!("unknown attribute @{name}"), start));
+            }
+
             // operators
             let start = self.pos();
             let two = format!("{c}{}", self.peek(1));

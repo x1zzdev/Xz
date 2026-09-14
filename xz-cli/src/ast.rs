@@ -62,6 +62,7 @@ pub struct ExternDecl {
 #[derive(Clone)]
 pub struct RecordDecl {
     pub name: String,
+    pub cstruct: bool,
     pub fields: Vec<Field>,
     pub span: Span,
 }

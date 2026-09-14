@@ -632,3 +632,72 @@ func relay(s: Str) -> Int {
         "extern effect propagation through a wrapper",
     );
 }
+
+#[test]
+fn cstruct_record_with_c_types_accepted() {
+    let err = check_source(
+        r#"@cstruct record Header {
+    magic: Int
+    flags: Bool
+    data: Ptr
+}
+
+@cstruct record Window {
+    origin: Header
+    label: Str
+    raw: Bytes
+}
+
+func main() {
+    print("ok")
+}"#,
+    );
+    assert!(err.is_none(), "@cstruct with C-representable fields rejected: {:?}", err);
+}
+
+#[test]
+fn cstruct_plain_record_field_rejected() {
+    let err = typecheck_error(
+        r#"record Plain {
+    x: Int
+}
+
+@cstruct record Bad {
+    p: Plain
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("plain record"), "unexpected error: {}", e),
+        None => panic!("plain record field accepted in @cstruct"),
+    }
+}
+
+#[test]
+fn cstruct_non_c_field_rejected() {
+    let err = typecheck_error(
+        r#"@cstruct record Bad {
+    xs: List[Int]
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("not a C type"), "unexpected error: {}", e),
+        None => panic!("List field accepted in @cstruct"),
+    }
+}
+
+#[test]
+fn cstruct_cycle_rejected() {
+    let err = typecheck_error(
+        r#"@cstruct record A {
+    b: B
+}
+
+@cstruct record B {
+    a: A
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("cycle"), "unexpected error: {}", e),
+        None => panic!("@cstruct by-value cycle accepted"),
+    }
+}

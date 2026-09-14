@@ -79,6 +79,9 @@ pub enum TokKind {
     Pipe,
     Underscore,
 
+    // attributes
+    AtCstruct,
+
     // doc/comment tokens
     DocIntent,
     DocRequires,

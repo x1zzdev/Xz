@@ -119,6 +119,10 @@ impl Parser {
                 let decl = self.record_decl()?;
                 Ok(Item::Record(decl))
             }
+            TokKind::AtCstruct => {
+                let decl = self.record_decl()?;
+                Ok(Item::Record(decl))
+            }
             TokKind::Enum => {
                 let decl = self.enum_decl()?;
                 Ok(Item::Enum(decl))
@@ -261,6 +265,7 @@ let mut trusted = false;
 
     fn record_decl(&mut self) -> Result<RecordDecl, ParseError> {
         let start = self.tokens[self.i].span.clone();
+        let cstruct = self.eat(TokKind::AtCstruct).is_some();
         self.expect(TokKind::Record, String::from("'record'"))?;
         let name_tok = self.expect_ident()?;
         self.expect(TokKind::LBrace, String::from("'{'"))?;
@@ -270,7 +275,7 @@ let mut trusted = false;
             fields.push(f);
         }
         self.expect(TokKind::RBrace, String::from("'}'"))?;
-        Ok(RecordDecl { name: name_tok.text.clone(), fields: fields, span: start })
+        Ok(RecordDecl { name: name_tok.text.clone(), cstruct: cstruct, fields: fields, span: start })
     }
 
     fn enum_decl(&mut self) -> Result<EnumDecl, ParseError> {

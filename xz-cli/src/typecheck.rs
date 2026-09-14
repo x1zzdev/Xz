@@ -102,6 +102,7 @@ pub fn typecheck(program: &Program) -> Result<(), Vec<TypeError>> {
         errors: vec![],
     };
     tc.build_world(program);
+    tc.check_cstructs(program);
     tc.collect_sigs(program);
     tc.predeclare_stdlib();
     if tc.errors.len() > 0 {
@@ -152,6 +153,49 @@ impl TypeChecker {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// A `@cstruct` record promises the C ABI struct layout (docs/10), so its
+    /// fields must be C-representable: a primitive, or another `@cstruct`
+    /// record nested by value (no cycles). Everything else is a compile error
+    /// — the alternative would be a layout no C caller can agree on.
+    fn check_cstructs(&mut self, program: &Program) {
+        let mut records: HashMap<String, &ast::RecordDecl> = HashMap::new();
+        let mut enums: HashSet<String> = HashSet::new();
+        let mut cstruct: HashSet<String> = HashSet::new();
+        for item in &program.items {
+            match item {
+                Item::Record(r) => {
+                    records.insert(r.name.clone(), r);
+                    if r.cstruct {
+                        cstruct.insert(r.name.clone());
+                    }
+                }
+                Item::Enum(e) => {
+                    enums.insert(e.name.clone());
+                }
+                _ => {}
+            }
+        }
+
+        let mut errors: Vec<(String, String)> = vec![];
+        for item in &program.items {
+            if let Item::Record(r) = item {
+                if !r.cstruct {
+                    continue;
+                }
+                let mut visiting: HashSet<String> = HashSet::new();
+                visiting.insert(r.name.clone());
+                for f in &r.fields {
+                    if let Err(msg) = cstruct_field_ok(&f.ty, &cstruct, &records, &enums, &mut visiting) {
+                        errors.push((format!("@cstruct record '{}' field '{}': {}", r.name, f.name, msg), r.span.file.clone()));
+                    }
+                }
+            }
+        }
+        for (msg, file) in errors {
+            self.error(msg, file);
         }
     }
 
@@ -934,6 +978,63 @@ fn is_error_record(name: &str) -> bool {
 
 fn is_error_ctor(name: &str) -> bool {
     is_error_record(name)
+}
+
+/// Whether a field type is representable in a `@cstruct` record (docs/10).
+/// `visiting` holds the cstruct records currently being descended, so a
+/// by-value nesting cycle is reported rather than tolerated.
+fn cstruct_field_ok(
+    ty: &ast::Type,
+    cstruct: &HashSet<String>,
+    records: &HashMap<String, &ast::RecordDecl>,
+    enums: &HashSet<String>,
+    visiting: &mut HashSet<String>,
+) -> Result<(), String> {
+    match ty {
+        ast::Type::Named(name, args) => {
+            if ["Unit", "Option", "Result", "List", "Chan"].contains(&name.as_str()) {
+                return Err(format!("type '{}' is not a C type", name));
+            }
+            if !args.is_empty() {
+                return Err(format!("'{}' has type arguments; @cstruct fields must be concrete", name));
+            }
+            cstruct_named_ok(name, cstruct, records, enums, visiting)
+        }
+        ast::Type::NamedPlain(name) => cstruct_named_ok(name, cstruct, records, enums, visiting),
+        ast::Type::Union(_) => Err(String::from("an error union is not a C type")),
+    }
+}
+
+fn cstruct_named_ok(
+    name: &str,
+    cstruct: &HashSet<String>,
+    records: &HashMap<String, &ast::RecordDecl>,
+    enums: &HashSet<String>,
+    visiting: &mut HashSet<String>,
+) -> Result<(), String> {
+    if ["Bool", "Int", "usize", "Float", "Char", "Str", "Bytes", "Ptr"].contains(&name) {
+        return Ok(());
+    }
+    if cstruct.contains(name) {
+        if !visiting.insert(name.to_string()) {
+            return Err(format!("'{}' nests itself by value; a @cstruct cycle has infinite size", name));
+        }
+        if let Some(rec) = records.get(name) {
+            for f in &rec.fields {
+                cstruct_field_ok(&f.ty, cstruct, records, enums, visiting)
+                    .map_err(|e| format!("nested field '{}': {}", f.name, e))?;
+            }
+        }
+        visiting.remove(name);
+        return Ok(());
+    }
+    if records.contains_key(name) {
+        return Err(format!("type '{}' is a plain record; declare it @cstruct", name));
+    }
+    if enums.contains(name) {
+        return Err(format!("type '{}' is an enum; enums are not C-representable", name));
+    }
+    Err(format!("type '{}' is not C-representable", name))
 }
 
 fn method_type(receiver: &Kind, method: &str) -> Option<Kind> {
