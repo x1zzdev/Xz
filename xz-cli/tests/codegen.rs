@@ -5,6 +5,8 @@
 // Run with `cargo test` from xz-cli/ (LLVM env is pinned in .cargo/config.toml).
 
 use xz_cli::backend::llvm_backend::compile;
+use xz_cli::backend::llvm_backend::compile_shared;
+use xz_cli::backend::header::generate_c_header;
 use xz_cli::backend::runtime::run;
 use xz_cli::intent::check_intent;
 use xz_cli::lexer::lex;
@@ -477,6 +479,61 @@ func main() {
 }"#,
         "generics",
     );
+}
+
+#[test]
+fn shared_export_linkage_and_header() -> Result<(), String> {
+    // `@export` functions keep external linkage (so they survive globaldce
+    // into the .so symbol table); everything else, including `main`, stays
+    // internal. The generated header mirrors the exported C ABI.
+    let src = r#"@cstruct record Inner {
+    a: Int
+    b: Int
+}
+
+@cstruct record Outer {
+    inner: Inner
+    flag: Bool
+}
+
+/// Adds two numbers.
+/// @intent  Returns a + b.
+/// @effects none
+@export func add(a: Int, b: Int) -> Int {
+    a + b
+}
+
+/// Kept private.
+/// @intent  Returns a constant.
+/// @effects none
+func hidden() -> Int {
+    7
+}
+
+func main() {
+    print(add(1, 2).to_str())
+}"#;
+    let tokens = lex(src.to_string(), "shared.xz".to_string()).map_err(|e| e.message)?;
+    let program = parse(tokens).map_err(|e| e.message)?;
+    resolve(&program).map_err(|_| "resolve failed".to_string())?;
+    typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
+    check_intent(&program).map_err(|e| e[0].code.clone())?;
+    let backend = compile_shared(&program)?;
+    let ir = backend.module.print_to_string().to_string();
+    assert!(ir.contains("define i64 @add"), "exported add must stay external: {}", ir);
+    assert!(!ir.contains("define internal i64 @add"), "exported add must not be internal");
+    assert!(ir.contains("define internal i64 @hidden"), "private helper must be internal");
+    assert!(ir.contains("define internal i32 @main"), "main must be internal in a shared build");
+
+    let header = generate_c_header(&program);
+    assert!(header.contains("int64_t add(int64_t a, int64_t b);"), "missing add prototype:\n{}", header);
+    assert!(!header.contains("hidden"), "private helper must not be in the header");
+    assert!(header.contains("typedef struct XzStr"), "missing XzStr");
+    assert!(header.contains("bool flag;"), "Bool must map to C bool:\n{}", header);
+    let inner_pos = header.find("typedef struct Inner").ok_or("Inner record missing")?;
+    let outer_pos = header.find("typedef struct Outer").ok_or("Outer record missing")?;
+    assert!(inner_pos < outer_pos, "nested record must be declared before its user:\n{}", header);
+    Ok(())
 }
 
 #[test]

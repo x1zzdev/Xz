@@ -13,22 +13,25 @@ fn main() {
         argv.push(a);
     }
     if argv.len() < 3 {
-        println!("usage: xz <lex|parse|check|check-json|build|run|build-native> [--strict] <file.xz>");
+        println!("usage: xz <lex|parse|check|check-json|build|run|build-native> [--strict] [--shared] <file.xz>");
         return;
     }
     let cmd = argv[1].clone();
     let mut strict = false;
+    let mut shared = false;
     let mut path: String = "".to_string();
     for i in 2..argv.len() {
         let a = argv[i].clone();
         if a == "--strict" {
             strict = true;
+        } else if a == "--shared" {
+            shared = true;
         } else if path == "" {
             path = a;
         }
     }
     if path == "" {
-        println!("usage: xz <lex|parse|check|check-json|build|run|build-native> [--strict] <file.xz>");
+        println!("usage: xz <lex|parse|check|check-json|build|run|build-native> [--strict] [--shared] <file.xz>");
         return;
     }
     let source = std::fs::read_to_string(path.clone());
@@ -67,6 +70,9 @@ fn main() {
                     } else if cmd == "check-json" {
                         std::process::exit(run_check(tokens, strict, true));
                     } else if cmd == "build" {
+                        if shared {
+                            std::process::exit(run_shared_build(tokens));
+                        }
                         std::process::exit(run_backend(tokens, false));
                     } else if cmd == "run" {
                         std::process::exit(run_backend(tokens, true));
@@ -333,6 +339,118 @@ fn run_native_build(tokens: Vec<Token>) -> i32 {
         return 1;
     }
     println!("ok: wrote ./xz_program");
+    0
+}
+
+/// Phase 5 shared-library build: like `xz build-native`, but links with
+/// `ld -shared` into `libXz.so` and writes a generated `libXz.h`. Functions
+/// marked `@export` are the exported symbols; `main` is kept internal.
+fn run_shared_build(tokens: Vec<Token>) -> i32 {
+    let parsed = parse(tokens);
+    let program = match parsed {
+        Err(e) => {
+            println!("error: {} at {}:{}:{}", e.message, e.span.file, e.span.start.0, e.span.start.1);
+            return 1;
+        }
+        Ok(p) => p,
+    };
+    if let Err(errors) = resolve(&program) {
+        println!("error: {} resolution errors", errors.len());
+        return 1;
+    }
+    if let Err(errors) = typecheck(&program) {
+        for err in &errors {
+            println!("type error: {}", err.message);
+        }
+        println!("error: {} type errors", errors.len());
+        return 1;
+    }
+    if let Err(errors) = check_intent(&program) {
+        println!("error: intent: {}", errors[0].code);
+        return 1;
+    }
+
+    let mut backend = match xz_cli::backend::llvm_backend::compile_shared(&program) {
+        Ok(b) => b,
+        Err(e) => {
+            println!("error: codegen failed: {}", e);
+            return 1;
+        }
+    };
+    if let Err(e) = xz_cli::backend::llvm_backend::emit_native_runtime(&mut backend) {
+        println!("error: native runtime emission failed: {}", e);
+        return 1;
+    }
+    xz_cli::backend::llvm_backend::hide_runtime_symbols(&backend);
+    if let Err(e) = xz_cli::backend::llvm_backend::optimize(&backend.module) {
+        println!("error: optimization failed: {}", e);
+        return 1;
+    }
+    let header = xz_cli::backend::header::generate_c_header(&program);
+
+    let dir = std::env::temp_dir().join(format!("xz_shared_{}", std::process::id()));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        println!("error: cannot create temp dir: {}", e);
+        return 1;
+    }
+    let ir_path = dir.join("lib.ll");
+    let obj_path = dir.join("lib.o");
+    let so_path = dir.join("libXz.so");
+    if let Err(e) = std::fs::write(&ir_path, backend.module.print_to_string().to_string()) {
+        println!("error: cannot write IR: {}", e);
+        return 1;
+    }
+
+    let llc = std::env::var("LLC")
+        .unwrap_or_else(|_| "/home/x1zz/.local/share/xz-llvm17/debroot/usr/lib/llvm-17/bin/llc".to_string());
+    let st = std::process::Command::new(&llc)
+        .arg(&ir_path)
+        .arg("-filetype=obj")
+        .arg("-relocation-model=pic")
+        .arg("-O3")
+        .arg("-o")
+        .arg(&obj_path)
+        .status();
+    match st {
+        Err(e) => {
+            println!("error: llc not found ({:?}); set LLC to the portable llc path", e);
+            return 1;
+        }
+        Ok(s) if !s.success() => {
+            println!("error: llc failed");
+            return 1;
+        }
+        _ => {}
+    }
+
+    let ld = std::env::var("LD").unwrap_or_else(|_| "ld".to_string());
+    let st = std::process::Command::new(&ld)
+        .args(["-shared", "-o"])
+        .arg(&so_path)
+        .arg(&obj_path)
+        .args(["-lc", "-lm"])
+        .status();
+    match st {
+        Err(e) => {
+            println!("error: ld not found ({:?})", e);
+            return 1;
+        }
+        Ok(s) if !s.success() => {
+            println!("error: ld failed");
+            return 1;
+        }
+        _ => {}
+    }
+
+    if let Err(e) = std::fs::copy(&so_path, "libXz.so") {
+        println!("error: cannot write ./libXz.so: {}", e);
+        return 1;
+    }
+    if let Err(e) = std::fs::write("libXz.h", header) {
+        println!("error: cannot write ./libXz.h: {}", e);
+        return 1;
+    }
+    println!("ok: wrote ./libXz.so and ./libXz.h");
     0
 }
 

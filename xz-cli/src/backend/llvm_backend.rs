@@ -437,6 +437,18 @@ pub fn mangle_type_tag(k: &Kind) -> String {
 /// its declared `Result[Unit, Err]` return, since the runtime calls it with no
 /// args and ignores the result.
 pub fn compile(program: &Program) -> Result<LlvmBackend<'static>, String> {
+    compile_impl(program, false)
+}
+
+/// Like [`compile`], but for the shared-library path: `main` (if present) is
+/// internal (a library has no entry point) and functions marked `@export`
+/// keep external linkage so they survive `globaldce` into the symbol table
+/// (docs/10-ffi-interop.md).
+pub fn compile_shared(program: &Program) -> Result<LlvmBackend<'static>, String> {
+    compile_impl(program, true)
+}
+
+fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>, String> {
     // The LLVM context lives for the whole compiler process. Leaking it gives
     // a 'static reference, so blocks/values don't borrow the backend (which is
     // what lets codegen hold block handles while mutating the symbol table).
@@ -498,13 +510,25 @@ pub fn compile(program: &Program) -> Result<LlvmBackend<'static>, String> {
                 // `Result[Unit, Err]` return (gen_main emits `ret i32 0`).
                 if f.name == "main" {
                     let _ = backend.declare_function(&f.name, &param_kinds, &None, Some(backend.context.i32_type().into()));
+                    // A shared library has no entry point; keep `main` internal
+                    // so it does not leak into the exported symbol table.
+                    if shared {
+                        if let Some(fv) = backend.functions.get(&f.name) {
+                            fv.set_linkage(Linkage::Internal);
+                        }
+                    }
                 } else {
                     let ret = f.ret.as_ref().map(|t| kind_from_ast(t, &backend));
                     let fv = backend.declare_function(&f.name, &param_kinds, &ret, None);
                     // Program functions are module-internal so the optimizer's
                     // global DCE can drop them when they become dead (e.g. after
-                    // inlining). `main` stays external — the runtime calls it.
-                    fv.set_linkage(Linkage::Internal);
+                    // inlining). An `@export` function is the library's public
+                    // surface, so it keeps external linkage.
+                    if f.exported {
+                        fv.set_linkage(Linkage::External);
+                    } else {
+                        fv.set_linkage(Linkage::Internal);
+                    }
                 }
             }
             Item::Extern(e) => {
@@ -646,6 +670,29 @@ pub fn optimize(module: &Module<'_>) -> Result<(), String> {
             e.to_str().map(|s| s.to_string()).unwrap_or_else(|_| "LLVM pass error".to_string())
         })?;
     Ok(())
+}
+
+/// Make the `xz_*` runtime definitions internal so a shared library does not
+/// export them. The JIT resolves them by name via `add_global_mapping`; only
+/// the `@export` functions are a library's public surface.
+pub fn hide_runtime_symbols(backend: &LlvmBackend<'static>) {
+    for name in [
+        "xz_print",
+        "xz_str_free",
+        "xz_concat",
+        "xz_i64_to_str",
+        "xz_f64_to_str",
+        "xz_bool_to_str",
+        "xz_char_to_str",
+        "xz_str_to_upper",
+        "xz_str_to_lower",
+    ] {
+        if let Some(f) = backend.module.get_function(name) {
+            if f.get_first_basic_block().is_some() {
+                f.set_linkage(Linkage::Internal);
+            }
+        }
+    }
 }
 
 /// Emit the native runtime: define the `xz_*` host functions (currently only
