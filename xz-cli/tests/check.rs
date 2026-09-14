@@ -561,3 +561,57 @@ func main() {
         None => panic!("assignment to an immutable parameter was allowed"),
     }
 }
+
+#[test]
+fn declared_extern_call_derives_extern_effect() {
+    expect_intent_code(
+        r#"extern func puts(s: Str) -> Int
+
+/// Writes a C string.
+/// @intent  Writes via the C stdlib.
+/// @effects none
+func shout(s: Str) -> Int {
+    puts(s)
+}"#,
+        "I0020",
+        "extern call needs the extern effect",
+    );
+}
+
+#[test]
+fn declared_extern_with_extern_effect_passes() {
+    expect_ok(
+        r#"extern func puts(s: Str) -> Int
+
+/// Writes a C string.
+/// @intent  Writes via the C stdlib.
+/// @effects extern
+func shout(s: Str) -> Int {
+    puts(s)
+}"#,
+        "extern call with declared extern effect",
+    );
+}
+
+#[test]
+fn extern_effect_propagates_transitively() {
+    expect_intent_code(
+        r#"extern func puts(s: Str) -> Int
+
+/// Writes a C string.
+/// @intent  Writes via the C stdlib.
+/// @effects extern
+func shout(s: Str) -> Int {
+    puts(s)
+}
+
+/// Delegates.
+/// @intent  Calls shout.
+/// @effects none
+func relay(s: Str) -> Int {
+    shout(s)
+}"#,
+        "I0020",
+        "extern effect propagation through a wrapper",
+    );
+}
