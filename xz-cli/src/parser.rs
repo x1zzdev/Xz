@@ -99,6 +99,10 @@ impl Parser {
                 let decl = self.func_decl(docs)?;
                 Ok(Item::Func(decl))
             }
+            TokKind::AtExport => {
+                let decl = self.func_decl(docs)?;
+                Ok(Item::Func(decl))
+            }
             TokKind::Async => {
                 let decl = self.func_decl(docs)?;
                 Ok(Item::Func(decl))
@@ -172,6 +176,7 @@ let mut trusted = false;
     }
 
     fn func_decl(&mut self, docs: Vec<DocClaim>) -> Result<FuncDecl, ParseError> {
+        let exported = self.eat(TokKind::AtExport).is_some();
         let is_async = self.eat(TokKind::Async).is_some();
         self.expect(TokKind::Func, String::from("'func'"))?;
         let name_tok = self.expect_ident()?;
@@ -192,7 +197,7 @@ let mut trusted = false;
         } else {
             None
         };
-        Ok(FuncDecl { is_async: is_async, name: name_tok.text.clone(), type_params: type_params, params: params, ret: ret, contracts: contracts, body: body, doc: doc, span: name_tok.span })
+        Ok(FuncDecl { is_async: is_async, exported: exported, name: name_tok.text.clone(), type_params: type_params, params: params, ret: ret, contracts: contracts, body: body, doc: doc, span: name_tok.span })
     }
 
     fn type_params(&mut self) -> Result<Vec<TypeParam>, ParseError> {

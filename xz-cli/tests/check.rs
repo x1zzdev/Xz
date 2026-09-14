@@ -701,3 +701,98 @@ fn cstruct_cycle_rejected() {
         None => panic!("@cstruct by-value cycle accepted"),
     }
 }
+
+#[test]
+fn export_c_representable_signature_accepted() {
+    let err = check_source(
+        r#"@cstruct record Vec {
+    x: Int
+    y: Int
+}
+
+/// Adds two numbers.
+/// @intent  Returns a + b.
+/// @effects none
+@export func add(a: Int, b: Int) -> Int {
+    a + b
+}
+
+/// Adds a vector's components.
+/// @intent  Returns x + y.
+/// @effects none
+@export func addv(p: Vec) -> Int {
+    p.x + p.y
+}
+
+/// Returns nothing.
+/// @intent  Prints a marker.
+/// @effects io
+@export func ping() {
+    print("pong")
+}"#,
+    );
+    assert!(err.is_none(), "@export with C-representable signature rejected: {:?}", err);
+}
+
+#[test]
+fn export_generic_rejected() {
+    let err = typecheck_error(
+        r#"@export func id[T](x: T) -> T {
+    x
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("cannot be generic"), "unexpected error: {}", e),
+        None => panic!("generic @export accepted"),
+    }
+}
+
+#[test]
+fn export_main_rejected() {
+    let err = typecheck_error(
+        r#"@export func main() {
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("cannot be @export"), "unexpected error: {}", e),
+        None => panic!("@export main accepted"),
+    }
+}
+
+#[test]
+fn export_result_return_rejected() {
+    let err = typecheck_error(
+        r#"@export func f() -> Result[Int, Err] {
+    ok(1)
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("not a C type"), "unexpected error: {}", e),
+        None => panic!("Result-returning @export accepted"),
+    }
+}
+
+#[test]
+fn export_list_param_rejected() {
+    let err = typecheck_error(
+        r#"@export func f(xs: List[Int]) -> Int {
+    0
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("not a C type"), "unexpected error: {}", e),
+        None => panic!("List param @export accepted"),
+    }
+}
+
+#[test]
+fn export_async_rejected() {
+    let err = typecheck_error(
+        r#"@export async func f() {
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("cannot be async"), "unexpected error: {}", e),
+        None => panic!("async @export accepted"),
+    }
+}

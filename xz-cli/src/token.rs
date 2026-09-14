@@ -81,6 +81,7 @@ pub enum TokKind {
 
     // attributes
     AtCstruct,
+    AtExport,
 
     // doc/comment tokens
     DocIntent,

@@ -182,6 +182,10 @@ impl Lexer {
                     self.push(TokKind::AtCstruct, start, name);
                     continue;
                 }
+                if name == "export" {
+                    self.push(TokKind::AtExport, start, name);
+                    continue;
+                }
                 return Err(self.err(format!("unknown attribute @{name}"), start));
             }
 

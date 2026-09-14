@@ -18,6 +18,7 @@ pub enum Item {
 #[derive(Clone)]
 pub struct FuncDecl {
     pub is_async: bool,
+    pub exported: bool,
     pub name: String,
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,

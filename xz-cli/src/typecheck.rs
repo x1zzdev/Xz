@@ -103,6 +103,7 @@ pub fn typecheck(program: &Program) -> Result<(), Vec<TypeError>> {
     };
     tc.build_world(program);
     tc.check_cstructs(program);
+    tc.check_exports(program);
     tc.collect_sigs(program);
     tc.predeclare_stdlib();
     if tc.errors.len() > 0 {
@@ -190,6 +191,68 @@ impl TypeChecker {
                 for f in &r.fields {
                     if let Err(msg) = cstruct_field_ok(&f.ty, &cstruct, &records, &enums, &mut visiting) {
                         errors.push((format!("@cstruct record '{}' field '{}': {}", r.name, f.name, msg), r.span.file.clone()));
+                    }
+                }
+            }
+        }
+        for (msg, file) in errors {
+            self.error(msg, file);
+        }
+    }
+
+    /// An `@export` function becomes a C ABI symbol (`xz build --shared`,
+    /// docs/10), so its signature must be C-representable end to end and it
+    /// must be concrete: no type parameters, no `async`, not `main`.
+    fn check_exports(&mut self, program: &Program) {
+        let mut records: HashMap<String, &ast::RecordDecl> = HashMap::new();
+        let mut enums: HashSet<String> = HashSet::new();
+        let mut cstruct: HashSet<String> = HashSet::new();
+        for item in &program.items {
+            match item {
+                Item::Record(r) => {
+                    records.insert(r.name.clone(), r);
+                    if r.cstruct {
+                        cstruct.insert(r.name.clone());
+                    }
+                }
+                Item::Enum(e) => {
+                    enums.insert(e.name.clone());
+                }
+                _ => {}
+            }
+        }
+
+        let mut errors: Vec<(String, String)> = vec![];
+        for item in &program.items {
+            let f = match item {
+                Item::Func(f) => f,
+                _ => continue,
+            };
+            if !f.exported {
+                continue;
+            }
+            if f.name == "main" {
+                errors.push((String::from("'main' cannot be @export; a library has no entry point"), f.span.file.clone()));
+                continue;
+            }
+            if !f.type_params.is_empty() {
+                errors.push((format!("@export func '{}' cannot be generic; a C symbol has one concrete signature", f.name), f.span.file.clone()));
+                continue;
+            }
+            if f.is_async {
+                errors.push((format!("@export func '{}' cannot be async", f.name), f.span.file.clone()));
+                continue;
+            }
+            let mut visiting: HashSet<String> = HashSet::new();
+            for p in &f.params {
+                if let Err(msg) = cstruct_field_ok(&p.ty, &cstruct, &records, &enums, &mut visiting) {
+                    errors.push((format!("@export func '{}' parameter '{}': {}", f.name, p.name, msg), f.span.file.clone()));
+                }
+            }
+            if let Some(rt) = &f.ret {
+                if !is_unit_type(rt) {
+                    if let Err(msg) = cstruct_field_ok(rt, &cstruct, &records, &enums, &mut visiting) {
+                        errors.push((format!("@export func '{}' return: {}", f.name, msg), f.span.file.clone()));
                     }
                 }
             }
@@ -1002,6 +1065,16 @@ fn cstruct_field_ok(
         }
         ast::Type::NamedPlain(name) => cstruct_named_ok(name, cstruct, records, enums, visiting),
         ast::Type::Union(_) => Err(String::from("an error union is not a C type")),
+    }
+}
+
+/// Whether a type is `Unit` (the only C-representable type allowed only as a
+/// return, not as a parameter or field).
+fn is_unit_type(ty: &ast::Type) -> bool {
+    match ty {
+        ast::Type::Named(name, args) => name == "Unit" && args.is_empty(),
+        ast::Type::NamedPlain(name) => name == "Unit",
+        ast::Type::Union(_) => false,
     }
 }
 
