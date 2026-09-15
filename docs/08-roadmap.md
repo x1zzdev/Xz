@@ -3,7 +3,9 @@
 Status: Phases 1–4 (front end + LLVM JIT backend) are implemented; `xz check`
 and `xz run` work on the example programs. Phase 5 (FFI) is underway — the
 C ABI bridge, shared-library output, and `xz bind --lang python` work.
-Phases 6–8 are not yet implemented.
+Phase 6 has typed channels and a deterministic task scheduler on the JIT path;
+`async`/`await` and the native runtime are not yet implemented.
+Phases 7–8 are not yet implemented.
 
 ## Phase 0 — Design (current)
 
@@ -75,9 +77,10 @@ Phases 6–8 are not yet implemented.
 
 ## Phase 6 — Concurrency runtime
 
-- async/await scheduler
-- Typed channels
-- Deterministic scheduling
+- [x] Typed channels + task scheduler for the JIT — deterministic run-to-block
+  ([05-concurrency.md](05-concurrency.md), [13-codegen.md](13-codegen.md))
+- [x] Deterministic scheduling (specified and implemented for tasks/channels)
+- [ ] async/await scheduler and lowering
 
 ## Phase 7 — Standard library
 

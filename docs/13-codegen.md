@@ -5,7 +5,8 @@ Status: **implemented**. The front end (`lex` → `parse` → `resolve` →
 IR and executes it via a JIT engine (`xz run`).
 
 This document is the design contract for the backend. It fixes the type
-mapping, module layout, ABI, and the set of constructs Phase 4 supports.
+mapping, module layout, ABI, and the set of constructs the backend supports
+(Phase 4, plus the Phase 6 concurrency constructs in § Concurrency).
 
 ## Pipeline (from [07-compiler.md](07-compiler.md))
 
@@ -53,7 +54,8 @@ what `xz build` (native output, Phase 5) will reuse.
 | `Result[T, E]` | `struct { T, i1 }` — a *payload + ok-flag* (no heap; the error payload is unused by the runtime) |
 | `Option[T]` | `struct { T, i1 }` — same shape as `Result` |
 | `List[T]` | `struct { T*, i64 }` — pointer to an element buffer + element count; elements are immutable, so the buffer is shared by copies |
-| `Chan[T]`, `Task`, `async` | not supported (see Scope) |
+| `Chan[T]` | `i64` — the compiler-assigned channel id; only `send`/`recv` consume it (§ Concurrency) |
+| `task` | an internal `void ()` function spawned by `main`; `async`/`await` not supported (see Scope) |
 
 ### Function ABI
 
@@ -174,6 +176,40 @@ The failure branch returns an empty aggregate of the enclosing function's
 return type. Contracts already guarantee the error channel is `Err`-accepted,
 so the runtime never observes an error value here.
 
+## Concurrency (`task`, `chan`, `send`, `recv`)
+
+Phase 6 lowers structured concurrency to the JIT host scheduler
+(`runtime.rs`), following the deterministic run-to-block policy in
+[05-concurrency.md](05-concurrency.md).
+
+- `chan c: Chan[T]` gets a compiler-assigned integer id; the channel name is not
+  a runtime value, it is only the id argument to `send`/`recv`.
+- `task t { ... }` lowers to an internal `void t()` function. `main` begins with
+  `xz_sched_init()` and one `xz_task_spawn(@t)` per declaration, in source
+  order; passing the function's address keeps it alive through `globaldce`.
+- `send(c, v)` copies `v` into a stack slot and calls
+  `xz_chan_send(id, ptr, size)`; the host copies `size` bytes. It never blocks.
+- `let x <- recv(c)` (and `recv(c)`) allocates a slot of `T` and calls
+  `xz_chan_recv(id, ptr, size)`, which blocks the task when the channel is empty.
+
+`size` is the `TargetData` ABI size of the payload's LLVM type, so both sides
+copy the same bytes. A `Str`/record payload copy shares the immutable byte
+buffer (value semantics, [04-memory-model.md](04-memory-model.md)).
+
+Host ABI (JIT only):
+
+| Host function | Signature | Implements |
+|---|---|---|
+| `xz_sched_init` | `fn()` | starts the scheduler; `main` is task 0 |
+| `xz_task_spawn` | `fn(ptr)` | spawns a task thread |
+| `xz_chan_send` | `fn(i64, ptr, i64)` | non-blocking send |
+| `xz_chan_recv` | `fn(i64, ptr, i64)` | blocking receive |
+
+The host serializes the task threads with a single token so exactly one task
+runs at a time and the schedule is deterministic. `xz build-native` and
+`xz build --shared` do not yet emit these host functions, so a program that uses
+channels is JIT-only for now.
+
 ## `xz build` vs `xz run`
 
 - `xz build <file.xz>` runs the full check pipeline, then generates the module
@@ -215,8 +251,7 @@ codegen, and `xz build-native` applies it before `llc`.
 
 ## Scope (explicitly out)
 
-- `task`, `async`/`await`, `chan`/`send`/`recv` — Phase 6 (concurrency
-  runtime), no IR lowering here.
+- `async`/`await` — Phase 6 continuation; no IR lowering here.
 - `Map`/`Set` — specified as type names but no stdlib surface yet.
 - Unit types (`Meters`, `Seconds`) — not implemented.
 - No debug info and no bitcode file output.

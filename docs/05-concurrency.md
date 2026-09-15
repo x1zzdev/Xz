@@ -62,10 +62,12 @@ let body = await fetch(url)?   // suspension is visible at the call site
 
 ## Deterministic scheduling
 
-The scheduler is **single-threaded, cooperative, and run-to-blocking**: a task
-runs until it blocks or finishes, and is never preempted. There is no
-parallelism in this phase. This is what makes a schedule a function of the
-program and its messages rather than of host timing.
+The scheduler is **cooperative and run-to-blocking** with a **single logical
+thread of control**: a task runs until it blocks or finishes, and is never
+preempted. There is no parallelism in this phase. (An implementation may
+serialize OS threads internally, but the program observes exactly one task
+running at a time.) This is what makes a schedule a function of the program and
+its messages rather than of host timing.
 
 State:
 
