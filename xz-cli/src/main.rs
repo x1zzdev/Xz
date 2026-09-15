@@ -13,25 +13,33 @@ fn main() {
         argv.push(a);
     }
     if argv.len() < 3 {
-        println!("usage: xz <lex|parse|check|check-json|build|run|build-native> [--strict] [--shared] <file.xz>");
+        println!("usage: xz <lex|parse|check|check-json|build|run|build-native|bind> [--strict] [--shared] [--lang python] <file.xz>");
         return;
     }
     let cmd = argv[1].clone();
     let mut strict = false;
     let mut shared = false;
+    let mut lang: Option<String> = None;
     let mut path: String = "".to_string();
-    for i in 2..argv.len() {
+    let mut i = 2;
+    while i < argv.len() {
         let a = argv[i].clone();
         if a == "--strict" {
             strict = true;
         } else if a == "--shared" {
             shared = true;
+        } else if a == "--lang" {
+            i += 1;
+            if i < argv.len() {
+                lang = Some(argv[i].clone());
+            }
         } else if path == "" {
             path = a;
         }
+        i += 1;
     }
     if path == "" {
-        println!("usage: xz <lex|parse|check|check-json|build|run|build-native> [--strict] [--shared] <file.xz>");
+        println!("usage: xz <lex|parse|check|check-json|build|run|build-native|bind> [--strict] [--shared] [--lang python] <file.xz>");
         return;
     }
     let source = std::fs::read_to_string(path.clone());
@@ -78,6 +86,8 @@ fn main() {
                         std::process::exit(run_backend(tokens, true));
                     } else if cmd == "build-native" {
                         std::process::exit(run_native_build(tokens));
+                    } else if cmd == "bind" {
+                        std::process::exit(run_bind(tokens, lang, path.clone()));
                     } else {
                         println!("unknown command: {}", cmd);
                         std::process::exit(1);
@@ -451,6 +461,59 @@ fn run_shared_build(tokens: Vec<Token>) -> i32 {
         return 1;
     }
     println!("ok: wrote ./libXz.so and ./libXz.h");
+    0
+}
+
+/// Phase 5 binding generation: emit a Python `ctypes` wrapper for the
+/// `@export` functions and `@cstruct` records of a library interface. The
+/// wrapper is named after the source file (`foo.xz` -> `foo.py`) and loads the
+/// sibling `libXz.so` produced by `xz build --shared`, so it never shadows the
+/// shared object as an importable extension module.
+fn run_bind(tokens: Vec<Token>, lang: Option<String>, path: String) -> i32 {
+    let Some(lang) = lang else {
+        println!("error: xz bind requires --lang <language>");
+        return 1;
+    };
+    if lang != "python" {
+        println!("error: unsupported bind language '{}' (only python)", lang);
+        return 1;
+    }
+
+    let parsed = parse(tokens);
+    let program = match parsed {
+        Err(e) => {
+            println!("error: {} at {}:{}:{}", e.message, e.span.file, e.span.start.0, e.span.start.1);
+            return 1;
+        }
+        Ok(p) => p,
+    };
+    if let Err(errors) = resolve(&program) {
+        println!("error: {} resolution errors", errors.len());
+        return 1;
+    }
+    if let Err(errors) = typecheck(&program) {
+        for err in &errors {
+            println!("type error: {}", err.message);
+        }
+        println!("error: {} type errors", errors.len());
+        return 1;
+    }
+    if let Err(errors) = check_intent(&program) {
+        println!("error: intent: {}", errors[0].code);
+        return 1;
+    }
+
+    let stem = std::path::Path::new(&path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "xz_bindings".to_string());
+    let out_name = format!("{}.py", stem);
+    let bindings = xz_cli::backend::python::generate_python_bindings(&program);
+    if let Err(e) = std::fs::write(&out_name, bindings) {
+        println!("error: cannot write ./{}: {}", out_name, e);
+        return 1;
+    }
+    println!("ok: wrote ./{}", out_name);
     0
 }
 

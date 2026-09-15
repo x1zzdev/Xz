@@ -26,6 +26,7 @@ generates Python wrappers from interface files (see
 xz build <file.xz>          # type check + contract check + codegen (Phase 4: emits LLVM IR)
 xz build --shared <file.xz> # emit libXz.so + libXz.h for the @export functions
 xz build-native <file.xz>   # emit IR + native runtime, compile with llc, link with ld -> ./xz_program
+xz bind --lang python <file.xz>  # emit a ctypes wrapper (<stem>.py) for the @export functions
 xz check <file.xz>          # type/contract check only, no codegen
 xz check --strict <file.xz> # intent checks enforced (I0004: untrusted claims fail)
 xz check-json [--strict] <file.xz>   # same, diagnostics as a JSON array

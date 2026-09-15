@@ -7,6 +7,7 @@
 use xz_cli::backend::llvm_backend::compile;
 use xz_cli::backend::llvm_backend::compile_shared;
 use xz_cli::backend::header::generate_c_header;
+use xz_cli::backend::python::generate_python_bindings;
 use xz_cli::backend::runtime::run;
 use xz_cli::intent::check_intent;
 use xz_cli::lexer::lex;
@@ -533,6 +534,62 @@ func main() {
     let inner_pos = header.find("typedef struct Inner").ok_or("Inner record missing")?;
     let outer_pos = header.find("typedef struct Outer").ok_or("Outer record missing")?;
     assert!(inner_pos < outer_pos, "nested record must be declared before its user:\n{}", header);
+    Ok(())
+}
+
+#[test]
+fn python_bindings_mirror_exported_abi() -> Result<(), String> {
+    // `xz bind --lang python` generates a ctypes module from the same
+    // interface the C header describes: typed bindings for the `@export`
+    // functions, `ctypes.Structure` classes for the `@cstruct` records, and
+    // nothing for private functions.
+    let src = r#"@cstruct record Inner {
+    a: Int
+    b: Int
+}
+
+@cstruct record Outer {
+    inner: Inner
+    flag: Bool
+}
+
+/// Adds two numbers.
+/// @intent  Returns a + b.
+/// @effects none
+@export func add(a: Int, b: Int) -> Int {
+    a + b
+}
+
+/// Kept private.
+/// @intent  Returns a constant.
+/// @effects none
+func hidden() -> Int {
+    7
+}
+
+func main() {
+    print(add(1, 2).to_str())
+}"#;
+    let tokens = lex(src.to_string(), "shared.xz".to_string()).map_err(|e| e.message)?;
+    let program = parse(tokens).map_err(|e| e.message)?;
+    resolve(&program).map_err(|_| "resolve failed".to_string())?;
+    typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
+    check_intent(&program).map_err(|e| e[0].code.clone())?;
+
+    let bindings = generate_python_bindings(&program);
+    assert!(
+        bindings.contains("_lib.add.argtypes = [ctypes.c_int64, ctypes.c_int64]"),
+        "missing add argtypes:\n{}",
+        bindings
+    );
+    assert!(bindings.contains("_lib.add.restype = ctypes.c_int64"), "missing add restype:\n{}", bindings);
+    assert!(bindings.contains("add = _lib.add"), "missing add binding:\n{}", bindings);
+    assert!(!bindings.contains("_lib.hidden"), "private helper must not be bound:\n{}", bindings);
+    assert!(bindings.contains("class XzStr(ctypes.Structure):"), "missing XzStr:\n{}", bindings);
+    assert!(bindings.contains("(\"flag\", ctypes.c_bool)"), "Bool must map to c_bool:\n{}", bindings);
+    let inner_pos = bindings.find("class Inner(ctypes.Structure):").ok_or("Inner class missing")?;
+    let outer_pos = bindings.find("class Outer(ctypes.Structure):").ok_or("Outer class missing")?;
+    assert!(inner_pos < outer_pos, "nested record must be defined before its user:\n{}", bindings);
     Ok(())
 }
 

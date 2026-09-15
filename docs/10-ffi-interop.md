@@ -172,6 +172,14 @@ xz pkg gen --lang python     # generate ctypes wrappers from .xzint interface fi
 - Interface files (`.xzint`) are pure declarations: `extern` signatures + contracts. They are written once per library and shared.
 - Every FFI wrapper carries contracts, so unsafe calls stay behind verified boundaries — preserving the "reviewable" promise even at the edge.
 
+`xz bind --lang python <file.xz>` reads the same `@export` functions and
+`@cstruct` records as `xz build --shared` and writes a `ctypes` module named
+after the source file (`foo.xz` -> `foo.py`). The module declares each
+`@cstruct` as a `ctypes.Structure` and types every exported function, then
+loads the sibling `libXz.so`. The wrapper deliberately does not reuse the
+`libXz` name: a `.py` module named `libXz` would be shadowed by `libXz.so`,
+which Python treats as an extension module.
+
 ## Python bridge (first-class)
 
 - `xz build --shared --bind python` produces a `.so` plus a `.py` wrapper module with proper types (Xz `Int` → Python `int`, `Result` → exceptions or `None`/tuples).
