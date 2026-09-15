@@ -183,10 +183,10 @@ extern "C" fn xz_sched_init() {
     cv.notify_all();
 }
 
-/// Spawn a task: add it to the ready queue and start its OS thread. The thread
-/// waits for the token, so tasks run only when the scheduler grants it.
-#[unsafe(no_mangle)]
-extern "C" fn xz_task_spawn(fp: usize) {
+/// Spawn a task: assign an id, append it to the ready queue, and start its OS
+/// thread. The thread waits for the token, so tasks run only when the scheduler
+/// grants it. The token passes to the next ready task when the body returns.
+fn spawn_task<F: FnOnce() + Send + 'static>(body: F) {
     let id;
     {
         let mut s = sched_lock();
@@ -194,7 +194,6 @@ extern "C" fn xz_task_spawn(fp: usize) {
         s.next_id += 1;
         s.ready.push_back(id);
     }
-    let entry: extern "C" fn() = unsafe { std::mem::transmute(fp) };
     thread::spawn(move || {
         TASK_ID.with(|t| t.set(id));
         {
@@ -204,12 +203,29 @@ extern "C" fn xz_task_spawn(fp: usize) {
                 s = cv.wait(s).unwrap();
             }
         }
-        entry();
+        body();
         let (lock, cv) = &*SCHED;
         let mut s = lock.lock().unwrap();
         s.running = s.ready.pop_front();
         cv.notify_all();
     });
+}
+
+/// Spawn a `task` declaration: a no-arg entry.
+#[unsafe(no_mangle)]
+extern "C" fn xz_task_spawn(fp: usize) {
+    let entry: extern "C" fn() = unsafe { std::mem::transmute(fp) };
+    spawn_task(move || entry());
+}
+
+/// Spawn a coroutine with a single opaque environment pointer. `await` uses
+/// this: the pointer addresses the caller's argument struct, valid because the
+/// caller blocks (and keeps its frame) until the child finishes
+/// (docs/05-concurrency.md, docs/13-codegen.md § async/await).
+#[unsafe(no_mangle)]
+extern "C" fn xz_task_spawn_arg(fp: usize, arg: usize) {
+    let entry: extern "C" fn(usize) = unsafe { std::mem::transmute(fp) };
+    spawn_task(move || entry(arg));
 }
 
 /// Hand a message to the earliest blocked receiver, else queue it. Never blocks
@@ -299,10 +315,12 @@ pub fn run(module: Module) -> Result<i32, String> {
     bind(&module, &ee, "xz_str_to_lower", lower as usize);
     let sched_init: unsafe extern "C" fn() = xz_sched_init;
     let task_spawn: unsafe extern "C" fn(usize) = xz_task_spawn;
+    let task_spawn_arg: unsafe extern "C" fn(usize, usize) = xz_task_spawn_arg;
     let chan_send: unsafe extern "C" fn(i64, usize, usize) = xz_chan_send;
     let chan_recv: unsafe extern "C" fn(i64, usize, usize) = xz_chan_recv;
     bind(&module, &ee, "xz_sched_init", sched_init as usize);
     bind(&module, &ee, "xz_task_spawn", task_spawn as usize);
+    bind(&module, &ee, "xz_task_spawn_arg", task_spawn_arg as usize);
     bind(&module, &ee, "xz_chan_send", chan_send as usize);
     bind(&module, &ee, "xz_chan_recv", chan_recv as usize);
 

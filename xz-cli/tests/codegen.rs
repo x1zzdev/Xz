@@ -668,6 +668,74 @@ fn loop_and_for_run() {
 }
 
 #[test]
+fn async_await_lowering_runs() -> Result<(), String> {
+    // Phase 6: `await f(args)` runs the async callee as a scheduled child
+    // coroutine and suspends the caller until it completes (docs/05-concurrency.md
+    // rule 6). The child is spawned via `xz_task_spawn_arg` and returns its
+    // result on a synthetic completion channel, so await composes with `?`,
+    // nested await, and interleaves with `task`s under the deterministic policy.
+    let src = r#"chan ping: Chan[Int]
+
+/// Adds one.
+/// @intent  Returns x + 1.
+/// @effects none
+async func base(x: Int) -> Int {
+    x + 1
+}
+
+/// Awaits base twice.
+/// @intent  Returns base(x) * 2.
+/// @effects none
+async func nested(x: Int) -> Int {
+    let a = await base(x)
+    let b = await base(x)
+    a + b
+}
+
+/// Triples or fails.
+/// @intent  Returns 3x for x >= 0, otherwise an error.
+/// @effects none
+async func triple(x: Int) -> Result[Int, Err] {
+    if x < 0 {
+        err(Err("neg"))
+    } else {
+        ok(x * 3)
+    }
+}
+
+/// Consumes one ping.
+/// @intent  Prints the pinged value.
+/// @effects io, chan
+task worker {
+    let v <- recv(ping)
+    print("worker:" + v.to_str() + "\n")
+}
+
+func main() -> Result[Unit, Err] {
+    send(ping, 1)
+    let r = await nested(10)
+    print("main:" + r.to_str() + "\n")
+    let t = await triple(2)?
+    print(t.to_str())
+    print("\n")
+    ok()
+}"#;
+    let tokens = lex(src.to_string(), "await.xz".to_string()).map_err(|e| e.message)?;
+    let program = parse(tokens).map_err(|e| e.message)?;
+    resolve(&program).map_err(|_| "resolve failed".to_string())?;
+    typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
+    check_intent(&program).map_err(|e| e[0].code.clone())?;
+    let backend = compile(&program)?;
+    let ir = backend.module.print_to_string().to_string();
+    assert!(ir.contains("call void @xz_task_spawn_arg"), "await must spawn the child:\n{}", ir);
+    assert!(ir.contains("define internal void @__await_"), "await needs a trampoline:\n{}", ir);
+    assert!(ir.contains("@xz_chan_send"), "the child must send its result:\n{}", ir);
+    assert!(ir.contains("@xz_chan_recv"), "the caller must block on the result:\n{}", ir);
+    run(backend.module)?;
+    Ok(())
+}
+
+#[test]
 fn deterministic_tasks_and_channels_run() -> Result<(), String> {
     // Phase 6: `task` bodies are spawned by `main` in source order, and
     // `send`/`recv` move typed values through the deterministic scheduler

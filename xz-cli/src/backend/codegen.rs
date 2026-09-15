@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use inkwell::basic_block::BasicBlock;
 use inkwell::intrinsics::Intrinsic;
-use inkwell::types::BasicTypeEnum;
+use inkwell::module::Linkage;
+use inkwell::types::{BasicTypeEnum, StructType};
 use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{FloatPredicate, IntPredicate};
 
@@ -863,6 +864,128 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         self.emit_chan_recv(id, slot, lty)
     }
 
+    /// `await f(args)` — run the async callee as a scheduled child coroutine and
+    /// suspend the caller until it completes (docs/05-concurrency.md rule 6).
+    ///
+    /// The caller evaluates the arguments into a stack struct, spawns an
+    /// internal trampoline with that struct as its argument, then blocks on a
+    /// synthetic completion channel. The trampoline calls `f` and sends the
+    /// result on the channel, so the scheduler can run other ready tasks while
+    /// the child is blocked. The caller's frame stays alive through the block,
+    /// so the argument struct is valid when the child finally runs.
+    fn gen_await(&mut self, inner: &Expr) -> GenResult<'ctx> {
+        let (callee, args) = match inner {
+            Expr::Call(c, a) => (&**c, a),
+            _ => return self.fail("await applies to a call to an async function"),
+        };
+        let name = match callee {
+            Expr::Name(n) => n.clone(),
+            _ => return self.fail("await target must be a named function"),
+        };
+        if self.backend.generic_params.contains_key(&name) {
+            return self.fail("await of a generic function is not supported yet");
+        }
+        let fv = match self.backend.functions.get(&name).copied() {
+            Some(fv) => fv,
+            None => return self.fail(&format!("await target '{}' is not a function", name)),
+        };
+        let (params, xz_ret, param_kinds) = match self.backend.sigs.get(&name) {
+            Some(s) => (s.params.clone(), s.xz_ret.clone(), s.param_kinds.clone()),
+            None => return self.fail(&format!("missing signature for '{}'", name)),
+        };
+        let ret_kind = xz_ret.unwrap_or(Kind::Unit);
+
+        // Evaluate arguments with the callee's declared types as hints (an
+        // empty `[]`/`none` argument materializes its type from the parameter).
+        let env_ty = self.backend.context.struct_type(&params, false);
+        let env = self.backend.builder.build_alloca(env_ty, "await.env").unwrap();
+        let mut vals: Vec<BasicValueEnum<'ctx>> = Vec::with_capacity(args.len());
+        for (i, a) in args.iter().enumerate() {
+            let hint = param_kinds.get(i).cloned();
+            let saved_list_hint = self.list_hint.clone();
+            let saved_none_hint = self.none_hint.clone();
+            self.list_hint = hint.clone();
+            self.none_hint = hint;
+            vals.push(self.gen_expr(a)?);
+            self.list_hint = saved_list_hint;
+            self.none_hint = saved_none_hint;
+        }
+        for (i, v) in vals.iter().enumerate() {
+            let p = self.backend.builder.build_struct_gep(env_ty, env, i as u32, "await.arg").unwrap();
+            self.backend.builder.build_store(p, *v).unwrap();
+        }
+
+        let aid = self.backend.next_channel_id();
+        let tramp = self.make_await_trampoline(aid, fv, env_ty, &params, &ret_kind);
+        let spawn = self
+            .backend
+            .module
+            .get_function("xz_task_spawn_arg")
+            .ok_or("xz_task_spawn_arg missing")?;
+        let fp = tramp.as_global_value().as_pointer_value();
+        let _ = self
+            .backend
+            .builder
+            .build_direct_call(spawn, &[fp.into(), env.into()], "await.spawn")
+            .unwrap();
+
+        let ret_ty = self.backend.kind_to_llvm(&ret_kind);
+        let slot = self.backend.builder.build_alloca(ret_ty, "await.ret").unwrap();
+        self.emit_chan_recv(aid, slot, ret_ty)
+    }
+
+    /// Emit the child coroutine for one `await` site: `void (ptr)` where the
+    /// pointer addresses the caller's argument struct. It calls the async
+    /// function and sends the result on completion channel `aid`.
+    fn make_await_trampoline(
+        &mut self,
+        aid: u64,
+        callee: FunctionValue<'ctx>,
+        env_ty: StructType<'ctx>,
+        params: &[BasicTypeEnum<'ctx>],
+        ret_kind: &Kind,
+    ) -> FunctionValue<'ctx> {
+        let ptr = self.backend.types.ptr;
+        let fn_ty = self.backend.context.void_type().fn_type(&[ptr.into()], false);
+        let tramp = self.backend.module.add_function(&format!("__await_{}", aid), fn_ty, None);
+        tramp.set_linkage(Linkage::Internal);
+
+        let saved = self.backend.builder.get_insert_block();
+        let entry = self.backend.context.append_basic_block(tramp, "entry");
+        self.backend.builder.position_at_end(entry);
+        let env = tramp.get_nth_param(0).unwrap().into_pointer_value();
+        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> = Vec::with_capacity(params.len());
+        for (i, ty) in params.iter().enumerate() {
+            let p = self.backend.builder.build_struct_gep(env_ty, env, i as u32, "arg").unwrap();
+            let v = self.backend.builder.build_load(*ty, p, "arg.v").unwrap();
+            call_args.push(v.into());
+        }
+        let call = self.backend.builder.build_direct_call(callee, &call_args, "call").unwrap();
+
+        // Send the result on the completion channel. The slot always exists so
+        // a `Unit` result is a zero-byte send (the parent's `recv` still blocks).
+        let ret_ty = self.backend.kind_to_llvm(ret_kind);
+        let slot = self.backend.builder.build_alloca(ret_ty, "ret").unwrap();
+        if let Some(v) = call.try_as_basic_value().basic() {
+            self.backend.builder.build_store(slot, v).unwrap();
+        }
+        let size = self.abi_size(ret_ty);
+        if let Some(send) = self.backend.module.get_function("xz_chan_send") {
+            let idc = self.backend.types.int.const_int(aid, false);
+            let szc = self.backend.types.int.const_int(size, false);
+            let _ = self
+                .backend
+                .builder
+                .build_direct_call(send, &[idc.into(), slot.into(), szc.into()], "await.send")
+                .unwrap();
+        }
+        let _ = self.backend.builder.build_return(None);
+        if let Some(bb) = saved {
+            self.backend.builder.position_at_end(bb);
+        }
+        tramp
+    }
+
     // ------------------------------------------------------------------ //
     //  Expressions
     // ------------------------------------------------------------------ //
@@ -899,7 +1022,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             Expr::If(ifx) => self.gen_if(ifx),
             Expr::Loop(b) => self.gen_loop(b),
             Expr::For(name, iter, b) => self.gen_for(name, iter, b),
-            Expr::Await(_) => self.fail("async/await are not supported in Phase 6"),
+            Expr::Await(a) => self.gen_await(a),
             Expr::Send(ch, value) => self.gen_send(ch, value),
             Expr::Recv(ch) => self.gen_recv_value(ch),
             Expr::Transfer(a) => {

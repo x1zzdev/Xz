@@ -107,6 +107,9 @@ pub struct LlvmBackend<'ctx> {
     /// task declaration names, in source order; `main` spawns them in this order
     /// (docs/05-concurrency.md deterministic scheduling rule 1).
     pub tasks: Vec<String>,
+    /// number of synthetic completion channels handed out to `await` sites.
+    /// Their ids start after the declared channels (see `next_channel_id`).
+    pub await_chan_count: u64,
 }
 
 impl<'ctx> LlvmBackend<'ctx> {
@@ -135,6 +138,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             channel_ids: HashMap::new(),
             channel_payloads: HashMap::new(),
             tasks: Vec::new(),
+            await_chan_count: 0,
         }
     }
 
@@ -142,6 +146,15 @@ impl<'ctx> LlvmBackend<'ctx> {
         if self.error.is_none() {
             self.error = Some(msg.to_string());
         }
+    }
+
+    /// Reserve a runtime channel id for a synthetic `await` completion channel.
+    /// Declared channels take ids `0..channel_ids.len()`; await channels follow,
+    /// so no id collides with a user-visible `chan` (docs/13-codegen.md).
+    pub fn next_channel_id(&mut self) -> u64 {
+        let id = self.channel_ids.len() as u64 + self.await_chan_count;
+        self.await_chan_count += 1;
+        id
     }
 
     /// Convert a `Kind` to an LLVM basic type (value type). `Unit` becomes the
@@ -618,6 +631,7 @@ fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>,
         // channel id; the value is copied through a `(ptr, size)` byte range.
         backend.declare_extern("xz_sched_init", &[], None);
         backend.declare_extern("xz_task_spawn", &[ptr.into()], None);
+        backend.declare_extern("xz_task_spawn_arg", &[ptr.into(), ptr.into()], None);
         backend.declare_extern("xz_chan_send", &[i64.into(), ptr.into(), i64.into()], None);
         backend.declare_extern("xz_chan_recv", &[i64.into(), ptr.into(), i64.into()], None);
     }
