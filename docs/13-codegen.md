@@ -218,8 +218,6 @@ codegen, and `xz build-native` applies it before `llc`.
 - `task`, `async`/`await`, `chan`/`send`/`recv` — Phase 6 (concurrency
   runtime), no IR lowering here.
 - `Map`/`Set` — specified as type names but no stdlib surface yet.
-- `xz bind` (Python wrapper generation) — follow-up to the shared-library
-  output.
 - Unit types (`Meters`, `Seconds`) — not implemented.
 - No debug info and no bitcode file output.
 

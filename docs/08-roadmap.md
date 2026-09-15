@@ -2,7 +2,7 @@
 
 Status: Phases 1–4 (front end + LLVM JIT backend) are implemented; `xz check`
 and `xz run` work on the example programs. Phase 5 (FFI) is underway — the
-C ABI bridge and shared-library output work; `xz bind` is not yet implemented.
+C ABI bridge, shared-library output, and `xz bind --lang python` work.
 Phases 6–8 are not yet implemented.
 
 ## Phase 0 — Design (current)
@@ -71,7 +71,7 @@ Phases 6–8 are not yet implemented.
 - [x] Type mapping (Xz ↔ C), `@cstruct` records, `Ptr`
 - [x] Shared-library output (`xz build --shared`) — `@export` functions,
   generated `libXz.so` + `libXz.h`
-- [ ] `xz bind --lang python` ctypes wrapper generation
+- [x] `xz bind --lang python` ctypes wrapper generation
 
 ## Phase 6 — Concurrency runtime
 
