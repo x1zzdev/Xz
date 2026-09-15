@@ -86,7 +86,9 @@ Phases 7–8 are not yet implemented.
 
 - [x] `List[T]` first slice — literal `[a, b, c]`, bounds-checked `xs[i]`,
   non-mutating `append`, `len`/`is_empty`, `for x in xs`
-- Collections (`Map`/`Set`), I/O, math, time
+- [x] `Map[K, V]` first slice — literal `{k: v}`, `Option` lookup `get`,
+  non-mutating `insert`, `len`/`is_empty`, `keys`/`values`; insertion order
+- Collections (`Set`), I/O, math, time
 - Networking (HTTP)
 
 ## Phase 8 — Tooling

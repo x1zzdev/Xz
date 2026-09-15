@@ -187,13 +187,22 @@ let grown = xs.append(4)          // a new List[Int]
 for x in xs {
     print(x.to_str())
 }
+
+// Maps: literal, Option lookup, non-mutating insert, insertion-order keys.
+let counts: Map[Str, Int] = {"a": 1, "b": 2}
+let updated = counts.insert("a", 3)   // a new Map[Str, Int]
+let found = counts.get("b")            // Option[Int]
+for k in counts.keys() {
+    print(k)
+}
 ```
 
 > **Phase 4 scope.** The backend implements `loop { ... }` with `break` /
 > `continue`, `for i in n { ... }` iterating the integer range `0..n`
-> (n exclusive, `n: Int`), and `for x in xs { ... }` over a `List[T]`
-> (see [12-stdlib.md](12-stdlib.md)). Iterables other than `Int` and
-> `List[T]` are rejected (see [13-codegen.md](13-codegen.md)).
+> (n exclusive, `n: Int`), `for x in xs { ... }` over a `List[T]`, and `Map`
+> mutation through the value-returning `insert` (see
+> [12-stdlib.md](12-stdlib.md)). Iterables other than `Int` and `List[T]` are
+> rejected (see [13-codegen.md](13-codegen.md)).
 
 ## Concurrency
 

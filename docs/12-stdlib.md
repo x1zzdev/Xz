@@ -1,10 +1,10 @@
 # Standard Library — Minimum Surface
 
 Status: this is the **minimum surface** needed to typecheck the example
-programs and to validate Phases 1–3, plus the first collection slice
-(`List[T]`). The rest of the standard library (`Map`/`Set`, file I/O,
-networking, time) is Phase 7 on the [roadmap](08-roadmap.md).
-Anything not listed here does not exist yet.
+programs and to validate Phases 1–3, plus the first collection slices
+(`List[T]` and the `Map[K, V]` first slice). The rest of the standard library
+(`Set`, file I/O, networking, time) is Phase 7 on the
+[roadmap](08-roadmap.md). Anything not listed here does not exist yet.
 
 ## Conventions
 
@@ -80,6 +80,28 @@ copies it; `xs.append(x)` returns a *new* list (see
 There is no index assignment and no `push`; growth is the explicit, value-returning
 `append`.
 
+## `Map[K, V]`
+
+An insertion-ordered association collection with immutable entries. Value type:
+assignment/argument/return copies it; `m.insert(k, v)` returns a *new* map
+(see [03-type-system.md](03-type-system.md)).
+
+| Construct | Meaning |
+|---|---|
+| `{k1: v1, k2: v2, ...}` | map literal, in insertion order |
+| `m.len() -> Int` | entry count |
+| `m.is_empty() -> Bool` | |
+| `m.get(k: K) -> Option[V]` | `none` when the key is absent |
+| `m.insert(k: K, v: V) -> Map[K, V]` | a new map; replaces the value if `k` is present, keeping its position |
+| `m.keys() -> List[K]`, `m.values() -> List[V]` | snapshots in insertion order |
+
+Keys must be `Int`, `usize`, `Bool`, `Char`, or `Str` (types with decidable
+equality); `Float`, records, enums, and collections are rejected. A repeated key
+in a literal is the same as inserting again: the later value wins and the key
+keeps its first position. `{}` (empty) requires a declared key and value type:
+`let m: Map[Str, Int] = {}`. There is no `m[k]` indexing and no index
+assignment; `get` returns `Option`, and changes go through `insert`.
+
 ## Numeric
 
 | Signature | Notes |
@@ -114,6 +136,6 @@ untyped failure path. To use a value, `match` it; to assert it exists, use
 
 ## Out of scope (Phase 7)
 
-`Map`, `Set`, file I/O, networking (HTTP), time, ranges, and any module
+`Set`, file I/O, networking (HTTP), time, ranges, and any module
 structure. The grammar reserves their syntax; nothing provides it yet.
-`List` (above) is the first and only collection so far.
+`List` and `Map` (above) are the collections so far.

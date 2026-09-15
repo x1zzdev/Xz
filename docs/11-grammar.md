@@ -143,6 +143,7 @@ post_op         := "(" args ")" | "." IDENT | "[" expr "]" | "?"
 args            := expr ("," expr)*
 primary         := literal | IDENT | "(" expr ")"
                  | "[" (expr ("," expr)*)? "]"          // List literal
+                 | "{" (map_entry ("," map_entry)*)? "}" // Map literal
                  | "match" expr "{" match_arm+ "}"
                  | "if" expr block ("elif" expr block)* ("else" block)?
                  | "loop" block
@@ -154,6 +155,7 @@ primary         := literal | IDENT | "(" expr ")"
                  | "some" "(" expr ")" | "none"
 await_operand    := primary await_op*
 await_op         := "(" args ")" | "." IDENT | "[" expr "]"
+map_entry        := expr ":" expr
 match_arm       := pattern "->" expr
 pattern         := "_" | "none"
                  | "ok" "(" (IDENT ("," IDENT)*)? ")"
@@ -225,8 +227,10 @@ The grammar alone is not the whole contract. The compiler also enforces:
 - Operator overloading — there is none. `+` on `Str` is the only built-in
   case of a symbol meaning more than one thing, and it is fixed by the
   language.
-- Collections `Map`/`Set` — the type names are reserved by
-  [03-type-system.md](03-type-system.md), but no stdlib surface defines them
-  yet. `List[T]` is specified in [12-stdlib.md](12-stdlib.md); `[]` is its
+- Collections `Map`/`Set` — the `Map[K, V]` surface is specified in
+  [12-stdlib.md](12-stdlib.md) and its literal `{k: v}` / keys are fixed by the
+  language (not a second spelling of a method); `Set[T]` is reserved by
+  [03-type-system.md](03-type-system.md) but has no surface yet. `List[T]` is
+  specified in [12-stdlib.md](12-stdlib.md); `[]` is its
   literal and `xs[i]` its indexing, both fixed by the language (not a second
   spelling of a method).

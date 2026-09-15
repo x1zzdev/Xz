@@ -92,6 +92,21 @@ Iteration over a `List[T]` yields its elements in order. A list's element type
 must be known at the binding site: an empty literal `[]` needs a declared type
 (`let xs: List[Int] = []`).
 
+### `Map[K, V]`
+
+`Map[K, V]` is an association collection preserving **insertion order**: a key
+appears in iteration at the position it was first inserted, regardless of later
+updates. Like `List[T]` it is a value type — assignment, an argument, or a
+return copies it — and its entries are immutable: there is no `m[k] = v`. The
+only way to change a map is the non-mutating `m.insert(k, v)`, which returns a
+*new* map; if `k` is already present its value is replaced in place, keeping the
+key's original position.
+
+Keys are restricted to types with decidable equality — `Int`, `usize`, `Bool`,
+`Char`, and `Str`. A missing key is absence, not an error, so lookup returns
+`Option[V]`; contrast `List[T]` indexing, whose `Result[T, IndexError]` reflects
+that an index is a positional claim that can be out of range.
+
 ## Error channel
 
 `Result[T, E]` carries exactly one error type `E`. A function that can fail in

@@ -54,6 +54,7 @@ what `xz build` (native output, Phase 5) will reuse.
 | `Result[T, E]` | `struct { T, i1 }` — a *payload + ok-flag* (no heap; the error payload is unused by the runtime) |
 | `Option[T]` | `struct { T, i1 }` — same shape as `Result` |
 | `List[T]` | `struct { T*, i64 }` — pointer to an element buffer + element count; elements are immutable, so the buffer is shared by copies |
+| `Map[K, V]` | `struct { K*, V*, i64 }` — key and value buffers + entry count; entries are immutable, so both buffers are shared by copies |
 | `Chan[T]` | `i64` — the compiler-assigned channel id; only `send`/`recv` consume it (§ Concurrency) |
 | `task` | an internal `void ()` function spawned by `main`; `async` functions are ordinary functions, and `await` spawns the callee as a child coroutine (§ Concurrency) |
 
@@ -84,6 +85,7 @@ system linker.
 | `xz_char_to_str` | `fn(i8) -> XzStr` | `Char.to_str()` |
 | `xz_str_to_upper` / `xz_str_to_lower` | `fn(i8*, i64) -> XzStr` | `Str.to_upper()` / `to_lower()` — a fresh byte buffer |
 | `xz_bool_to_str` | `fn(i1) -> XzStr` | `Bool.to_str()` |
+| `xz_str_eq` | `fn(i8*, i64, i8*, i64) -> i1` | `Map` key equality for `Str` keys |
 | `xz_str_free` | `fn(i8*, i64) -> ()` | frees a heap Str buffer (registry-guarded) |
 
 `abs()` and `approx_sqrt()` are **not** host functions — they lower to LLVM
@@ -101,8 +103,9 @@ executable cannot, so `emit_native_runtime` instead **defines** those functions
 in the module as IR that calls libc (`write`, `malloc`, `memcpy`, `free`,
 `snprintf`), and the object compiled by `llc` is linked with `ld` against the C
 runtime and libc. `print`/`to_str`/`concat`/`str_free` therefore stay one C-ABI
-call each; `abs`/`sqrt` remain native intrinsics. The JIT path is unaffected —
-`add_global_mapping` overrides these definitions when running in-process.
+call each; `xz_str_eq` is a byte-compare loop; `abs`/`sqrt` remain native
+intrinsics. The JIT path is unaffected — `add_global_mapping` overrides these
+definitions when running in-process.
 
 `xz build-native <file.xz>` emits IR, runs `llc -filetype=obj`, links with
 `ld` (crt1.o/crti.o/crtn.o + `-lc -lm`), and writes `./xz_program`.
@@ -162,6 +165,10 @@ freed right after the call. See also docs/14-codegen-notes.md § Str memory.
 | `xs[i]` | bounds-checked: `0 <= i < len` → `ok(element)` else `err(IndexError)` |
 | `xs.append(x)` | malloc `len+1` elements, copy the old buffer, store `x`, return a new List |
 | `for x in xs` | induction `0..len`; load the element at each index |
+| `{k1: v1, ...}` | start from the empty map and `insert` each entry in order |
+| `m.get(k)` | linear key scan (Int/usize/Bool/Char by value, Str via `xz_str_eq`) → `some(value)` / `none` |
+| `m.insert(k, v)` | malloc `len` or `len+1` key and value buffers, copy, replace at the existing slot or append, return a new Map |
+| `m.keys()` / `m.values()` | allocate a `List[K]` / `List[V]` buffer and copy the column, in insertion order |
 | enum construction | allocate a heap box, store the variant's fields, build `{ box, tag }` |
 | function call | `build_direct_call` with the target's `FunctionValue` |
 | method call (`.to_str()`, `.len()`, `.abs()`) | `to_str` → host function; `len`/`is_empty` → field op; `abs`/`approx_sqrt` → LLVM intrinsics |
@@ -267,7 +274,9 @@ codegen, and `xz build-native` applies it before `llc`.
 
 - `await` of a generic function — a generic `async` callee is not monomorphized
   at an `await` site yet.
-- `Map`/`Set` — specified as type names but no stdlib surface yet.
+- `Set` — a reserved type name with no stdlib surface yet. `Map[K, V]` has its
+  first slice (literal, `get`/`insert`, `len`/`is_empty`, `keys`/`values`);
+  keys are restricted to `Int`/`usize`/`Bool`/`Char`/`Str`.
 - Unit types (`Meters`, `Seconds`) — not implemented.
 - No debug info and no bitcode file output.
 
