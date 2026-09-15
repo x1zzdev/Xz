@@ -2,3 +2,5 @@
 session-*.md
 # Native output of `xz build-native`.
 xz-cli/xz_program
+# Local work queue (see NEXT.md); not part of the design record.
+NEXT.md
