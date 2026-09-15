@@ -1,0 +1,52 @@
+// Structured concurrency: `async` functions suspend at `await` and resume with
+// the child's result. The schedule is deterministic under the run-to-block
+// policy (docs/05-concurrency.md).
+
+chan log: Chan[Str]
+
+/// Returns a value one greater than x.
+/// @intent  Returns x + 1.
+/// @ensures result == x + 1
+/// @effects none
+async func inc(x: Int) -> Int
+    post result == x + 1
+{
+    x + 1
+}
+
+/// Fails on negatives, otherwise triples.
+/// @intent  Returns 3x, or an error when x is negative.
+/// @effects none
+async func triple(x: Int) -> Result[Int, Err] {
+    if x < 0 {
+        err(Err("negative"))
+    } else {
+        ok(x * 3)
+    }
+}
+
+/// Awaits inc twice and adds the results.
+/// @intent  Returns inc(x) + inc(x).
+/// @effects none
+async func pair(x: Int) -> Int {
+    let a = await inc(x)
+    let b = await inc(x)
+    a + b
+}
+
+/// Prints one log line.
+/// @intent  Prints the received message.
+/// @effects io, chan
+task printer {
+    let line <- recv(log)
+    print(line)
+}
+
+func main() -> Result[Unit, Err] {
+    send(log, "printer ready\n")
+    let p = await pair(10)
+    print("pair: " + p.to_str() + "\n")
+    let t = await triple(7)?
+    print("triple: " + t.to_str() + "\n")
+    ok()
+}
