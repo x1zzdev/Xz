@@ -88,8 +88,8 @@ Lowest to highest; `a op b op c` chains left-associatively except where noted.
 | 11 | primary | literals, `IDENT`, `(...)`, match/if/loop/for, constructors |
 
 `?` binds tighter than `as`: `a()? as Str` parses as `(a()?) as Str`.
-`await` applies to the immediately following postfix chain:
-`await fetch(url)?` parses as `(await fetch(url))?`.
+`await` applies to the immediately following call/field/index chain (not a
+trailing `?`): `await fetch(url)?` parses as `(await fetch(url))?`.
 
 ## Syntactic grammar
 
@@ -147,11 +147,13 @@ primary         := literal | IDENT | "(" expr ")"
                  | "if" expr block ("elif" expr block)* ("else" block)?
                  | "loop" block
                  | "for" IDENT "in" expr block
-                 | "await" postfix
+                 | "await" await_operand
                  | "send" "(" expr "," expr ")"
                  | "transfer" "(" expr ")"
                  | "ok" "(" (expr)? ")" | "err" "(" expr ")"
                  | "some" "(" expr ")" | "none"
+await_operand    := primary await_op*
+await_op         := "(" args ")" | "." IDENT | "[" expr "]"
 match_arm       := pattern "->" expr
 pattern         := "_" | "none"
                  | "ok" "(" (IDENT ("," IDENT)*)? ")"

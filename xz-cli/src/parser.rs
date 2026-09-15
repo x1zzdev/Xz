@@ -644,6 +644,14 @@ let mut trusted = false;
     }
 
     fn postfix(&mut self) -> Result<Expr, ParseError> {
+        self.postfix_operand(true)
+    }
+
+    /// Parse a postfix chain. `allow_prop` controls whether a trailing `?` is
+    /// consumed here; `await`'s operand passes `false` so that `await f()?`
+    /// binds `?` to the await expression, not to the awaited call
+    /// (docs/11-grammar.md).
+    fn postfix_operand(&mut self, allow_prop: bool) -> Result<Expr, ParseError> {
         let mut e = self.primary()?;
         loop {
             if self.at(TokKind::LParen) {
@@ -658,7 +666,7 @@ let mut trusted = false;
                 let index = self.expr()?;
                 self.expect(TokKind::RBracket, String::from("']'"))?;
                 e = Expr::Index(Box::new(e), Box::new(index));
-            } else if self.at(TokKind::Question) {
+            } else if allow_prop && self.at(TokKind::Question) {
                 self.i += 1;
                 e = Expr::Prop(Box::new(e), PropKind::Fallible);
             } else {
@@ -786,7 +794,10 @@ let mut trusted = false;
             }
             TokKind::Await => {
                 self.i += 1;
-                let e = self.postfix()?;
+                // `await` applies to the immediately following call/field/index
+                // chain but not to a trailing `?`: `await fetch(url)?` is
+                // `(await fetch(url))?` (docs/11-grammar.md).
+                let e = self.postfix_operand(false)?;
                 Ok(Expr::Await(Box::new(e)))
             }
             TokKind::Match => {
