@@ -36,6 +36,7 @@ pub struct TypeMap<'ctx> {
     pub xz_str: StructType<'ctx>,
     pub xz_bytes: StructType<'ctx>,
     pub xz_list: StructType<'ctx>,
+    pub xz_map: StructType<'ctx>,
     pub unit: StructType<'ctx>,
 }
 
@@ -48,6 +49,9 @@ impl<'ctx> TypeMap<'ctx> {
         let xz_str = context.struct_type(&[ptr.into(), i64.into()], false);
         let xz_bytes = context.struct_type(&[ptr.into(), i64.into()], false);
         let xz_list = context.struct_type(&[ptr.into(), i64.into()], false);
+        // Map[K, V] is three words: a key buffer, a value buffer, and the entry
+        // count. Entries are immutable, so copies share both buffers.
+        let xz_map = context.struct_type(&[ptr.into(), ptr.into(), i64.into()], false);
         TypeMap {
             int: i64,
             float: context.f64_type(),
@@ -57,6 +61,7 @@ impl<'ctx> TypeMap<'ctx> {
             xz_str,
             xz_bytes,
             xz_list,
+            xz_map,
             unit,
         }
     }
@@ -178,6 +183,9 @@ impl<'ctx> LlvmBackend<'ctx> {
             // List[T] is { ptr, i64 } regardless of T: elements live in a
             // separately allocated buffer (opaque pointers erase T in IR).
             Kind::List(_) => self.types.xz_list.into(),
+            // Map[K, V] is { K*, V*, i64 } regardless of K/V: entries live in
+            // separately allocated key/value buffers (opaque pointers erase K/V).
+            Kind::Map(_, _) => self.types.xz_map.into(),
             Kind::Err | Kind::ErrUnion(_) => self.types.unit.into(),
             // A channel name lowers to its integer id; `send`/`recv` pass the id
             // to the scheduler runtime (docs/13-codegen.md § Concurrency).
@@ -370,6 +378,11 @@ fn kind_from_ast_named(name: &str, args: &[Type], backend: &LlvmBackend<'_>) -> 
             let inner = kind_from_ast(&args[0], backend);
             Kind::List(Box::new(inner))
         }
+        "Map" => {
+            let key = kind_from_ast(&args[0], backend);
+            let val = kind_from_ast(&args[1], backend);
+            Kind::Map(Box::new(key), Box::new(val))
+        }
         "Err" => Kind::Err,
         _ => {
             // record or enum or (unlikely) type variable
@@ -405,6 +418,10 @@ fn kind_named_subst(name: &str, args: &[Type], backend: &LlvmBackend<'_>, subst:
             Box::new(kind_from_ast_subst(&args[1], backend, subst)),
         ),
         "List" => Kind::List(Box::new(kind_from_ast_subst(&args[0], backend, subst))),
+        "Map" => Kind::Map(
+            Box::new(kind_from_ast_subst(&args[0], backend, subst)),
+            Box::new(kind_from_ast_subst(&args[1], backend, subst)),
+        ),
         "Chan" => Kind::Chan(Box::new(kind_from_ast_subst(&args[0], backend, subst))),
         _ => kind_from_ast_named(name, args, backend),
     }
@@ -626,6 +643,8 @@ fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>,
         // case conversion (Str.to_upper / Str.to_lower) -> fresh XzStr
         backend.declare_extern("xz_str_to_upper", &[ptr.into(), i64.into()], Some(xstr.into()));
         backend.declare_extern("xz_str_to_lower", &[ptr.into(), i64.into()], Some(xstr.into()));
+        // Str key equality for Map[Str, V] lookup/insert (JIT host in runtime.rs).
+        backend.declare_extern("xz_str_eq", &[ptr.into(), i64.into(), ptr.into(), i64.into()], Some(i1.into()));
         // Phase 6 scheduler + channels (JIT host in runtime.rs; see
         // docs/13-codegen.md § Concurrency). `id` is the compiler-assigned
         // channel id; the value is copied through a `(ptr, size)` byte range.
@@ -997,6 +1016,66 @@ pub fn emit_native_runtime(backend: &mut LlvmBackend<'static>) -> Result<(), Str
             backend.builder.position_at_end(done_bb);
             build_str_ret(backend, f, buf, len);
         }
+    }
+
+    // xz_str_eq(ap, al, bp, bl) -> i1: 1 when the byte ranges are equal. The
+    // native Map[Str, V] key comparison (JIT host lives in runtime.rs).
+    if let Some(f) = backend.module.get_function("xz_str_eq") {
+        let ap = f.get_nth_param(0).unwrap().into_pointer_value();
+        let al = f.get_nth_param(1).unwrap().into_int_value();
+        let bp = f.get_nth_param(2).unwrap().into_pointer_value();
+        let bl = f.get_nth_param(3).unwrap().into_int_value();
+        let i1 = backend.types.bool;
+        let entry = backend.context.append_basic_block(f, "entry");
+        let len_ok = backend.context.append_basic_block(f, "len.ok");
+        let loop_bb = backend.context.append_basic_block(f, "loop");
+        let body_bb = backend.context.append_basic_block(f, "body");
+        let neq_bb = backend.context.append_basic_block(f, "neq");
+        let eq_bb = backend.context.append_basic_block(f, "eq");
+        let done_bb = backend.context.append_basic_block(f, "done");
+
+        backend.builder.position_at_end(entry);
+        let same_len = backend
+            .builder
+            .build_int_compare(inkwell::IntPredicate::EQ, al, bl, "samelen")
+            .unwrap();
+        backend.builder.build_conditional_branch(same_len, len_ok, neq_bb).unwrap();
+
+        backend.builder.position_at_end(len_ok);
+        backend.builder.build_unconditional_branch(loop_bb).unwrap();
+
+        backend.builder.position_at_end(loop_bb);
+        let i_phi = backend.builder.build_phi(i64, "i").unwrap();
+        i_phi.add_incoming(&[(&i64.const_zero(), len_ok)]);
+        let i_val = i_phi.as_basic_value().into_int_value();
+        let cond = backend
+            .builder
+            .build_int_compare(inkwell::IntPredicate::SLT, i_val, al, "cond")
+            .unwrap();
+        backend.builder.build_conditional_branch(cond, body_bb, eq_bb).unwrap();
+
+        backend.builder.position_at_end(body_bb);
+        let aptr = unsafe { backend.builder.build_in_bounds_gep(i8, ap, &[i_val], "ap").unwrap() };
+        let bptr = unsafe { backend.builder.build_in_bounds_gep(i8, bp, &[i_val], "bp").unwrap() };
+        let av = backend.builder.build_load(i8, aptr, "av").unwrap().into_int_value();
+        let bv = backend.builder.build_load(i8, bptr, "bv").unwrap().into_int_value();
+        let same = backend
+            .builder
+            .build_int_compare(inkwell::IntPredicate::EQ, av, bv, "b.eq")
+            .unwrap();
+        let inext = backend.builder.build_int_add(i_val, i64.const_int(1, false), "inext").unwrap();
+        i_phi.add_incoming(&[(&inext, body_bb)]);
+        backend.builder.build_conditional_branch(same, loop_bb, neq_bb).unwrap();
+
+        backend.builder.position_at_end(neq_bb);
+        backend.builder.build_unconditional_branch(done_bb).unwrap();
+        backend.builder.position_at_end(eq_bb);
+        backend.builder.build_unconditional_branch(done_bb).unwrap();
+
+        backend.builder.position_at_end(done_bb);
+        let result = backend.builder.build_phi(i1, "eq").unwrap();
+        result.add_incoming(&[(&i1.const_zero(), neq_bb), (&i1.const_int(1, false), eq_bb)]);
+        backend.builder.build_return(Some(&result.as_basic_value())).unwrap();
     }
 
     Ok(())

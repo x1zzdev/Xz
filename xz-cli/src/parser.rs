@@ -748,6 +748,23 @@ let mut trusted = false;
                 self.expect(TokKind::RBracket, String::from("']'"))?;
                 Ok(Expr::ListLit(elems))
             }
+            TokKind::LBrace => {
+                self.i += 1;
+                let mut entries: Vec<(Expr, Expr)> = vec![];
+                if !self.at(TokKind::RBrace) {
+                    loop {
+                        let key = self.expr()?;
+                        self.expect(TokKind::Colon, String::from("':'"))?;
+                        let value = self.expr()?;
+                        entries.push((key, value));
+                        if self.eat(TokKind::Comma).is_none() {
+                            break;
+                        }
+                    }
+                }
+                self.expect(TokKind::RBrace, String::from("'}'"))?;
+                Ok(Expr::MapLit(entries))
+            }
             TokKind::LParen => {
                 self.i += 1;
                 let e = self.expr()?;

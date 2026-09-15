@@ -272,6 +272,12 @@ impl Resolver {
                     self.resolve_expr(e, scope);
                 }
             }
+            Expr::MapLit(entries) => {
+                for (k, v) in entries {
+                    self.resolve_expr(k, scope);
+                    self.resolve_expr(v, scope);
+                }
+            }
             Expr::Prop(base, _) => self.resolve_expr(base, scope),
             Expr::Unary(op, a) => {
                 let _ = op;
@@ -373,7 +379,7 @@ fn bind_pattern(scope: &mut Scope, pat: &Pattern) {
 fn is_builtin_type(name: &str) -> bool {
     match name {
         "Bool" | "Int" | "usize" | "Float" | "Char" | "Str" | "Bytes" | "Unit" | "Ptr"
-        | "Option" | "Result" | "List" | "Chan" => true,
+        | "Option" | "Result" | "List" | "Map" | "Chan" => true,
         _ => false,
     }
 }

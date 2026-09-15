@@ -48,6 +48,7 @@ pub enum Kind {
     Option(Box<Kind>),
     Result(Box<Kind>, Box<Kind>),
     List(Box<Kind>),
+    Map(Box<Kind>, Box<Kind>),
     Chan(Box<Kind>),
     Record(String),
     Enum(String),
@@ -338,6 +339,14 @@ impl TypeChecker {
             "List" => {
                 let inner = self.from_ast(&args[0]);
                 Kind::List(Box::new(inner))
+            }
+            "Map" => {
+                let key = self.from_ast(&args[0]);
+                let val = self.from_ast(&args[1]);
+                if !map_key_ok(&key) && !matches!(key, Kind::Unknown | Kind::TypeVar(_)) {
+                    self.error(format!("Map key type must be Int, usize, Bool, Char, or Str, got {:?}", key), "".to_string());
+                }
+                Kind::Map(Box::new(key), Box::new(val))
             }
             "Err" => Kind::Err,
             _ => {
@@ -705,7 +714,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         let rt = self.check_expr(receiver, env);
                         let mt = method_type(&rt, method);
                         // check arg count for the method
-                        if matches!(method.as_str(), "len" | "abs" | "to_str" | "to_upper" | "to_lower" | "is_empty") && args.len() != 0 {
+                        if matches!(method.as_str(), "len" | "abs" | "to_str" | "to_upper" | "to_lower" | "is_empty" | "keys" | "values") && args.len() != 0 {
                             self.error(format!("method '{}' takes no arguments", method), "".to_string());
                         }
                         if method == "append" {
@@ -721,6 +730,46 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                                 }
                             } else {
                                 for a in args { let _ = self.check_expr(a, env); }
+                            }
+                        } else if method == "insert" {
+                            if args.len() != 2 {
+                                self.error(String::from("insert takes two arguments"), "".to_string());
+                            }
+                            match &rt {
+                                Kind::Map(k, v) => {
+                                    if let Some(a) = args.first() {
+                                        let at = self.check_expr(a, env);
+                                        if !self.accepts(&at, k) {
+                                            self.error(format!("insert key expects {:?}, got {:?}", k, at), "".to_string());
+                                        }
+                                    }
+                                    if let Some(a) = args.get(1) {
+                                        let at = self.check_expr(a, env);
+                                        if !self.accepts(&at, v) {
+                                            self.error(format!("insert value expects {:?}, got {:?}", v, at), "".to_string());
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    for a in args { let _ = self.check_expr(a, env); }
+                                }
+                            }
+                        } else if method == "get" {
+                            if args.len() != 1 {
+                                self.error(String::from("get takes one argument"), "".to_string());
+                            }
+                            match &rt {
+                                Kind::Map(k, _) => {
+                                    if let Some(a) = args.first() {
+                                        let at = self.check_expr(a, env);
+                                        if !self.accepts(&at, k) {
+                                            self.error(format!("get key expects {:?}, got {:?}", k, at), "".to_string());
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    for a in args { let _ = self.check_expr(a, env); }
+                                }
                             }
                         } else {
                             for a in args {
@@ -785,6 +834,29 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         }
                     }
                     Kind::List(Box::new(first))
+                }
+            }
+            Expr::MapLit(entries) => {
+                if entries.is_empty() {
+                    // Key/value types are supplied by the binding's declared type.
+                    Kind::Map(Box::new(Kind::Unknown), Box::new(Kind::Unknown))
+                } else {
+                    let k0 = self.check_expr(&entries[0].0, env);
+                    let v0 = self.check_expr(&entries[0].1, env);
+                    for (k, v) in &entries[1..] {
+                        let kt = self.check_expr(k, env);
+                        let vt = self.check_expr(v, env);
+                        if kt != k0 {
+                            self.error(format!("map literal keys must share a type: {:?} vs {:?}", k0, kt), "".to_string());
+                        }
+                        if vt != v0 {
+                            self.error(format!("map literal values must share a type: {:?} vs {:?}", v0, vt), "".to_string());
+                        }
+                    }
+                    if !map_key_ok(&k0) && !matches!(k0, Kind::Unknown) {
+                        self.error(format!("Map key type must be Int, usize, Bool, Char, or Str, got {:?}", k0), "".to_string());
+                    }
+                    Kind::Map(Box::new(k0), Box::new(v0))
                 }
             }
             Expr::Index(base, idx) => {
@@ -1029,6 +1101,9 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
             (Kind::Option(inner), Kind::Option(_)) if matches!(**inner, Kind::Unknown) => true,
             // `[]` has no element type of its own: it fits any List[T] (docs/12)
             (Kind::List(inner), Kind::List(_)) if matches!(**inner, Kind::Unknown) => true,
+            // `{}` has no key/value type of its own: it fits any Map[K, V] (docs/12)
+            (Kind::Map(ku, vu), Kind::Map(_, _))
+                if matches!(**ku, Kind::Unknown) && matches!(**vu, Kind::Unknown) => true,
             _ => false,
         }
     }
@@ -1043,6 +1118,13 @@ fn is_error_ctor(name: &str) -> bool {
     is_error_record(name)
 }
 
+/// Whether a type may be a `Map` key: only types with decidable equality
+/// (`Float` is excluded because of NaN; records/enums/collections are future
+/// work). See docs/12-stdlib.md.
+fn map_key_ok(k: &Kind) -> bool {
+    matches!(k, Kind::Int | Kind::Usize | Kind::Bool | Kind::Char | Kind::Str)
+}
+
 /// Whether a field type is representable in a `@cstruct` record (docs/10).
 /// `visiting` holds the cstruct records currently being descended, so a
 /// by-value nesting cycle is reported rather than tolerated.
@@ -1055,7 +1137,7 @@ fn cstruct_field_ok(
 ) -> Result<(), String> {
     match ty {
         ast::Type::Named(name, args) => {
-            if ["Unit", "Option", "Result", "List", "Chan"].contains(&name.as_str()) {
+            if ["Unit", "Option", "Result", "List", "Map", "Set", "Chan"].contains(&name.as_str()) {
                 return Err(format!("type '{}' is not a C type", name));
             }
             if !args.is_empty() {
@@ -1138,6 +1220,17 @@ fn method_type(receiver: &Kind, method: &str) -> Option<Kind> {
             "len" => Some(Kind::Int),
             "is_empty" => Some(Kind::Bool),
             "append" => Some(Kind::List(t.clone())),
+            _ => None,
+        };
+    }
+    if let Kind::Map(k, v) = r {
+        return match method {
+            "len" => Some(Kind::Int),
+            "is_empty" => Some(Kind::Bool),
+            "get" => Some(Kind::Option(v.clone())),
+            "insert" => Some(Kind::Map(k.clone(), v.clone())),
+            "keys" => Some(Kind::List(k.clone())),
+            "values" => Some(Kind::List(v.clone())),
             _ => None,
         };
     }
@@ -1294,6 +1387,7 @@ fn subst(ty: &Kind, bindings: &Vec<Option<Kind>>) -> Kind {
         Kind::Option(inner) => Kind::Option(Box::new(subst(inner, bindings))),
         Kind::Result(t, e) => Kind::Result(Box::new(subst(t, bindings)), Box::new(subst(e, bindings))),
         Kind::List(inner) => Kind::List(Box::new(subst(inner, bindings))),
+        Kind::Map(k, v) => Kind::Map(Box::new(subst(k, bindings)), Box::new(subst(v, bindings))),
         Kind::Chan(inner) => Kind::Chan(Box::new(subst(inner, bindings))),
         Kind::ErrUnion(members) => {
             let ms: Vec<Kind> = members.iter().map(|m| subst(m, bindings)).collect();

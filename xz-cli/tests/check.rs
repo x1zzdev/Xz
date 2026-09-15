@@ -796,3 +796,54 @@ fn export_async_rejected() {
         None => panic!("async @export accepted"),
     }
 }
+
+#[test]
+fn map_literal_and_methods_accepted() {
+    expect_ok(
+        r#"func main() {
+    let counts: Map[Str, Int] = {"a": 1, "b": 2}
+    let n: Int = counts.len()
+    let empty: Bool = counts.is_empty()
+    let grown: Map[Str, Int] = counts.insert("c", 3)
+    let o = grown.get("a")
+    if o is some {
+        print(o.to_str())
+    }
+    let ks: List[Str] = grown.keys()
+    for k in ks {
+        print(k)
+    }
+    print(n.to_str() + empty.to_str())
+}"#,
+        "map literal and methods",
+    );
+}
+
+#[test]
+fn float_map_key_rejected() {
+    let err = typecheck_error(
+        r#"func main() {
+    let m: Map[Float, Int] = {}
+    print(m.len().to_str())
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("Map key type"), "unexpected error: {}", e),
+        None => panic!("Float Map key accepted"),
+    }
+}
+
+#[test]
+fn map_insert_key_type_mismatch_rejected() {
+    let err = typecheck_error(
+        r#"func main() {
+    let m: Map[Str, Int] = {}
+    let m2 = m.insert(1, 2)
+    print(m2.len().to_str())
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("insert key expects"), "unexpected error: {}", e),
+        None => panic!("Int key inserted into Map[Str, Int]"),
+    }
+}

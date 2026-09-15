@@ -394,6 +394,44 @@ fn list_literal_index_and_iteration_run() {
 }
 
 #[test]
+fn map_literal_get_insert_and_iteration_run() {
+    // Map[K, V]: literal construction, Option lookup, non-mutating insert
+    // (replace preserves position), len/is_empty, and insertion-order keys/values.
+    expect_exec(
+        r#"func main() -> Result[Unit, Err] {
+    let counts: Map[Str, Int] = {"a": 1, "b": 2, "a": 3}
+    print(counts.len().to_str())
+    print(" ")
+    let grown = counts.insert("c", 4)
+    let o = grown.get("a")
+    if o is some {
+        print(o.to_str())
+    } else {
+        print("none")
+    }
+    print(" ")
+    let missing = grown.get("z")
+    if missing is none {
+        print("absent")
+    } else {
+        print("unexpected")
+    }
+    print(" ")
+    for k in grown.keys() {
+        print(k)
+    }
+    print(" ")
+    for v in grown.values() {
+        print(v.to_str())
+    }
+    print("\n")
+    ok()
+}"#,
+        "map literal, get, insert, iteration",
+    );
+}
+
+#[test]
 fn string_methods_run() {
     // Str.to_upper / to_lower (new heap buffer), Str.at (bounds-checked
     // Result[Char, IndexError]), and Str.to_bytes (layout identity).

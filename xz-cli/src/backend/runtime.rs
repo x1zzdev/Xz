@@ -107,6 +107,23 @@ extern "C" fn xz_str_to_lower(ptr: usize, len: usize) -> XzStr {
     XzStr { ptr: copy_to_leaked(&bytes), len: bytes.len() }
 }
 
+/// Byte equality for `Str`: the `Map[Str, V]` key comparison. Returns 1 when
+/// the two byte ranges are the same length and content, else 0.
+#[unsafe(no_mangle)]
+extern "C" fn xz_str_eq(ap: usize, al: usize, bp: usize, bl: usize) -> i8 {
+    if al != bl {
+        return 0;
+    }
+    for i in 0..al {
+        let a = unsafe { *((ap + i) as *const u8) };
+        let b = unsafe { *((bp + i) as *const u8) };
+        if a != b {
+            return 0;
+        }
+    }
+    1
+}
+
 /// Free a heap-allocated Str buffer. No-op unless the pointer is still live in
 /// the registry, so it is safe to call on literals or already-freed buffers.
 #[unsafe(no_mangle)]
@@ -304,6 +321,7 @@ pub fn run(module: Module) -> Result<i32, String> {
     let upper: unsafe extern "C" fn(usize, usize) -> XzStr = xz_str_to_upper;
     let lower: unsafe extern "C" fn(usize, usize) -> XzStr = xz_str_to_lower;
     let sfree: unsafe extern "C" fn(usize, usize) -> () = xz_str_free;
+    let streq: unsafe extern "C" fn(usize, usize, usize, usize) -> i8 = xz_str_eq;
     bind(&module, &ee, "xz_str_free", sfree as usize);
     bind(&module, &ee, "xz_print", p as usize);
     bind(&module, &ee, "xz_concat", c as usize);
@@ -313,6 +331,7 @@ pub fn run(module: Module) -> Result<i32, String> {
     bind(&module, &ee, "xz_char_to_str", ch2s as usize);
     bind(&module, &ee, "xz_str_to_upper", upper as usize);
     bind(&module, &ee, "xz_str_to_lower", lower as usize);
+    bind(&module, &ee, "xz_str_eq", streq as usize);
     let sched_init: unsafe extern "C" fn() = xz_sched_init;
     let task_spawn: unsafe extern "C" fn(usize) = xz_task_spawn;
     let task_spawn_arg: unsafe extern "C" fn(usize, usize) = xz_task_spawn_arg;

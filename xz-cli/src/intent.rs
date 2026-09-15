@@ -289,6 +289,7 @@ fn walk_expr(e: &Expr, set: &mut EffectSet, callees: &CalleeEffects) {
         Expr::Field(base, _) => walk_expr(base, set, callees),
         Expr::Index(base, idx) => { walk_expr(base, set, callees); walk_expr(idx, set, callees); }
         Expr::ListLit(elems) => { for e in elems { walk_expr(e, set, callees); } }
+        Expr::MapLit(entries) => { for (k, v) in entries { walk_expr(k, set, callees); walk_expr(v, set, callees); } }
         Expr::Prop(base, _) => walk_expr(base, set, callees),
         Expr::Unary(_, a) => walk_expr(a, set, callees),
         Expr::Binary(_, a, b) => { walk_expr(a, set, callees); walk_expr(b, set, callees); }
