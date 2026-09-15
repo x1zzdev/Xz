@@ -55,6 +55,7 @@ what `xz build` (native output, Phase 5) will reuse.
 | `Option[T]` | `struct { T, i1 }` — same shape as `Result` |
 | `List[T]` | `struct { T*, i64 }` — pointer to an element buffer + element count; elements are immutable, so the buffer is shared by copies |
 | `Map[K, V]` | `struct { K*, V*, i64 }` — key and value buffers + entry count; entries are immutable, so both buffers are shared by copies |
+| `Set[T]` | `struct { T*, i64 }` — pointer to an element buffer + element count, the same shape as `List[T]`; elements are immutable, so the buffer is shared by copies |
 | `Chan[T]` | `i64` — the compiler-assigned channel id; only `send`/`recv` consume it (§ Concurrency) |
 | `task` | an internal `void ()` function spawned by `main`; `async` functions are ordinary functions, and `await` spawns the callee as a child coroutine (§ Concurrency) |
 
@@ -169,6 +170,10 @@ freed right after the call. See also docs/14-codegen-notes.md § Str memory.
 | `m.get(k)` | linear key scan (Int/usize/Bool/Char by value, Str via `xz_str_eq`) → `some(value)` / `none` |
 | `m.insert(k, v)` | malloc `len` or `len+1` key and value buffers, copy, replace at the existing slot or append, return a new Map |
 | `m.keys()` / `m.values()` | allocate a `List[K]` / `List[V]` buffer and copy the column, in insertion order |
+| `{e1, e2, ...}` | start from the empty set and `insert` each element in first-insertion order |
+| `s.contains(e)` | linear scan with the same key-equality rule as `Map` (Int/usize/Bool/Char by value, Str via `xz_str_eq`) → `Bool` |
+| `s.insert(e)` | malloc `len` or `len+1` elements, copy, append when absent, return a new Set |
+| `for e in s` | the `List` induction lowering over the element buffer, in insertion order |
 | enum construction | allocate a heap box, store the variant's fields, build `{ box, tag }` |
 | function call | `build_direct_call` with the target's `FunctionValue` |
 | method call (`.to_str()`, `.len()`, `.abs()`) | `to_str` → host function; `len`/`is_empty` → field op; `abs`/`approx_sqrt` → LLVM intrinsics |
@@ -274,9 +279,9 @@ codegen, and `xz build-native` applies it before `llc`.
 
 - `await` of a generic function — a generic `async` callee is not monomorphized
   at an `await` site yet.
-- `Set` — a reserved type name with no stdlib surface yet. `Map[K, V]` has its
-  first slice (literal, `get`/`insert`, `len`/`is_empty`, `keys`/`values`);
-  keys are restricted to `Int`/`usize`/`Bool`/`Char`/`Str`.
+- `Set` removal and set algebra (union/intersection) — the `Set[T]` first slice
+  has literal, `contains`, `insert`, `len`/`is_empty`, and iteration; elements
+  are restricted to `Int`/`usize`/`Bool`/`Char`/`Str`.
 - Unit types (`Meters`, `Seconds`) — not implemented.
 - No debug info and no bitcode file output.
 

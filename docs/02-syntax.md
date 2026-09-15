@@ -195,14 +195,23 @@ let found = counts.get("b")            // Option[Int]
 for k in counts.keys() {
     print(k)
 }
+
+// Sets: literal (no colon), membership, non-mutating insert, insertion order.
+let tags: Set[Str] = {"admin", "ops", "admin"}   // "admin" once, first position
+let more = tags.insert("dev")                     // a new Set[Str]
+let has = more.contains("ops")                    // Bool
+for t in more {
+    print(t)
+}
 ```
 
 > **Phase 4 scope.** The backend implements `loop { ... }` with `break` /
 > `continue`, `for i in n { ... }` iterating the integer range `0..n`
-> (n exclusive, `n: Int`), `for x in xs { ... }` over a `List[T]`, and `Map`
-> mutation through the value-returning `insert` (see
-> [12-stdlib.md](12-stdlib.md)). Iterables other than `Int` and `List[T]` are
-> rejected (see [13-codegen.md](13-codegen.md)).
+> (n exclusive, `n: Int`), `for x in xs { ... }` over a `List[T]`, `Map`
+> mutation through the value-returning `insert`, and `Set` membership through
+> the value-returning `insert`/`contains` (see [12-stdlib.md](12-stdlib.md)).
+> Iterables other than `Int`, `List[T]`, and `Set[T]` are rejected (see
+> [13-codegen.md](13-codegen.md)).
 
 ## Concurrency
 

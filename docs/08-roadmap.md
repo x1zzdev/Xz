@@ -88,7 +88,10 @@ Phases 7–8 are not yet implemented.
   non-mutating `append`, `len`/`is_empty`, `for x in xs`
 - [x] `Map[K, V]` first slice — literal `{k: v}`, `Option` lookup `get`,
   non-mutating `insert`, `len`/`is_empty`, `keys`/`values`; insertion order
-- Collections (`Set`), I/O, math, time
+- [x] `Set[T]` first slice — literal `{e1, e2}` (no colon), element-restricted
+  (`Int`/`usize`/`Bool`/`Char`/`Str`), non-mutating `insert`, `contains`,
+  `len`/`is_empty`, insertion-order iteration
+- I/O, math, time
 - Networking (HTTP)
 
 ## Phase 8 — Tooling

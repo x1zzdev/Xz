@@ -2,9 +2,10 @@
 
 Status: this is the **minimum surface** needed to typecheck the example
 programs and to validate Phases 1–3, plus the first collection slices
-(`List[T]` and the `Map[K, V]` first slice). The rest of the standard library
-(`Set`, file I/O, networking, time) is Phase 7 on the
-[roadmap](08-roadmap.md). Anything not listed here does not exist yet.
+(`List[T]`, the `Map[K, V]` first slice, and the `Set[T]` first slice). The
+rest of the standard library (`Set` removal, file I/O, networking, time) is
+Phase 7 on the [roadmap](08-roadmap.md). Anything not listed here does not
+exist yet.
 
 ## Conventions
 
@@ -102,6 +103,27 @@ keeps its first position. `{}` (empty) requires a declared key and value type:
 `let m: Map[Str, Int] = {}`. There is no `m[k]` indexing and no index
 assignment; `get` returns `Option`, and changes go through `insert`.
 
+## `Set[T]`
+
+An insertion-ordered collection of distinct elements with immutable membership.
+Value type: assignment/argument/return copies it; `s.insert(e)` returns a *new*
+set (see [03-type-system.md](03-type-system.md)).
+
+| Construct | Meaning |
+|---|---|
+| `{e1, e2, ...}` | set literal, in first-insertion order; a repeated element is a no-op |
+| `s.len() -> Int` | element count |
+| `s.is_empty() -> Bool` | |
+| `s.contains(e: T) -> Bool` | membership |
+| `s.insert(e: T) -> Set[T]` | a new set with `e` added; a no-op when `e` is present |
+| `for e in s { ... }` | iterate elements in insertion order |
+
+Elements must be `Int`, `usize`, `Bool`, `Char`, or `Str` (types with decidable
+equality); `Float`, records, enums, and collections are rejected. A repeated
+element in a literal keeps its first position. `{}` (empty) requires a declared
+element type: `let s: Set[Int] = {}`. There is no `remove` yet and no in-place
+mutation; changes go through `insert`.
+
 ## Numeric
 
 | Signature | Notes |
@@ -136,6 +158,6 @@ untyped failure path. To use a value, `match` it; to assert it exists, use
 
 ## Out of scope (Phase 7)
 
-`Set`, file I/O, networking (HTTP), time, ranges, and any module
+`Set` removal, file I/O, networking (HTTP), time, ranges, and any module
 structure. The grammar reserves their syntax; nothing provides it yet.
-`List` and `Map` (above) are the collections so far.
+`List`, `Map`, and `Set` (above) are the collections so far.

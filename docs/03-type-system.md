@@ -107,6 +107,22 @@ Keys are restricted to types with decidable equality — `Int`, `usize`, `Bool`,
 `Option[V]`; contrast `List[T]` indexing, whose `Result[T, IndexError]` reflects
 that an index is a positional claim that can be out of range.
 
+### `Set[T]`
+
+`Set[T]` is a collection of distinct elements preserving **insertion order**: an
+element appears in iteration at the position it was first inserted, and a
+repeated element never occupies a second position. Like `List[T]` and
+`Map[K, V]` it is a value type — assignment, an argument, or a return copies it
+— and its elements are immutable: there is no add-in-place. The only way to
+change a set is the non-mutating `s.insert(e)`, which returns a *new* set; when
+`e` is already present the new set has the same elements in the same positions.
+
+Elements are restricted to types with decidable equality — `Int`, `usize`,
+`Bool`, `Char`, and `Str`, the same restriction as `Map` keys. Membership is a
+question about presence, not position, so `s.contains(e)` returns `Bool`;
+contrast `List[T]` indexing, whose `Result[T, IndexError]` reflects that an
+index is a positional claim that can be out of range.
+
 ## Error channel
 
 `Result[T, E]` carries exactly one error type `E`. A function that can fail in

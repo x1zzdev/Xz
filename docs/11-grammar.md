@@ -144,6 +144,7 @@ args            := expr ("," expr)*
 primary         := literal | IDENT | "(" expr ")"
                  | "[" (expr ("," expr)*)? "]"          // List literal
                  | "{" (map_entry ("," map_entry)*)? "}" // Map literal
+                 | "{" (expr ("," expr)*)? "}"         // Set literal
                  | "match" expr "{" match_arm+ "}"
                  | "if" expr block ("elif" expr block)* ("else" block)?
                  | "loop" block
@@ -227,10 +228,11 @@ The grammar alone is not the whole contract. The compiler also enforces:
 - Operator overloading — there is none. `+` on `Str` is the only built-in
   case of a symbol meaning more than one thing, and it is fixed by the
   language.
-- Collections `Map`/`Set` — the `Map[K, V]` surface is specified in
-  [12-stdlib.md](12-stdlib.md) and its literal `{k: v}` / keys are fixed by the
-  language (not a second spelling of a method); `Set[T]` is reserved by
-  [03-type-system.md](03-type-system.md) but has no surface yet. `List[T]` is
+- Collections `Map`/`Set` — the `Map[K, V]` and `Set[T]` surfaces are specified
+  in [12-stdlib.md](12-stdlib.md); their literals and keys are fixed by the
+  language (not a second spelling of a method). A `{` opens a Map literal when
+  its first element is followed by `:`, and a Set literal otherwise; an empty
+  `{}` takes its type from the binding (`Map[K, V]` or `Set[T]`). `List[T]` is
   specified in [12-stdlib.md](12-stdlib.md); `[]` is its
   literal and `xs[i]` its indexing, both fixed by the language (not a second
   spelling of a method).
