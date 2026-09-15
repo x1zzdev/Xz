@@ -3,16 +3,18 @@
 Design-validation programs. They exist to validate ergonomics and to give the
 implementation a concrete target.
 
-**Runnable** (Phase 4): `hello.xz`, `contracts.xz`, `ffi.xz`, and `lists.xz`
-pass the full front end and execute via the LLVM JIT (and, for these, the
-native path):
+**Runnable** (Phase 4): `hello.xz`, `contracts.xz`, `ffi.xz`, `lists.xz`, and
+`shared_lib.xz` pass the full front end and execute via the LLVM JIT (and, for
+these, the native path):
 
 ```
 cd ../xz-cli
-cargo run -- run ../examples/hello.xz      # Hello, Xz!length: 10
-cargo run -- run ../examples/contracts.xz  # distance/final x/area
-cargo run -- run ../examples/ffi.xz        # capacity: 16
-cargo run -- run ../examples/lists.xz      # sum/grown/first/empty first
+cargo run -- run ../examples/hello.xz       # Hello, Xz!length: 10
+cargo run -- run ../examples/contracts.xz   # distance/final x/area
+cargo run -- run ../examples/ffi.xz         # capacity: 16
+cargo run -- run ../examples/lists.xz       # sum/grown/first/empty first
+cargo run -- run ../examples/shared_lib.xz  # 42
+cargo run -- build --shared ../examples/shared_lib.xz  # libXz.so + libXz.h
 ```
 
 `concurrency.xz` typechecks but is **not runnable yet**: the concurrency
@@ -25,6 +27,7 @@ runtime is Phase 6.
 | `concurrency.xz` | `task`, typed channels `Chan[T]`, `send`/`recv`, deterministic completion |
 | `ffi.xz` | `extern` declarations, `Ptr`/`usize`, handle types, `transfer` |
 | `lists.xz` | `List[T]` literals, bounds-checked `xs[i]`, `append`, `for x in xs` |
+| `shared_lib.xz` | `@export` library surface, `@cstruct` argument, `xz build --shared` |
 
 Conventions used throughout:
 

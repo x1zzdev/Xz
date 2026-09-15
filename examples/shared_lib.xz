@@ -1,0 +1,33 @@
+// A library surface for C callers: `xz build --shared` emits libXz.so +
+// libXz.h. Only `@export` functions become symbols; helpers stay private.
+
+@cstruct record Vec2 {
+    x: Int
+    y: Int
+}
+
+/// Adds two integers.
+/// @intent  Returns a + b.
+/// @effects none
+@export func add(a: Int, b: Int) -> Int {
+    a + b
+}
+
+/// Adds a vector's components.
+/// @intent  Returns v.x + v.y.
+/// @effects none
+@export func sum(v: Vec2) -> Int {
+    v.x + v.y
+}
+
+/// Formats an integer. Private: no `@export`, so it is not a symbol.
+/// @intent  Returns the decimal text of n.
+/// @effects none
+func format(n: Int) -> Str {
+    n.to_str()
+}
+
+func main() {
+    print(format(add(20, 22)))
+    print("\n")
+}
