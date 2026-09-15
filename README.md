@@ -44,8 +44,9 @@ Xz/
 
 ## Status
 
-**Phases 1–4 implemented.** The front end (`xz check`) and the LLVM JIT backend
-(`xz run`) work; `hello.xz` and `contracts.xz` execute. Phases 5–8 (FFI,
-concurrency runtime, stdlib, tooling) are on the
+**Phases 1–4 implemented; Phase 5 underway.** The front end (`xz check`) and
+the LLVM JIT backend (`xz run`) work; `hello.xz` and `contracts.xz` execute.
+The C ABI bridge and shared-library output (`xz build --shared`) are in;
+Phases 6–8 (concurrency runtime, stdlib, tooling) are on the
 [docs/08-roadmap.md](docs/08-roadmap.md). The backend uses a root-free portable
 LLVM 17 (see [docs/13-codegen.md](docs/13-codegen.md)).

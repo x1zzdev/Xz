@@ -244,5 +244,5 @@ Two traps surfaced:
    the exit status; a `void main` leaks garbage into `$?`. Declaring `i32` and
    emitting `ret i32 0` fixes it (the JIT ignores the value).
 
-This is the Phase 5 on-ramp: the same object/link path generalizes to
-`xz build --shared` and the FFI interop surface.
+The same object/link path now backs `xz build --shared` (with
+`-relocation-model=pic` + `ld -shared`) and the FFI interop surface.

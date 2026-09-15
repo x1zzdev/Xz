@@ -15,12 +15,16 @@ JIT backend (see [13-codegen.md](13-codegen.md) for the design contract and
 [14-codegen-notes.md](14-codegen-notes.md) for the hard problems). The backend
 runs on a root-free portable LLVM 17 (`xz-cli/.cargo/config.toml` + `scripts/setup-llvm.sh`).
 
-Shared-library output (`xz build --shared`) is the interop on-ramp; `xz bind --lang python` generates Python wrappers from interface files (see [10-ffi-interop.md](10-ffi-interop.md)).
+Shared-library output (`xz build --shared`) is implemented: it emits `libXz.so`
++ a generated `libXz.h` for the `@export` functions; `xz bind --lang python`
+generates Python wrappers from interface files (see
+[10-ffi-interop.md](10-ffi-interop.md)).
 
 ## CLI
 
 ```
 xz build <file.xz>          # type check + contract check + codegen (Phase 4: emits LLVM IR)
+xz build --shared <file.xz> # emit libXz.so + libXz.h for the @export functions
 xz build-native <file.xz>   # emit IR + native runtime, compile with llc, link with ld -> ./xz_program
 xz check <file.xz>          # type/contract check only, no codegen
 xz check --strict <file.xz> # intent checks enforced (I0004: untrusted claims fail)
