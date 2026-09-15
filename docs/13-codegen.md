@@ -55,7 +55,7 @@ what `xz build` (native output, Phase 5) will reuse.
 | `Option[T]` | `struct { T, i1 }` — same shape as `Result` |
 | `List[T]` | `struct { T*, i64 }` — pointer to an element buffer + element count; elements are immutable, so the buffer is shared by copies |
 | `Chan[T]` | `i64` — the compiler-assigned channel id; only `send`/`recv` consume it (§ Concurrency) |
-| `task` | an internal `void ()` function spawned by `main`; `async`/`await` not supported (see Scope) |
+| `task` | an internal `void ()` function spawned by `main`; `async` functions are ordinary functions, and `await` spawns the callee as a child coroutine (§ Concurrency) |
 
 ### Function ABI
 
@@ -168,6 +168,7 @@ freed right after the call. See also docs/14-codegen-notes.md § Str memory.
 | `s.at(i)` / `s.to_bytes()` | `at` → bounds-checked `Result[Char, IndexError]` (shared index helper); `to_bytes` → layout identity (no copy) |
 | `s.to_upper()` / `s.to_lower()` | host `xz_str_to_upper` / `xz_str_to_lower` (libc `toupper`/`tolower` loop in the native runtime) |
 | `main` body | its block is generated into the `main` `FunctionValue` |
+| `await f(args)` | spawn `f` as a child coroutine, then block on a synthetic completion channel (§ Concurrency) |
 
 ### `?` early return
 
@@ -176,7 +177,7 @@ The failure branch returns an empty aggregate of the enclosing function's
 return type. Contracts already guarantee the error channel is `Err`-accepted,
 so the runtime never observes an error value here.
 
-## Concurrency (`task`, `chan`, `send`, `recv`)
+## Concurrency (`task`, `chan`, `send`, `recv`, `async`/`await`)
 
 Phase 6 lowers structured concurrency to the JIT host scheduler
 (`runtime.rs`), following the deterministic run-to-block policy in
@@ -191,6 +192,18 @@ Phase 6 lowers structured concurrency to the JIT host scheduler
   `xz_chan_send(id, ptr, size)`; the host copies `size` bytes. It never blocks.
 - `let x <- recv(c)` (and `recv(c)`) allocates a slot of `T` and calls
   `xz_chan_recv(id, ptr, size)`, which blocks the task when the channel is empty.
+- `async func` lowers like an ordinary function: it has no separate frame type,
+  because `recv` and `await` are the only suspension points and each blocks the
+  running task at the point it is called.
+- `await f(args)` — where `f` is a named, non-generic function — spawns `f` as a
+  child coroutine and suspends the caller (docs/05-concurrency.md rule 6). The
+  caller evaluates the arguments into a stack struct, spawns an internal
+  trampoline `@__await_N(ptr)` with `xz_task_spawn_arg(@__await_N, env)`, then
+  blocks on a synthetic completion channel. The trampoline calls `f` and sends
+  the result on that channel, so the scheduler runs other ready tasks while the
+  child is blocked. The caller's frame (and its argument struct) stays alive
+  through the block, and a `Unit` result is a zero-byte send. Await channels get
+  ids after the declared `chan`s, so no id collides.
 
 `size` is the `TargetData` ABI size of the payload's LLVM type, so both sides
 copy the same bytes. A `Str`/record payload copy shares the immutable byte
@@ -201,14 +214,15 @@ Host ABI (JIT only):
 | Host function | Signature | Implements |
 |---|---|---|
 | `xz_sched_init` | `fn()` | starts the scheduler; `main` is task 0 |
-| `xz_task_spawn` | `fn(ptr)` | spawns a task thread |
+| `xz_task_spawn` | `fn(ptr)` | spawns a no-argument task thread |
+| `xz_task_spawn_arg` | `fn(ptr, ptr)` | spawns a coroutine with an argument pointer (`await`) |
 | `xz_chan_send` | `fn(i64, ptr, i64)` | non-blocking send |
 | `xz_chan_recv` | `fn(i64, ptr, i64)` | blocking receive |
 
 The host serializes the task threads with a single token so exactly one task
 runs at a time and the schedule is deterministic. `xz build-native` and
 `xz build --shared` do not yet emit these host functions, so a program that uses
-channels is JIT-only for now.
+channels or `await` is JIT-only for now.
 
 ## `xz build` vs `xz run`
 
@@ -251,7 +265,8 @@ codegen, and `xz build-native` applies it before `llc`.
 
 ## Scope (explicitly out)
 
-- `async`/`await` — Phase 6 continuation; no IR lowering here.
+- `await` of a generic function — a generic `async` callee is not monomorphized
+  at an `await` site yet.
 - `Map`/`Set` — specified as type names but no stdlib surface yet.
 - Unit types (`Meters`, `Seconds`) — not implemented.
 - No debug info and no bitcode file output.

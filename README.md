@@ -47,8 +47,9 @@ Xz/
 **Phases 1–4 implemented; Phases 5–6 underway.** The front end (`xz check`) and
 the LLVM JIT backend (`xz run`) work; `hello.xz` and `contracts.xz` execute.
 The C ABI bridge, shared-library output (`xz build --shared`), and Python
-`ctypes` bindings (`xz bind --lang python`) are in; typed channels and a
-deterministic task scheduler run on the JIT path (`examples/concurrency.xz`).
-Phases 6–8 (async runtime, stdlib, tooling) are on the
+`ctypes` bindings (`xz bind --lang python`) are in; typed channels, a
+deterministic task scheduler, and `async`/`await` run on the JIT path
+(`examples/concurrency.xz`, `examples/async.xz`).
+Phases 7–8 (stdlib, tooling) are on the
 [docs/08-roadmap.md](docs/08-roadmap.md). The backend uses a root-free portable
 LLVM 17 (see [docs/13-codegen.md](docs/13-codegen.md)).
