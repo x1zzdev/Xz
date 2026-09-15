@@ -11,11 +11,11 @@ pub fn generate_c_header(program: &Program) -> String {
     let mut cstruct: HashSet<String> = HashSet::new();
     let mut records: HashMap<String, &crate::ast::RecordDecl> = HashMap::new();
     for item in &program.items {
-        if let Item::Record(r) = item {
-            if r.cstruct {
-                cstruct.insert(r.name.clone());
-                records.insert(r.name.clone(), r);
-            }
+        if let Item::Record(r) = item
+            && r.cstruct
+        {
+            cstruct.insert(r.name.clone());
+            records.insert(r.name.clone(), r);
         }
     }
 
