@@ -3,10 +3,10 @@
 Design-validation programs. They exist to validate ergonomics and to give the
 implementation a concrete target.
 
-**Runnable** (Phase 4): `hello.xz`, `contracts.xz`, `ffi.xz`, `lists.xz`, and
-`shared_lib.xz` pass the full front end and execute via the LLVM JIT (and, for
-these, the native path). The Phase 6 concurrency programs `concurrency.xz` and
-`async.xz` run on the JIT scheduler:
+**Runnable** (Phase 4): `hello.xz`, `contracts.xz`, `ffi.xz`, `lists.xz`,
+`maps.xz`, and `shared_lib.xz` pass the full front end and execute via the LLVM
+JIT (and, for these, the native path). The Phase 6 concurrency programs
+`concurrency.xz` and `async.xz` run on the JIT scheduler:
 
 ```
 cd ../xz-cli
@@ -14,6 +14,7 @@ cargo run -- run ../examples/hello.xz       # Hello, Xz!length: 10
 cargo run -- run ../examples/contracts.xz   # distance/final x/area
 cargo run -- run ../examples/ffi.xz         # capacity: 16
 cargo run -- run ../examples/lists.xz       # sum/grown/first/empty first
+cargo run -- run ../examples/maps.xz        # entries: 2 / ada: 40 / ...
 cargo run -- run ../examples/shared_lib.xz  # 42
 cargo run -- run ../examples/concurrency.xz # job 0: ITEM0 ...
 cargo run -- run ../examples/async.xz       # printer ready / pair: 22 / triple: 21
@@ -28,6 +29,7 @@ cargo run -- build --shared ../examples/shared_lib.xz  # libXz.so + libXz.h
 | `async.xz` | `async`/`await`, nested await, `await ...?`, interleaving with a `task` |
 | `ffi.xz` | `extern` declarations, `Ptr`/`usize`, handle types, `transfer` |
 | `lists.xz` | `List[T]` literals, bounds-checked `xs[i]`, `append`, `for x in xs` |
+| `maps.xz` | `Map[K, V]` literals, `Option` lookup, non-mutating `insert`, insertion-order `keys`/`values` |
 | `shared_lib.xz` | `@export` library surface, `@cstruct` argument, `xz build --shared` |
 
 Conventions used throughout:

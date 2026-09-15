@@ -1,0 +1,46 @@
+// Maps: literal construction, Option lookup, non-mutating insert, and
+// insertion-order keys/values. See docs/12-stdlib.md and docs/03-type-system.md.
+
+/// Returns the score for key `k`, or `fallback` when the key is absent.
+/// @intent  Returns m[k] when present, otherwise fallback.
+/// @effects none
+func get_or(m: Map[Str, Int], k: Str, fallback: Int) -> Int {
+    let found = m.get(k)
+    if found is some {
+        found
+    } else {
+        fallback
+    }
+}
+
+func main() -> Result[Unit, Err] {
+    // A repeated key replaces the value at its first position.
+    let scores: Map[Str, Int] = {"ada": 36, "grace": 85, "ada": 40}
+    print("entries: " + scores.len().to_str())
+    print("\n")
+
+    print("ada: " + get_or(scores, "ada", 0).to_str())
+    print("\n")
+
+    // `insert` returns a new map; `scores` keeps its two entries.
+    let bumped = scores.insert("linus", 93)
+    print("after insert: " + bumped.len().to_str())
+    print("\n")
+
+    print("keys:")
+    for k in bumped.keys() {
+        print(" " + k)
+    }
+    print("\n")
+
+    print("values:")
+    for v in bumped.values() {
+        print(" " + v.to_str())
+    }
+    print("\n")
+
+    print("missing: " + get_or(bumped, "nobody", -1).to_str())
+    print("\n")
+
+    ok()
+}
