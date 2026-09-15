@@ -1,5 +1,6 @@
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Condvar, LazyLock, Mutex};
+use std::thread;
 
 use inkwell::module::Module;
 use inkwell::OptimizationLevel;
@@ -119,6 +120,152 @@ extern "C" fn xz_str_free(ptr: usize, _len: usize) {
 
 
 
+/// Phase 6 deterministic scheduler (docs/05-concurrency.md). Tasks run one at a
+/// time in a fixed order; the host serializes them with a single token even
+/// though each task has its own OS thread. `send`/`recv` are the only
+/// suspension points. This is the JIT host half of `task`/`chan`/`send`/`recv`.
+struct Channel {
+    queue: VecDeque<Vec<u8>>,
+    receivers: VecDeque<u64>,
+}
+
+struct Sched {
+    ready: VecDeque<u64>,
+    running: Option<u64>,
+    next_id: u64,
+    channels: HashMap<u64, Channel>,
+    pending: HashMap<u64, Vec<u8>>,
+}
+
+static SCHED: LazyLock<(Mutex<Sched>, Condvar)> = LazyLock::new(|| {
+    (
+        Mutex::new(Sched {
+            ready: VecDeque::new(),
+            running: Some(0),
+            next_id: 1,
+            channels: HashMap::new(),
+            pending: HashMap::new(),
+        }),
+        Condvar::new(),
+    )
+});
+
+thread_local! {
+    static TASK_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn sched_lock() -> std::sync::MutexGuard<'static, Sched> {
+    SCHED.0.lock().unwrap()
+}
+
+fn copy_bytes(ptr: usize, size: usize) -> Vec<u8> {
+    let mut v = Vec::with_capacity(size);
+    for i in 0..size {
+        v.push(unsafe { *((ptr + i) as *const u8) });
+    }
+    v
+}
+
+fn copy_out(dst: usize, src: &[u8], size: usize) {
+    for i in 0..size {
+        let b = if i < src.len() { src[i] } else { 0 };
+        unsafe { *((dst + i) as *mut u8) = b };
+    }
+}
+
+/// `main` starts the scheduler; the calling thread becomes task 0.
+#[unsafe(no_mangle)]
+extern "C" fn xz_sched_init() {
+    TASK_ID.with(|t| t.set(0));
+    let (lock, cv) = &*SCHED;
+    let mut s = lock.lock().unwrap();
+    s.running = Some(0);
+    cv.notify_all();
+}
+
+/// Spawn a task: add it to the ready queue and start its OS thread. The thread
+/// waits for the token, so tasks run only when the scheduler grants it.
+#[unsafe(no_mangle)]
+extern "C" fn xz_task_spawn(fp: usize) {
+    let id;
+    {
+        let mut s = sched_lock();
+        id = s.next_id;
+        s.next_id += 1;
+        s.ready.push_back(id);
+    }
+    let entry: extern "C" fn() = unsafe { std::mem::transmute(fp) };
+    thread::spawn(move || {
+        TASK_ID.with(|t| t.set(id));
+        {
+            let (lock, cv) = &*SCHED;
+            let mut s = lock.lock().unwrap();
+            while s.running != Some(id) {
+                s = cv.wait(s).unwrap();
+            }
+        }
+        entry();
+        let (lock, cv) = &*SCHED;
+        let mut s = lock.lock().unwrap();
+        s.running = s.ready.pop_front();
+        cv.notify_all();
+    });
+}
+
+/// Hand a message to the earliest blocked receiver, else queue it. Never blocks
+/// the sender (unbounded channels, docs/05).
+#[unsafe(no_mangle)]
+extern "C" fn xz_chan_send(id: i64, ptr: usize, size: usize) {
+    let msg = copy_bytes(ptr, size);
+    let (lock, cv) = &*SCHED;
+    let mut s = lock.lock().unwrap();
+    let cid = id as u64;
+    let recv = {
+        let ch = s
+            .channels
+            .entry(cid)
+            .or_insert_with(|| Channel { queue: VecDeque::new(), receivers: VecDeque::new() });
+        ch.receivers.pop_front()
+    };
+    if let Some(r) = recv {
+        s.pending.insert(r, msg);
+        s.ready.push_back(r);
+        cv.notify_all();
+    } else {
+        s.channels.get_mut(&cid).unwrap().queue.push_back(msg);
+    }
+}
+
+/// Receive the next message, blocking the current task when the channel is
+/// empty. On a block, the token passes to the next ready task; this task
+/// resumes when a `send` hands it a message and the scheduler grants the token.
+#[unsafe(no_mangle)]
+extern "C" fn xz_chan_recv(id: i64, out: usize, size: usize) {
+    let me = TASK_ID.with(|t| t.get());
+    let (lock, cv) = &*SCHED;
+    let mut s = lock.lock().unwrap();
+    let cid = id as u64;
+    let queued = {
+        let ch = s
+            .channels
+            .entry(cid)
+            .or_insert_with(|| Channel { queue: VecDeque::new(), receivers: VecDeque::new() });
+        ch.queue.pop_front()
+    };
+    if let Some(msg) = queued {
+        copy_out(out, &msg, size);
+        return;
+    }
+    s.channels.get_mut(&cid).unwrap().receivers.push_back(me);
+    s.running = s.ready.pop_front();
+    cv.notify_all();
+    while s.running != Some(me) {
+        s = cv.wait(s).unwrap();
+    }
+    let msg = s.pending.remove(&me).unwrap_or_default();
+    copy_out(out, &msg, size);
+}
+
 /// Compile the module to a JIT engine, bind the host functions, and run `main`.
 /// `main` is a no-arg C function (possibly declared `void`); a non-zero exit is
 /// returned only when the host reports an execution problem.
@@ -150,6 +297,14 @@ pub fn run(module: Module) -> Result<i32, String> {
     bind(&module, &ee, "xz_char_to_str", ch2s as usize);
     bind(&module, &ee, "xz_str_to_upper", upper as usize);
     bind(&module, &ee, "xz_str_to_lower", lower as usize);
+    let sched_init: unsafe extern "C" fn() = xz_sched_init;
+    let task_spawn: unsafe extern "C" fn(usize) = xz_task_spawn;
+    let chan_send: unsafe extern "C" fn(i64, usize, usize) = xz_chan_send;
+    let chan_recv: unsafe extern "C" fn(i64, usize, usize) = xz_chan_recv;
+    bind(&module, &ee, "xz_sched_init", sched_init as usize);
+    bind(&module, &ee, "xz_task_spawn", task_spawn as usize);
+    bind(&module, &ee, "xz_chan_send", chan_send as usize);
+    bind(&module, &ee, "xz_chan_recv", chan_recv as usize);
 
     let main = ee.get_function_value("main").map_err(|_| "no 'main' function".to_string())?;
     let _ = unsafe { ee.run_function(main, &[]) };

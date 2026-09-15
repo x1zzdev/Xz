@@ -666,3 +666,51 @@ fn loop_and_for_run() {
         "loop/for",
     );
 }
+
+#[test]
+fn deterministic_tasks_and_channels_run() -> Result<(), String> {
+    // Phase 6: `task` bodies are spawned by `main` in source order, and
+    // `send`/`recv` move typed values through the deterministic scheduler
+    // (docs/05-concurrency.md). The task ends via an ack, so no thread is left
+    // parked after `main` returns.
+    let src = r#"chan req: Chan[Int]
+chan rep: Chan[Int]
+chan ack: Chan[Int]
+
+/// Doubles values until a sentinel arrives.
+/// @intent  Receives Ints, sends twice each value, and acknowledges the end.
+/// @effects chan
+task doubler {
+    loop {
+        let x <- recv(req)
+        if x < 0 {
+            send(ack, 0)
+            break
+        }
+        send(rep, x * 2)
+    }
+}
+
+func main() -> Result[Unit, Err] {
+    send(req, 21)
+    let r <- recv(rep)
+    print(r.to_str())
+    print("\n")
+    send(req, -1)
+    let _done <- recv(ack)
+    ok()
+}"#;
+    let tokens = lex(src.to_string(), "conc.xz".to_string()).map_err(|e| e.message)?;
+    let program = parse(tokens).map_err(|e| e.message)?;
+    resolve(&program).map_err(|_| "resolve failed".to_string())?;
+    typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
+    check_intent(&program).map_err(|e| e[0].code.clone())?;
+    let backend = compile(&program)?;
+    let ir = backend.module.print_to_string().to_string();
+    assert!(ir.contains("define internal void @doubler"), "task must be lowered:\n{}", ir);
+    assert!(ir.contains("call void @xz_task_spawn"), "main must spawn tasks:\n{}", ir);
+    assert!(ir.contains("@xz_chan_send"), "send must call the runtime:\n{}", ir);
+    assert!(ir.contains("@xz_chan_recv"), "recv must call the runtime:\n{}", ir);
+    run(backend.module)?;
+    Ok(())
+}

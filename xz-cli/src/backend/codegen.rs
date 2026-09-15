@@ -116,6 +116,16 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         matches!(v.get_type(), inkwell::types::BasicTypeEnum::PointerType(_))
     }
 
+    /// The host ABI size of an LLVM value type, used to copy a channel message
+    /// through a `(ptr, size)` byte range. `target_data` is set by `compile_impl`
+    /// from the host target; 0 only if the host target was unavailable.
+    fn abi_size(&self, ty: BasicTypeEnum<'ctx>) -> u64 {
+        match &self.backend.target_data {
+            Some(td) => td.get_abi_size(&ty),
+            None => 0,
+        }
+    }
+
     fn build_load(&mut self, ty: BasicTypeEnum<'ctx>, ptr: PointerValue<'ctx>, name: &str) -> BasicValueEnum<'ctx> {
         self.backend.builder.build_load(ty, ptr, name).unwrap()
     }
@@ -612,7 +622,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
 
     fn gen_decl(&mut self, d: &ast::Decl) {
         if d.recv {
-            let _ = self.fail::<()>("channel recv (let x <- recv) is not supported in Phase 4");
+            self.gen_recv_decl(d);
             return;
         }
         let declared_kind: Option<Kind> = match &d.ty {
@@ -778,6 +788,81 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         }
     }
 
+    /// `let x <- recv(ch)`: allocate a slot of the channel's payload type and
+    /// copy the next message into it (docs/13-codegen.md § Concurrency). Blocks
+    /// (via the host scheduler) when the channel is empty.
+    fn gen_recv_decl(&mut self, d: &ast::Decl) {
+        let ch = match &d.chan {
+            Some(c) => c.clone(),
+            None => {
+                let _ = self.fail::<()>(&format!("binding '{}' has a recv with no channel", d.name));
+                return;
+            }
+        };
+        let (id, payload) = match self.channel_target(&ch) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let lty = self.backend.kind_to_llvm(&payload);
+        let slot = self.backend.builder.build_alloca(lty, &d.name).unwrap();
+        self.scope.insert(d.name.clone(), (slot, lty));
+        let _ = self.emit_chan_recv(id, slot, lty);
+    }
+
+    /// Resolve a channel name to its id and payload kind, or fail codegen.
+    fn channel_target(&mut self, name: &str) -> Result<(u64, Kind), String> {
+        let id = match self.backend.channel_ids.get(name).copied() {
+            Some(id) => id,
+            None => return self.fail(&format!("unknown channel '{}'", name)),
+        };
+        let payload = self.backend.channel_payloads.get(name).cloned().unwrap_or(Kind::Unit);
+        Ok((id, payload))
+    }
+
+    /// Copy the next message on channel `id` into `slot`. The host scheduler
+    /// suspends the current task when the channel is empty.
+    fn emit_chan_recv(&mut self, id: u64, slot: PointerValue<'ctx>, lty: BasicTypeEnum<'ctx>) -> GenResult<'ctx> {
+        let size = self.abi_size(lty);
+        let f = self.backend.module.get_function("xz_chan_recv").ok_or("xz_chan_recv missing")?;
+        let idc = self.backend.types.int.const_int(id, false);
+        let szc = self.backend.types.int.const_int(size, false);
+        self.backend
+            .builder
+            .build_direct_call(f, &[idc.into(), slot.into(), szc.into()], "recv")
+            .unwrap();
+        Ok(self.build_load(lty, slot, "recv.val"))
+    }
+
+    /// `send(ch, v)`: copy the value into the channel (docs/05). Never blocks.
+    fn gen_send(&mut self, ch: &Expr, value: &Expr) -> GenResult<'ctx> {
+        let name = match ch {
+            Expr::Name(n) => n.clone(),
+            _ => return self.fail("send target must be a channel name"),
+        };
+        let (id, _payload) = self.channel_target(&name)?;
+        let v = self.gen_expr(value)?;
+        let ty = self.basic_type_of(v);
+        let slot = self.backend.builder.build_alloca(ty, "send.slot").unwrap();
+        self.backend.builder.build_store(slot, v).unwrap();
+        let size = self.abi_size(ty);
+        let f = self.backend.module.get_function("xz_chan_send").ok_or("xz_chan_send missing")?;
+        let idc = self.backend.types.int.const_int(id, false);
+        let szc = self.backend.types.int.const_int(size, false);
+        self.backend
+            .builder
+            .build_direct_call(f, &[idc.into(), slot.into(), szc.into()], "send")
+            .unwrap();
+        Ok(self.backend.types.unit.const_zero().into())
+    }
+
+    /// `recv(ch)` as an expression.
+    fn gen_recv_value(&mut self, ch: &str) -> GenResult<'ctx> {
+        let (id, payload) = self.channel_target(ch)?;
+        let lty = self.backend.kind_to_llvm(&payload);
+        let slot = self.backend.builder.build_alloca(lty, "recv.slot").unwrap();
+        self.emit_chan_recv(id, slot, lty)
+    }
+
     // ------------------------------------------------------------------ //
     //  Expressions
     // ------------------------------------------------------------------ //
@@ -814,9 +899,9 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             Expr::If(ifx) => self.gen_if(ifx),
             Expr::Loop(b) => self.gen_loop(b),
             Expr::For(name, iter, b) => self.gen_for(name, iter, b),
-            Expr::Await(_) | Expr::Send(_, _) | Expr::Recv(_) => {
-                self.fail("async/channel are not supported in Phase 4")
-            }
+            Expr::Await(_) => self.fail("async/await are not supported in Phase 6"),
+            Expr::Send(ch, value) => self.gen_send(ch, value),
+            Expr::Recv(ch) => self.gen_recv_value(ch),
             Expr::Transfer(a) => {
                 // `transfer(x)` hands a handle to a callee. At runtime a handle
                 // is passed by value, so the transfer is an identity move — the
@@ -2043,6 +2128,31 @@ pub fn gen_specialized(
     cg.gen_body_common(&f.name, fv, &f.params, &f.body);
 }
 
+/// Generate a `task` body. A task is a no-arg, void function spawned by `main`
+/// in declaration order; its body may block on `recv` (docs/05-concurrency.md).
+pub fn gen_task(backend: &mut LlvmBackend<'static>, t: &ast::TaskDecl) {
+    let fv = match backend.functions.get(&t.name) {
+        Some(fv) => *fv,
+        None => return,
+    };
+    let mut cg = Codegen {
+        backend,
+        scope: HashMap::new(),
+        ret_kind: None,
+        ret_llvm: None,
+        str_count: 0,
+        none_hint: None,
+        list_hint: None,
+        list_elems: HashMap::new(),
+        owns: HashMap::new(),
+        leak_strs: false,
+        loop_stack: Vec::new(),
+        is_main: false,
+        subst: HashMap::new(),
+    };
+    cg.gen_body_common(&t.name, fv, &[], &t.body);
+}
+
 /// Generate `main`. `main` is the C entry point: it is declared returning i32
 /// (see `compile`) so the crt/linker is satisfied, and the body's value is
 /// discarded; `gen_body_common` emits `ret i32 0`.
@@ -2073,6 +2183,25 @@ pub fn gen_main(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
 }
 
 impl<'ctx> Codegen<'_, 'ctx> {
+    /// At the top of `main`, initialize the scheduler and spawn each declared
+    /// task in source order (docs/05-concurrency.md rule 1). `main` keeps the
+    /// token, so the new tasks do not run until it first blocks.
+    fn emit_scheduler_start(&mut self) {
+        if let Some(init) = self.backend.module.get_function("xz_sched_init") {
+            let _ = self.backend.builder.build_direct_call(init, &[], "");
+        }
+        for tname in self.backend.tasks.clone() {
+            let fv = match self.backend.functions.get(&tname).copied() {
+                Some(fv) => fv,
+                None => continue,
+            };
+            let fp = fv.as_global_value().as_pointer_value();
+            if let Some(spawn) = self.backend.module.get_function("xz_task_spawn") {
+                let _ = self.backend.builder.build_direct_call(spawn, &[fp.into()], "");
+            }
+        }
+    }
+
     fn gen_body_common(
         &mut self,
         name: &str,
@@ -2094,6 +2223,9 @@ impl<'ctx> Codegen<'_, 'ctx> {
                     self.list_elems.insert(p.name.clone(), *t);
                 }
             }
+        }
+        if self.is_main && !self.backend.tasks.is_empty() {
+            self.emit_scheduler_start();
         }
         let val = self.gen_block(body);
         // Release any Str buffers this function's bindings uniquely own

@@ -97,6 +97,16 @@ pub struct LlvmBackend<'ctx> {
     /// specializations whose bodies still need generating (name, substitution,
     /// function); processed after the concrete functions are lowered.
     pub pending_monos: Vec<(String, HashMap<String, Kind>, FunctionValue<'ctx>)>,
+    /// channel name -> compiler-assigned id (the runtime keys channel state by
+    /// it). Populated from `chan` declarations in `compile_impl`.
+    pub channel_ids: HashMap<String, u64>,
+    /// channel name -> its payload `Kind`, so `let x <- recv(ch)` and an
+    /// `Expr::Recv` can materialize the right slot type (codegen carries no
+    /// types otherwise).
+    pub channel_payloads: HashMap<String, Kind>,
+    /// task declaration names, in source order; `main` spawns them in this order
+    /// (docs/05-concurrency.md deterministic scheduling rule 1).
+    pub tasks: Vec<String>,
 }
 
 impl<'ctx> LlvmBackend<'ctx> {
@@ -122,6 +132,9 @@ impl<'ctx> LlvmBackend<'ctx> {
             func_asts: HashMap::new(),
             monos: HashMap::new(),
             pending_monos: Vec::new(),
+            channel_ids: HashMap::new(),
+            channel_payloads: HashMap::new(),
+            tasks: Vec::new(),
         }
     }
 
@@ -153,7 +166,10 @@ impl<'ctx> LlvmBackend<'ctx> {
             // separately allocated buffer (opaque pointers erase T in IR).
             Kind::List(_) => self.types.xz_list.into(),
             Kind::Err | Kind::ErrUnion(_) => self.types.unit.into(),
-            Kind::Chan(_) | Kind::TypeVar(_) | Kind::Unknown | Kind::Never => self.types.unit.into(),
+            // A channel name lowers to its integer id; `send`/`recv` pass the id
+            // to the scheduler runtime (docs/13-codegen.md § Concurrency).
+            Kind::Chan(_) => self.types.int.into(),
+            Kind::TypeVar(_) | Kind::Unknown | Kind::Never => self.types.unit.into(),
         }
     }
 
@@ -552,6 +568,20 @@ fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>,
                     },
                 );
             }
+            Item::Chan(c) => {
+                let id = backend.channel_ids.len() as u64;
+                backend.channel_ids.insert(c.name.clone(), id);
+                let payload = kind_from_ast(&c.payload, &backend);
+                backend.channel_payloads.insert(c.name.clone(), payload);
+            }
+            Item::Task(t) => {
+                // A task lowers to a no-arg, void function. It is declared
+                // internal (a library does not export tasks); `main` takes its
+                // address for `xz_task_spawn`, so the optimizer keeps it.
+                let fv = backend.declare_function(&t.name, &[], &None, None);
+                fv.set_linkage(Linkage::Internal);
+                backend.tasks.push(t.name.clone());
+            }
             _ => {}
         }
     }
@@ -583,6 +613,13 @@ fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>,
         // case conversion (Str.to_upper / Str.to_lower) -> fresh XzStr
         backend.declare_extern("xz_str_to_upper", &[ptr.into(), i64.into()], Some(xstr.into()));
         backend.declare_extern("xz_str_to_lower", &[ptr.into(), i64.into()], Some(xstr.into()));
+        // Phase 6 scheduler + channels (JIT host in runtime.rs; see
+        // docs/13-codegen.md § Concurrency). `id` is the compiler-assigned
+        // channel id; the value is copied through a `(ptr, size)` byte range.
+        backend.declare_extern("xz_sched_init", &[], None);
+        backend.declare_extern("xz_task_spawn", &[ptr.into()], None);
+        backend.declare_extern("xz_chan_send", &[i64.into(), ptr.into(), i64.into()], None);
+        backend.declare_extern("xz_chan_recv", &[i64.into(), ptr.into(), i64.into()], None);
     }
 
     // Map the stdlib function `approx_sqrt` and `print` to their host ABI.
@@ -608,6 +645,9 @@ fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>,
                 } else {
                     crate::backend::codegen::gen_function(&mut backend, f);
                 }
+            }
+            Item::Task(t) => {
+                crate::backend::codegen::gen_task(&mut backend, t);
             }
             _ => {}
         }
