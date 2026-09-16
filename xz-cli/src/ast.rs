@@ -111,7 +111,13 @@ pub struct Block {
 }
 
 #[derive(Clone)]
-pub enum Stmt {
+pub struct Stmt {
+    pub kind: StmtKind,
+    pub span: Span,
+}
+
+#[derive(Clone)]
+pub enum StmtKind {
     Decl(Decl),
     Assign(Assign),
     Expr(Expr),

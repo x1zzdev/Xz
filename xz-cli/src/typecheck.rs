@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast;
-use crate::ast::{Program, Item, Type, Expr, Stmt, BinOp, UnaryOp, Contract};
+use crate::ast::{Program, Item, Type, Expr, StmtKind, BinOp, UnaryOp, Contract};
 use crate::token::Span;
 
 /// Scope map from name to type plus whether the binding is `mut`
@@ -532,8 +532,8 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
 
     fn check_block(&mut self, block: &ast::Block, env: &mut Env) {
         for stmt in &block.stmts {
-            match stmt {
-                Stmt::Decl(d) => {
+            match &stmt.kind {
+                StmtKind::Decl(d) => {
                     self.cur_span = d.span.clone();
                     let declared_ty = match &d.ty {
                         Some(t) => Some(self.from_ast(t)),
@@ -574,7 +574,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         }
                     }
                 }
-                Stmt::Assign(a) => {
+                StmtKind::Assign(a) => {
                     self.cur_span = a.span.clone();
                     let val_ty = self.check_expr(&a.value, env);
                     match &a.target {
@@ -615,11 +615,11 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         }
                     }
                 }
-                Stmt::Expr(e) => {
-                    let _ = self.check_expr(e, env);
+                StmtKind::Expr(e) => {
+                    self.check_expr(e, env);
                 }
-                Stmt::Break => {}
-                Stmt::Continue => {}
+                StmtKind::Break => {}
+                StmtKind::Continue => {}
             }
         }
     }

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast;
-use crate::ast::{Program, Item, FuncDecl, Expr, Stmt};
+use crate::ast::{Program, Item, FuncDecl, Expr, StmtKind};
 use crate::token::{Span, DocTag};
 
 pub struct IntentError {
@@ -245,8 +245,8 @@ fn is_valid_effects(text: &str) -> bool {
 
 fn walk_block(block: &ast::Block, set: &mut EffectSet, callees: &CalleeEffects) {
     for stmt in &block.stmts {
-        match stmt {
-            Stmt::Decl(d) => {
+        match &stmt.kind {
+            StmtKind::Decl(d) => {
                 if d.mutable { set.mut_ = true; }
                 if d.recv { set.chan = true; }
                 match &d.init {
@@ -254,11 +254,11 @@ fn walk_block(block: &ast::Block, set: &mut EffectSet, callees: &CalleeEffects) 
                     None => {}
                 }
             }
-            Stmt::Assign(a) => {
+            StmtKind::Assign(a) => {
                 set.mut_ = true;
                 walk_expr(&a.value, set, callees);
             }
-            Stmt::Expr(e) => walk_expr(e, set, callees),
+            StmtKind::Expr(e) => walk_expr(e, set, callees),
             _ => {}
         }
     }

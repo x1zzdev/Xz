@@ -1,5 +1,5 @@
 use crate::ast::{Program, Item, FuncDecl, TaskDecl, ChanDecl, ExternDecl, RecordDecl, EnumDecl};
-use crate::ast::{Param, Field, Variant, TypeParam, Contract, Block, Stmt, Decl, Assign, AssignTarget, AssignOp};
+use crate::ast::{Param, Field, Variant, TypeParam, Contract, Block, Stmt, StmtKind, Decl, Assign, AssignTarget, AssignOp};
 use crate::ast::{DocComment, DocClaim, Type, Expr, IfExpr, Pattern, UnaryOp, BinOp, PropKind};
 use crate::token::{TokKind, Token, Span, DocTag};
 
@@ -373,31 +373,32 @@ let mut trusted = false;
     }
 
     fn statement(&mut self) -> Result<Stmt, ParseError> {
+        let span = self.tokens[self.i].span.clone();
         match self.peek(0) {
             TokKind::Let => {
                 let d = self.decl(true)?;
-                Ok(Stmt::Decl(d))
+                Ok(Stmt { kind: StmtKind::Decl(d), span: span })
             }
             TokKind::Mut => {
                 let d = self.decl(false)?;
-                Ok(Stmt::Decl(d))
+                Ok(Stmt { kind: StmtKind::Decl(d), span: span })
             }
             TokKind::Break => {
                 self.i += 1;
-                Ok(Stmt::Break)
+                Ok(Stmt { kind: StmtKind::Break, span: span })
             }
             TokKind::Continue => {
                 self.i += 1;
-                Ok(Stmt::Continue)
+                Ok(Stmt { kind: StmtKind::Continue, span: span })
             }
             _ => {
                 // assignment or expression statement
                 let e = self.expr()?;
                 if self.at(TokKind::Assign) || self.at(TokKind::PlusEq) || self.at(TokKind::MinusEq) || self.at(TokKind::StarEq) || self.at(TokKind::SlashEq) {
                     let assign = self.assign_tail(e)?;
-                    Ok(Stmt::Assign(assign))
+                    Ok(Stmt { kind: StmtKind::Assign(assign), span: span })
                 } else {
-                    Ok(Stmt::Expr(e))
+                    Ok(Stmt { kind: StmtKind::Expr(e), span: span })
                 }
             }
         }

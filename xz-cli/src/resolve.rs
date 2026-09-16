@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::ast;
-use crate::ast::{Program, Item, Type, Expr, Stmt, Pattern};
+use crate::ast::{Program, Item, Type, Expr, StmtKind, Pattern};
 use crate::token::Span;
 
 pub struct ResolveError {
@@ -206,8 +206,8 @@ impl Resolver {
 
     fn resolve_block(&mut self, block: &ast::Block, scope: &mut Scope) {
         for stmt in &block.stmts {
-            match stmt {
-                Stmt::Decl(d) => {
+            match &stmt.kind {
+                StmtKind::Decl(d) => {
                     match &d.init {
                         Some(e) => self.resolve_expr(e, scope),
                         None => {}
@@ -224,7 +224,7 @@ impl Resolver {
                     }
                     scope.insert(d.name.clone());
                 }
-                Stmt::Assign(a) => {
+                StmtKind::Assign(a) => {
                     match &a.target {
                         ast::AssignTarget::Name(n) => {
                             if !scope.contains(n) {
@@ -235,9 +235,9 @@ impl Resolver {
                     }
                     self.resolve_expr(&a.value, scope);
                 }
-                Stmt::Expr(e) => self.resolve_expr(e, scope),
-                Stmt::Break => {}
-                Stmt::Continue => {}
+                StmtKind::Expr(e) => self.resolve_expr(e, scope),
+                StmtKind::Break => {}
+                StmtKind::Continue => {}
             }
         }
     }

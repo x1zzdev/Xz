@@ -7,7 +7,7 @@ use inkwell::types::{BasicTypeEnum, StructType};
 use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{FloatPredicate, IntPredicate};
 
-use crate::ast::{self, Block, Expr, Pattern, Stmt, Type};
+use crate::ast::{self, Block, Expr, Pattern, Stmt, StmtKind, Type};
 use crate::backend::llvm_backend::{kind_from_ast, kind_from_ast_subst, kind_from_llvm, LlvmBackend};
 use crate::typecheck::Kind;
 
@@ -937,14 +937,14 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
 
     fn degrade_block(&mut self, b: &Block) {
         for s in &b.stmts {
-            match s {
-                Stmt::Expr(e) => self.degrade_str_expr(e),
-                Stmt::Decl(d) => {
+            match &s.kind {
+                StmtKind::Expr(e) => self.degrade_str_expr(e),
+                StmtKind::Decl(d) => {
                     if let Some(init) = &d.init {
                         self.degrade_str_expr(init);
                     }
                 }
-                Stmt::Assign(a) => self.degrade_str_expr(&a.value),
+                StmtKind::Assign(a) => self.degrade_str_expr(&a.value),
                 _ => {}
             }
         }
@@ -998,19 +998,19 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             if self.block_terminated() {
                 break;
             }
-            match stmt {
-                Stmt::Decl(d) => self.gen_decl(d),
-                Stmt::Assign(a) => self.gen_assign(a),
-                Stmt::Expr(e) => {
+            match &stmt.kind {
+                StmtKind::Decl(d) => self.gen_decl(d),
+                StmtKind::Assign(a) => self.gen_assign(a),
+                StmtKind::Expr(e) => {
                     let v = self.gen_expr(e);
                     if i == n - 1 {
                         last = v.ok();
                     }
                 }
-                Stmt::Break => {
+                StmtKind::Break => {
                     let _ = self.gen_break();
                 }
-                Stmt::Continue => {
+                StmtKind::Continue => {
                     let _ = self.gen_continue();
                 }
             }
@@ -2282,7 +2282,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                     cond: ifx.cond.clone(),
                     then_block: ifx.then_block.clone(),
                     elif: vec![],
-                    else_block: Some(Block { stmts: vec![Stmt::Expr(Expr::If(inner))], span: ifx.then_block.span.clone() }),
+                    else_block: Some(Block { stmts: vec![Stmt { kind: StmtKind::Expr(Expr::If(inner)), span: ifx.then_block.span.clone() }], span: ifx.then_block.span.clone() }),
                 };
                 self.gen_if(&outer)
             }
