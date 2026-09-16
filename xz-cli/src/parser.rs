@@ -279,8 +279,9 @@ let mut trusted = false;
             let f = self.field()?;
             fields.push(f);
         }
-        self.expect(TokKind::RBrace, String::from("'}'"))?;
-        Ok(RecordDecl { name: name_tok.text.clone(), cstruct: cstruct, fields: fields, span: start })
+        let close = self.expect(TokKind::RBrace, String::from("'}'"))?;
+        let span = Span { file: start.file.clone(), start: start.start, end: close.span.end };
+        Ok(RecordDecl { name: name_tok.text.clone(), cstruct: cstruct, fields: fields, span: span })
     }
 
     fn enum_decl(&mut self) -> Result<EnumDecl, ParseError> {
@@ -305,8 +306,9 @@ let mut trusted = false;
             self.expect(TokKind::RParen, String::from("')'"))?;
             variants.push(Variant { name: vtok.text.clone(), fields: fields, span: vtok.span });
         }
-        self.expect(TokKind::RBrace, String::from("'}'"))?;
-        Ok(EnumDecl { name: name_tok.text.clone(), variants: variants, span: start })
+        let close = self.expect(TokKind::RBrace, String::from("'}'"))?;
+        let span = Span { file: start.file.clone(), start: start.start, end: close.span.end };
+        Ok(EnumDecl { name: name_tok.text.clone(), variants: variants, span: span })
     }
 
     fn params(&mut self) -> Result<Vec<Param>, ParseError> {
@@ -368,40 +370,37 @@ let mut trusted = false;
             let stmt = self.statement()?;
             stmts.push(stmt);
         }
-        self.expect(TokKind::RBrace, String::from("'}'"))?;
-        Ok(Block { stmts: stmts, span: start })
+        let close = self.expect(TokKind::RBrace, String::from("'}'"))?;
+        let span = Span { file: start.file.clone(), start: start.start, end: close.span.end };
+        Ok(Block { stmts: stmts, span: span })
     }
 
     fn statement(&mut self) -> Result<Stmt, ParseError> {
-        let span = self.tokens[self.i].span.clone();
-        match self.peek(0) {
-            TokKind::Let => {
-                let d = self.decl(true)?;
-                Ok(Stmt { kind: StmtKind::Decl(d), span: span })
-            }
-            TokKind::Mut => {
-                let d = self.decl(false)?;
-                Ok(Stmt { kind: StmtKind::Decl(d), span: span })
-            }
+        let start = self.tokens[self.i].span.clone();
+        let kind = match self.peek(0) {
+            TokKind::Let => StmtKind::Decl(self.decl(true)?),
+            TokKind::Mut => StmtKind::Decl(self.decl(false)?),
             TokKind::Break => {
                 self.i += 1;
-                Ok(Stmt { kind: StmtKind::Break, span: span })
+                StmtKind::Break
             }
             TokKind::Continue => {
                 self.i += 1;
-                Ok(Stmt { kind: StmtKind::Continue, span: span })
+                StmtKind::Continue
             }
             _ => {
                 // assignment or expression statement
                 let e = self.expr()?;
                 if self.at(TokKind::Assign) || self.at(TokKind::PlusEq) || self.at(TokKind::MinusEq) || self.at(TokKind::StarEq) || self.at(TokKind::SlashEq) {
-                    let assign = self.assign_tail(e)?;
-                    Ok(Stmt { kind: StmtKind::Assign(assign), span: span })
+                    StmtKind::Assign(self.assign_tail(e)?)
                 } else {
-                    Ok(Stmt { kind: StmtKind::Expr(e), span: span })
+                    StmtKind::Expr(e)
                 }
             }
-        }
+        };
+        let end = self.tokens[self.i - 1].span.end;
+        let span = Span { file: start.file.clone(), start: start.start, end: end };
+        Ok(Stmt { kind: kind, span: span })
     }
 
     fn decl(&mut self, is_let: bool) -> Result<Decl, ParseError> {

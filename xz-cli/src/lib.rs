@@ -7,5 +7,6 @@ pub mod typecheck;
 pub mod intent;
 pub mod diagnostic;
 pub mod driver;
+pub mod format;
 pub mod lsp;
 pub mod backend;

@@ -16,7 +16,7 @@ fn main() {
         std::process::exit(xz_cli::lsp::run_stdio());
     }
     if argv.len() < 3 {
-        println!("usage: xz <lex|parse|check|check-json|build|run|build-native|bind|lsp> [--strict] [--shared] [--lang python] <file.xz>");
+        println!("usage: xz <lex|parse|check|check-json|build|run|build-native|bind|fmt|lsp> [--strict] [--shared] [--lang python] <file.xz>");
         return;
     }
     let cmd = argv[1].clone();
@@ -42,7 +42,7 @@ fn main() {
         i += 1;
     }
     if path == "" {
-        println!("usage: xz <lex|parse|check|check-json|build|run|build-native|bind|lsp> [--strict] [--shared] [--lang python] <file.xz>");
+        println!("usage: xz <lex|parse|check|check-json|build|run|build-native|bind|fmt|lsp> [--strict] [--shared] [--lang python] <file.xz>");
         return;
     }
     let source = std::fs::read_to_string(path.clone());
@@ -52,6 +52,18 @@ fn main() {
             std::process::exit(1);
         }
         Ok(src) => {
+            if cmd == "fmt" {
+                match xz_cli::format::format_source(&src, &path) {
+                    Ok(out) => {
+                        print!("{}", out);
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        println!("error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
             let result = lex(src, path.clone());
             match result {
                 Err(e) => {
