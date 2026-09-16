@@ -5,7 +5,8 @@ and `xz run` work on the example programs. Phase 5 (FFI) is underway — the
 C ABI bridge, shared-library output, and `xz bind --lang python` work.
 Phase 6 has typed channels, a deterministic task scheduler, and `async`/`await`
 lowering on the JIT path; the native runtime does not yet emit the scheduler.
-Phases 7–8 are not yet implemented.
+Phase 7 has begun (`List`/`Map`/`Set` first slices and `read_file`); Phase 8 is
+not yet implemented.
 
 ## Phase 0 — Design (current)
 
@@ -91,7 +92,9 @@ Phases 7–8 are not yet implemented.
 - [x] `Set[T]` first slice — literal `{e1, e2}` (no colon), element-restricted
   (`Int`/`usize`/`Bool`/`Char`/`Str`), non-mutating `insert`, `contains`,
   `len`/`is_empty`, insertion-order iteration
-- I/O, math, time
+- [x] `io` first slice — `read_file(path)` returning `Result[Str, IoError]`
+  (`@effects io`; [12-stdlib.md](12-stdlib.md); `examples/io.xz`)
+- math, time
 - Networking (HTTP)
 
 ## Phase 8 — Tooling

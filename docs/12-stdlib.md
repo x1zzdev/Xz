@@ -2,10 +2,10 @@
 
 Status: this is the **minimum surface** needed to typecheck the example
 programs and to validate Phases 1–3, plus the first collection slices
-(`List[T]`, the `Map[K, V]` first slice, and the `Set[T]` first slice). The
-rest of the standard library (`Set` removal, file I/O, networking, time) is
-Phase 7 on the [roadmap](08-roadmap.md). Anything not listed here does not
-exist yet.
+(`List[T]`, the `Map[K, V]` first slice, and the `Set[T]` first slice) and the
+first file-I/O slice (`read_file`). The rest of the standard library (`Set`
+removal, networking, time, the remainder of I/O) is Phase 7 on the
+[roadmap](08-roadmap.md). Anything not listed here does not exist yet.
 
 ## Conventions
 
@@ -155,9 +155,11 @@ untyped failure path. To use a value, `match` it; to assert it exists, use
 | Signature | Notes |
 |---|---|
 | `print(x: Str) -> Unit` | `@effects io`; takes `Str` only — build your string with `+`/`to_str()` |
+| `read_file(path: Str) -> Result[Str, IoError]` | `@effects io`; the whole file decoded as UTF-8. `err` when the path cannot be read or its bytes are not valid UTF-8. The `Str` payload is a fresh heap buffer, freed by the same rules as `concat`/`to_str` results |
 
 ## Out of scope (Phase 7)
 
-`Set` removal, file I/O, networking (HTTP), time, ranges, and any module
+`Set` removal, networking (HTTP), time, ranges, and any module
 structure. The grammar reserves their syntax; nothing provides it yet.
-`List`, `Map`, and `Set` (above) are the collections so far.
+`List`, `Map`, `Set` (above) and `read_file` are the collections and I/O so
+far.
