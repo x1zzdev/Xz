@@ -1,0 +1,22 @@
+/// Reads a text file and prints its contents.
+/// @intent  Reads the file at `path` and prints it and its length.
+/// @effects io
+func show(path: Str) -> Result[Unit, Err] {
+    let contents = read_file(path)?
+    print(contents)
+    print("len: ")
+    print(contents.len().to_str())
+    print("\n")
+    ok()
+}
+
+func main() -> Result[Unit, Err] {
+    show("../examples/io_input.txt")?
+    let missing = read_file("../examples/no_such_file.txt")
+    if missing is err {
+        print("missing: err\n")
+    } else {
+        print("missing: unexpected\n")
+    }
+    ok()
+}
