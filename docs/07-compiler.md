@@ -51,9 +51,9 @@ spans.
   (the LSP default; advertised as `positionEncoding: "utf-16"`).
 - **Exit code:** 0 after a `shutdown` request, 1 otherwise (per the LSP spec).
 
-Not yet implemented: completion, hover, go-to-definition, formatting, and
-diagnostic spans for type errors (the type checker records only the file, so
-`T0001` is currently reported at the document start).
+Not yet implemented: completion, hover, go-to-definition, and formatting.
+Type errors carry a real span (`T0001` points at the offending statement or
+declaration, not the document start).
 
 ## JSON Diagnostics (for LLM self-correction)
 
