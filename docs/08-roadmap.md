@@ -7,7 +7,8 @@ Phase 6 has typed channels, a deterministic task scheduler, and `async`/`await`
 lowering on the JIT path; the native runtime does not yet emit the scheduler.
 Phase 7 has begun (`List`/`Map`/`Set` first slices, `read_file`, and clock
 reads); Phase 8 has begun with the LSP diagnostics server and now includes the
-`xz fmt` formatter.
+`xz fmt` formatter and the `xz pkg gen --lang python` binding generator for
+`.xzint` interface files.
 
 ## Phase 0 — Design (current)
 
@@ -111,7 +112,9 @@ reads); Phase 8 has begun with the LSP diagnostics server and now includes the
 - [ ] LSP server — formatting (`textDocument/formatting` over the `xz fmt` engine)
 - [x] Formatter (`xz fmt`; comment-preserving AST pretty-printer — [07-compiler.md](07-compiler.md))
 - [ ] AI toolchain integration (JSON diagnostics + editor loop)
-- [ ] Package manager (`xz pkg`) for `.xzint` interface files
+- [x] `xz pkg gen --lang python` — ctypes wrappers from `.xzint` interface
+  files ([10-ffi-interop.md](10-ffi-interop.md))
+- [ ] `xz pkg add` — fetch + verify an interface definition from a registry
 
 ## Guiding constraint for every phase
 

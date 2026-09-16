@@ -54,7 +54,9 @@ The Phase 8 language server (`xz lsp`) publishes the same diagnostics as
 `xz check-json` over LSP on stdio, hovers top-level symbol signatures,
 completes document symbols plus the language vocabulary, and resolves
 go-to-definition for top-level symbols. The `xz fmt` formatter prints a
-canonical layout from the parsed program while preserving comments.
+canonical layout from the parsed program while preserving comments, and
+`xz pkg gen --lang python` emits `ctypes` wrappers from `.xzint` interface
+files.
 Phases 7–8 (stdlib, tooling) are on the
 [docs/08-roadmap.md](docs/08-roadmap.md). The backend uses a root-free portable
 LLVM 17 (see [docs/13-codegen.md](docs/13-codegen.md)).
