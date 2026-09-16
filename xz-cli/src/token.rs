@@ -107,6 +107,22 @@ pub struct Token {
     pub text: String,
 }
 
+/// A source comment, kept for the formatter. `text` is the raw comment
+/// including its delimiters (`// ...`, `/* ... */`, or `/// ...`).
+#[derive(Clone, PartialEq)]
+pub enum CommentKind {
+    Line,
+    Block,
+    Doc,
+}
+
+#[derive(Clone)]
+pub struct Comment {
+    pub kind: CommentKind,
+    pub text: String,
+    pub span: Span,
+}
+
 #[derive(Clone, PartialEq)]
 pub enum DocTag {
     Intent,

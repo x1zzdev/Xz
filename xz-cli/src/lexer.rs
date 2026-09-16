@@ -1,16 +1,32 @@
-use crate::token::{TokKind, Token, Span, LexError};
+use crate::token::{Comment, CommentKind, LexError, Span, TokKind, Token};
 
 pub fn lex(source: String, file: String) -> Result<Vec<Token>, LexError> {
+    let (tokens, _) = lex_with_comments(source, file)?;
+    Ok(tokens)
+}
+
+/// Lex `source` into tokens plus the comments the token stream drops, in
+/// source order. The formatter (`src/format.rs`) needs the comments; the rest
+/// of the pipeline uses `lex`, which discards them.
+pub fn lex_with_comments(
+    source: String,
+    file: String,
+) -> Result<(Vec<Token>, Vec<Comment>), LexError> {
     let mut src: Vec<char> = vec![];
     for ch in source.chars() {
         src.push(ch);
     }
-    let mut lx = Lexer { src: src, i: 0, line: 1, col: 1, file: file, tokens: vec![] };
-    match lx.run() {
-        Err(e) => return Err(e),
-        _ => {}
-    }
-    Ok(lx.tokens)
+    let mut lx = Lexer {
+        src: src,
+        i: 0,
+        line: 1,
+        col: 1,
+        file: file,
+        tokens: vec![],
+        comments: vec![],
+    };
+    lx.run()?;
+    Ok((lx.tokens, lx.comments))
 }
 
 struct Lexer {
@@ -20,6 +36,7 @@ struct Lexer {
     col: usize,
     file: String,
     tokens: Vec<Token>,
+    comments: Vec<Comment>,
 }
 
 impl Lexer {
@@ -50,15 +67,44 @@ impl Lexer {
     }
 
     fn err(&self, message: String, start: (usize, usize)) -> LexError {
-        LexError { message: message, span: Span { file: self.file.clone(), start: start, end: self.pos() } }
+        LexError {
+            message: message,
+            span: Span {
+                file: self.file.clone(),
+                start: start,
+                end: self.pos(),
+            },
+        }
     }
 
     fn push(&mut self, kind: TokKind, start: (usize, usize), text: String) {
-        self.tokens.push(Token { kind: kind, span: Span { file: self.file.clone(), start: start, end: self.pos() }, text: text });
+        self.tokens.push(Token {
+            kind: kind,
+            span: Span {
+                file: self.file.clone(),
+                start: start,
+                end: self.pos(),
+            },
+            text: text,
+        });
     }
 
     fn push_tok(&mut self, kind: TokKind) {
         self.push(kind, self.pos(), "".to_string());
+    }
+
+    fn push_comment(&mut self, kind: CommentKind, start: (usize, usize), start_i: usize) {
+        let text: String = self.src[start_i..self.i].iter().collect();
+        let end = self.pos();
+        self.comments.push(Comment {
+            kind: kind,
+            text: text,
+            span: Span {
+                file: self.file.clone(),
+                start: start,
+                end: end,
+            },
+        });
     }
 
     fn run(&mut self) -> Result<(), LexError> {
@@ -73,7 +119,8 @@ impl Lexer {
 
             // comments and doc comments
             if c == '/' && self.peek(1) == '/' {
-                let _ = self.pos();
+                let start = self.pos();
+                let start_i = self.i;
                 self.advance(2);
                 if self.peek(0) == '/' {
                     // doc comment "///"
@@ -100,6 +147,7 @@ impl Lexer {
                             self.col += 1;
                         }
                         self.push(kind.unwrap(), tag_start, String::from(text.trim()));
+                        self.push_comment(CommentKind::Doc, start, start_i);
                         continue;
                     }
                     // plain prose line
@@ -110,16 +158,19 @@ impl Lexer {
                         self.col += 1;
                     }
                     self.push(TokKind::DocIntent, tag_start, String::from(text.trim()));
+                    self.push_comment(CommentKind::Doc, start, start_i);
                     continue;
                 }
                 // normal line comment
                 while self.i < self.src.len() && self.src[self.i] != '\n' {
                     self.advance(1);
                 }
+                self.push_comment(CommentKind::Line, start, start_i);
                 continue;
             }
             if c == '/' && self.peek(1) == '*' {
                 let start = self.pos();
+                let start_i = self.i;
                 self.advance(2);
                 let mut closed = false;
                 while self.i < self.src.len() {
@@ -133,6 +184,7 @@ impl Lexer {
                 if !closed {
                     return Err(self.err(String::from("unterminated block comment"), start));
                 }
+                self.push_comment(CommentKind::Block, start, start_i);
                 continue;
             }
 
@@ -144,7 +196,8 @@ impl Lexer {
                     name.push(self.peek(0));
                     self.advance(1);
                 }
-                let kind = keyword_kind(name.clone()).unwrap_or_else(|| TokKind::Ident(name.clone()));
+                let kind =
+                    keyword_kind(name.clone()).unwrap_or_else(|| TokKind::Ident(name.clone()));
                 self.push(kind, start, name);
                 continue;
             }
@@ -193,56 +246,156 @@ impl Lexer {
             let start = self.pos();
             let two = format!("{c}{}", self.peek(1));
             if two == "==" {
-                self.advance(2); self.push_tok(TokKind::EqEq); continue;
+                self.advance(2);
+                self.push_tok(TokKind::EqEq);
+                continue;
             }
             if two == "!=" {
-                self.advance(2); self.push_tok(TokKind::NotEq); continue;
+                self.advance(2);
+                self.push_tok(TokKind::NotEq);
+                continue;
             }
             if two == "<=" {
-                self.advance(2); self.push_tok(TokKind::Le); continue;
+                self.advance(2);
+                self.push_tok(TokKind::Le);
+                continue;
             }
             if two == ">=" {
-                self.advance(2); self.push_tok(TokKind::Ge); continue;
+                self.advance(2);
+                self.push_tok(TokKind::Ge);
+                continue;
             }
             if two == "+=" {
-                self.advance(2); self.push_tok(TokKind::PlusEq); continue;
+                self.advance(2);
+                self.push_tok(TokKind::PlusEq);
+                continue;
             }
             if two == "-=" {
-                self.advance(2); self.push_tok(TokKind::MinusEq); continue;
+                self.advance(2);
+                self.push_tok(TokKind::MinusEq);
+                continue;
             }
             if two == "*=" {
-                self.advance(2); self.push_tok(TokKind::StarEq); continue;
+                self.advance(2);
+                self.push_tok(TokKind::StarEq);
+                continue;
             }
             if two == "/=" {
-                self.advance(2); self.push_tok(TokKind::SlashEq); continue;
+                self.advance(2);
+                self.push_tok(TokKind::SlashEq);
+                continue;
             }
             if two == "->" {
-                self.advance(2); self.push_tok(TokKind::Arrow); continue;
+                self.advance(2);
+                self.push_tok(TokKind::Arrow);
+                continue;
             }
             if two == "<-" {
-                self.advance(2); self.push_tok(TokKind::LeftArrow); continue;
+                self.advance(2);
+                self.push_tok(TokKind::LeftArrow);
+                continue;
             }
             match c {
-                '(' => { self.advance(1); self.push_tok(TokKind::LParen); continue; }
-                ')' => { self.advance(1); self.push_tok(TokKind::RParen); continue; }
-                '[' => { self.advance(1); self.push_tok(TokKind::LBracket); continue; }
-                ']' => { self.advance(1); self.push_tok(TokKind::RBracket); continue; }
-                '{' => { self.advance(1); self.push_tok(TokKind::LBrace); continue; }
-                '}' => { self.advance(1); self.push_tok(TokKind::RBrace); continue; }
-                ',' => { self.advance(1); self.push_tok(TokKind::Comma); continue; }
-                ':' => { self.advance(1); self.push_tok(TokKind::Colon); continue; }
-                '.' => { self.advance(1); self.push_tok(TokKind::Dot); continue; }
-                '?' => { self.advance(1); self.push_tok(TokKind::Question); continue; }
-                '+' => { self.advance(1); self.push_tok(TokKind::Plus); continue; }
-                '-' => { self.advance(1); self.push_tok(TokKind::Minus); continue; }
-                '*' => { self.advance(1); self.push_tok(TokKind::Star); continue; }
-                '/' => { self.advance(1); self.push_tok(TokKind::Slash); continue; }
-                '%' => { self.advance(1); self.push_tok(TokKind::Percent); continue; }
-                '<' => { self.advance(1); self.push_tok(TokKind::Lt); continue; }
-                '>' => { self.advance(1); self.push_tok(TokKind::Gt); continue; }
-                '=' => { self.advance(1); self.push_tok(TokKind::Assign); continue; }
-                '|' => { self.advance(1); self.push_tok(TokKind::Pipe); continue; }
-                '_' => { self.advance(1); self.push_tok(TokKind::Underscore); continue; }
+                '(' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::LParen);
+                    continue;
+                }
+                ')' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::RParen);
+                    continue;
+                }
+                '[' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::LBracket);
+                    continue;
+                }
+                ']' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::RBracket);
+                    continue;
+                }
+                '{' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::LBrace);
+                    continue;
+                }
+                '}' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::RBrace);
+                    continue;
+                }
+                ',' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::Comma);
+                    continue;
+                }
+                ':' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::Colon);
+                    continue;
+                }
+                '.' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::Dot);
+                    continue;
+                }
+                '?' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::Question);
+                    continue;
+                }
+                '+' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::Plus);
+                    continue;
+                }
+                '-' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::Minus);
+                    continue;
+                }
+                '*' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::Star);
+                    continue;
+                }
+                '/' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::Slash);
+                    continue;
+                }
+                '%' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::Percent);
+                    continue;
+                }
+                '<' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::Lt);
+                    continue;
+                }
+                '>' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::Gt);
+                    continue;
+                }
+                '=' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::Assign);
+                    continue;
+                }
+                '|' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::Pipe);
+                    continue;
+                }
+                '_' => {
+                    self.advance(1);
+                    self.push_tok(TokKind::Underscore);
+                    continue;
+                }
                 _ => return Err(self.err(format!("unexpected character {c}"), start)),
             }
         }
@@ -346,15 +499,35 @@ impl Lexer {
                 self.advance(1);
                 let e = self.src[self.i];
                 match e {
-                    'n' => { s.push('\n'); self.advance(1); }
-                    't' => { s.push('\t'); self.advance(1); }
-                    'r' => { s.push('\r'); self.advance(1); }
-                    '\\' => { s.push('\\'); self.advance(1); }
-                    '"' => { s.push('"'); self.advance(1); }
-                    '\'' => { s.push('\''); self.advance(1); }
+                    'n' => {
+                        s.push('\n');
+                        self.advance(1);
+                    }
+                    't' => {
+                        s.push('\t');
+                        self.advance(1);
+                    }
+                    'r' => {
+                        s.push('\r');
+                        self.advance(1);
+                    }
+                    '\\' => {
+                        s.push('\\');
+                        self.advance(1);
+                    }
+                    '"' => {
+                        s.push('"');
+                        self.advance(1);
+                    }
+                    '\'' => {
+                        s.push('\'');
+                        self.advance(1);
+                    }
                     'u' => {
                         if self.peek(1) != '{' {
-                            return Err(self.err(String::from("invalid unicode escape"), self.pos()));
+                            return Err(
+                                self.err(String::from("invalid unicode escape"), self.pos())
+                            );
                         }
                         self.advance(2);
                         let mut hex: String = "".to_string();
@@ -363,7 +536,9 @@ impl Lexer {
                             self.advance(1);
                         }
                         if self.peek(0) != '}' {
-                            return Err(self.err(String::from("unterminated unicode escape"), self.pos()));
+                            return Err(
+                                self.err(String::from("unterminated unicode escape"), self.pos())
+                            );
                         }
                         self.advance(1);
                         let cp = parse_hex(hex);
@@ -461,43 +636,117 @@ fn doc_tag_kind(name: String) -> Option<TokKind> {
 }
 
 fn keyword_kind(name: String) -> Option<TokKind> {
-    if name == "and" { return Some(TokKind::And); }
-    if name == "as" { return Some(TokKind::As); }
-    if name == "async" { return Some(TokKind::Async); }
-    if name == "await" { return Some(TokKind::Await); }
-    if name == "break" { return Some(TokKind::Break); }
-    if name == "chan" { return Some(TokKind::Chan); }
-    if name == "continue" { return Some(TokKind::Continue); }
-    if name == "elif" { return Some(TokKind::Elif); }
-    if name == "else" { return Some(TokKind::Else); }
-    if name == "enum" { return Some(TokKind::Enum); }
-    if name == "err" { return Some(TokKind::ErrKw); }
-    if name == "extern" { return Some(TokKind::Extern); }
-    if name == "false" { return Some(TokKind::False); }
-    if name == "for" { return Some(TokKind::For); }
-    if name == "func" { return Some(TokKind::Func); }
-    if name == "if" { return Some(TokKind::If); }
-    if name == "implies" { return Some(TokKind::Implies); }
-    if name == "in" { return Some(TokKind::In); }
-    if name == "invariant" { return Some(TokKind::Invariant); }
-    if name == "is" { return Some(TokKind::Is); }
-    if name == "let" { return Some(TokKind::Let); }
-    if name == "loop" { return Some(TokKind::Loop); }
-    if name == "match" { return Some(TokKind::Match); }
-    if name == "mut" { return Some(TokKind::Mut); }
-    if name == "none" { return Some(TokKind::None); }
-    if name == "not" { return Some(TokKind::Not); }
-    if name == "ok" { return Some(TokKind::Ok); }
-    if name == "or" { return Some(TokKind::Or); }
-    if name == "post" { return Some(TokKind::Post); }
-    if name == "pre" { return Some(TokKind::Pre); }
-    if name == "recv" { return Some(TokKind::Recv); }
-    if name == "record" { return Some(TokKind::Record); }
-    if name == "send" { return Some(TokKind::Send); }
-    if name == "some" { return Some(TokKind::Some); }
-    if name == "task" { return Some(TokKind::Task); }
-    if name == "transfer" { return Some(TokKind::Transfer); }
-    if name == "true" { return Some(TokKind::True); }
+    if name == "and" {
+        return Some(TokKind::And);
+    }
+    if name == "as" {
+        return Some(TokKind::As);
+    }
+    if name == "async" {
+        return Some(TokKind::Async);
+    }
+    if name == "await" {
+        return Some(TokKind::Await);
+    }
+    if name == "break" {
+        return Some(TokKind::Break);
+    }
+    if name == "chan" {
+        return Some(TokKind::Chan);
+    }
+    if name == "continue" {
+        return Some(TokKind::Continue);
+    }
+    if name == "elif" {
+        return Some(TokKind::Elif);
+    }
+    if name == "else" {
+        return Some(TokKind::Else);
+    }
+    if name == "enum" {
+        return Some(TokKind::Enum);
+    }
+    if name == "err" {
+        return Some(TokKind::ErrKw);
+    }
+    if name == "extern" {
+        return Some(TokKind::Extern);
+    }
+    if name == "false" {
+        return Some(TokKind::False);
+    }
+    if name == "for" {
+        return Some(TokKind::For);
+    }
+    if name == "func" {
+        return Some(TokKind::Func);
+    }
+    if name == "if" {
+        return Some(TokKind::If);
+    }
+    if name == "implies" {
+        return Some(TokKind::Implies);
+    }
+    if name == "in" {
+        return Some(TokKind::In);
+    }
+    if name == "invariant" {
+        return Some(TokKind::Invariant);
+    }
+    if name == "is" {
+        return Some(TokKind::Is);
+    }
+    if name == "let" {
+        return Some(TokKind::Let);
+    }
+    if name == "loop" {
+        return Some(TokKind::Loop);
+    }
+    if name == "match" {
+        return Some(TokKind::Match);
+    }
+    if name == "mut" {
+        return Some(TokKind::Mut);
+    }
+    if name == "none" {
+        return Some(TokKind::None);
+    }
+    if name == "not" {
+        return Some(TokKind::Not);
+    }
+    if name == "ok" {
+        return Some(TokKind::Ok);
+    }
+    if name == "or" {
+        return Some(TokKind::Or);
+    }
+    if name == "post" {
+        return Some(TokKind::Post);
+    }
+    if name == "pre" {
+        return Some(TokKind::Pre);
+    }
+    if name == "recv" {
+        return Some(TokKind::Recv);
+    }
+    if name == "record" {
+        return Some(TokKind::Record);
+    }
+    if name == "send" {
+        return Some(TokKind::Send);
+    }
+    if name == "some" {
+        return Some(TokKind::Some);
+    }
+    if name == "task" {
+        return Some(TokKind::Task);
+    }
+    if name == "transfer" {
+        return Some(TokKind::Transfer);
+    }
+    if name == "true" {
+        return Some(TokKind::True);
+    }
     None
 }
 
