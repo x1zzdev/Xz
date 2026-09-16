@@ -31,7 +31,29 @@ xz check <file.xz>          # type/contract check only, no codegen
 xz check --strict <file.xz> # intent checks enforced (I0004: untrusted claims fail)
 xz check-json [--strict] <file.xz>   # same, diagnostics as a JSON array
 xz run <file.xz>            # build and JIT-execute
+xz lsp                      # language server on stdio (Phase 8, first slice)
 ```
+
+## Language server (`xz lsp`)
+
+`xz lsp` runs a synchronous Language Server Protocol server over stdio. It
+reuses the same pipeline as `xz check` (see `src/driver.rs`), so an editor sees
+exactly the diagnostics `xz check-json` would print — same codes, messages, and
+spans.
+
+- **Document sync:** full (`TextDocumentSyncKind.Full`); every `didChange`
+  carries the whole document, so no incremental edit state is kept.
+- **Methods:** `initialize` / `initialized`, `shutdown` / `exit`,
+  `textDocument/didOpen`, `textDocument/didChange`, `textDocument/didClose`.
+  Diagnostics are published on open and recomputed on every change; `didClose`
+  clears them.
+- **Positions:** 1-based Xz spans are converted to 0-based UTF-16 code units
+  (the LSP default; advertised as `positionEncoding: "utf-16"`).
+- **Exit code:** 0 after a `shutdown` request, 1 otherwise (per the LSP spec).
+
+Not yet implemented: completion, hover, go-to-definition, formatting, and
+diagnostic spans for type errors (the type checker records only the file, so
+`T0001` is currently reported at the document start).
 
 ## JSON Diagnostics (for LLM self-correction)
 

@@ -6,7 +6,7 @@ C ABI bridge, shared-library output, and `xz bind --lang python` work.
 Phase 6 has typed channels, a deterministic task scheduler, and `async`/`await`
 lowering on the JIT path; the native runtime does not yet emit the scheduler.
 Phase 7 has begun (`List`/`Map`/`Set` first slices, `read_file`, and clock
-reads); Phase 8 is not yet implemented.
+reads); Phase 8 has begun with the LSP diagnostics server.
 
 ## Phase 0 — Design (current)
 
@@ -102,10 +102,12 @@ reads); Phase 8 is not yet implemented.
 
 ## Phase 8 — Tooling
 
-- LSP server
-- Formatter
-- AI toolchain integration (JSON diagnostics + editor loop)
-- Package manager (`xz pkg`) for `.xzint` interface files
+- [x] LSP diagnostics server, first slice (`xz lsp`; stdio LSP, `initialize` +
+  `didOpen`/`didChange`/`didClose` → `publishDiagnostics`; [07-compiler.md](07-compiler.md))
+- [ ] LSP server — completion, hover, go-to-definition, formatting, type-error spans
+- [ ] Formatter
+- [ ] AI toolchain integration (JSON diagnostics + editor loop)
+- [ ] Package manager (`xz pkg`) for `.xzint` interface files
 
 ## Guiding constraint for every phase
 
