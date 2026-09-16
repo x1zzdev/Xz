@@ -33,12 +33,27 @@ fn diagnostics(publish: &Value) -> &Vec<Value> {
     publish["params"]["diagnostics"].as_array().unwrap()
 }
 
+fn hover(s: &mut Server, uri: &str, line: usize, character: usize) -> Value {
+    let msg = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character }
+        }
+    })
+    .to_string();
+    serde_json::from_str(&s.handle(&msg).unwrap()).unwrap()
+}
+
 #[test]
 fn initialize_advertises_full_sync() {
     let mut s = Server::new();
     let v: Value =
         serde_json::from_str(&s.handle(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#).unwrap()).unwrap();
     assert_eq!(v["result"]["capabilities"]["textDocumentSync"], 1);
+    assert_eq!(v["result"]["capabilities"]["hoverProvider"], true);
     assert_eq!(v["result"]["serverInfo"]["name"], "xz");
 }
 
@@ -116,9 +131,45 @@ fn did_close_clears_diagnostics() {
 fn unknown_request_returns_method_not_found() {
     let mut s = Server::new();
     let v: Value =
-        serde_json::from_str(&s.handle(r#"{"jsonrpc":"2.0","id":7,"method":"textDocument/hover","params":{}}"#).unwrap()).unwrap();
+        serde_json::from_str(&s.handle(r#"{"jsonrpc":"2.0","id":7,"method":"textDocument/rename","params":{}}"#).unwrap()).unwrap();
     assert_eq!(v["id"], 7);
     assert_eq!(error_code(&v), -32601);
+}
+
+#[test]
+fn hover_on_function_use_returns_signature_and_doc() {
+    let mut s = Server::new();
+    did_open(&mut s, "file:///hover.xz", VALID);
+    let v = hover(&mut s, "file:///hover.xz", 11, 4);
+    assert_eq!(v["result"]["contents"]["kind"], "markdown");
+    let value = v["result"]["contents"]["value"].as_str().unwrap();
+    assert!(value.contains("func one() -> Int"), "value was {value:?}");
+    assert!(value.contains("@intent"), "value was {value:?}");
+    assert_eq!(v["result"]["range"]["start"]["line"], 11);
+    assert_eq!(v["result"]["range"]["start"]["character"], 4);
+}
+
+#[test]
+fn hover_off_identifier_returns_null() {
+    let mut s = Server::new();
+    did_open(&mut s, "file:///hover.xz", VALID);
+    let v = hover(&mut s, "file:///hover.xz", 11, 9);
+    assert!(v["result"].is_null());
+}
+
+#[test]
+fn hover_on_unknown_identifier_returns_null() {
+    let mut s = Server::new();
+    did_open(&mut s, "file:///unknown.xz", "func main() {\n    nope()\n}");
+    let v = hover(&mut s, "file:///unknown.xz", 1, 4);
+    assert!(v["result"].is_null());
+}
+
+#[test]
+fn hover_on_unopened_document_returns_null() {
+    let mut s = Server::new();
+    let v = hover(&mut s, "file:///missing.xz", 0, 0);
+    assert!(v["result"].is_null());
 }
 
 #[test]
