@@ -4,7 +4,7 @@
 //!
 //! Supported methods: `initialize`, `initialized`, `shutdown`, `exit`,
 //! `textDocument/didOpen`, `textDocument/didChange`, `textDocument/didClose`,
-//! `textDocument/hover`. Document sync is "full" (`TextDocumentSyncKind.Full`
+//! `textDocument/hover`, `textDocument/completion`. Document sync is "full" (`TextDocumentSyncKind.Full`
 //! = 1): every `didChange` carries the whole document, so the server keeps no
 //! incremental edit state. Positions are emitted as UTF-16 code units (the LSP
 //! default).
@@ -55,7 +55,8 @@ impl Server {
                     "capabilities": {
                         "positionEncoding": "utf-16",
                         "textDocumentSync": 1,
-                        "hoverProvider": true
+                        "hoverProvider": true,
+                        "completionProvider": { "resolveProvider": false }
                     },
                     "serverInfo": { "name": "xz", "version": env!("CARGO_PKG_VERSION") }
                 });
@@ -96,6 +97,11 @@ impl Server {
                 let line = params.pointer("/position/line")?.as_u64()? as usize;
                 let character = params.pointer("/position/character")?.as_u64()? as usize;
                 Some(response(id, self.hover(&uri, line, character)))
+            }
+            "textDocument/completion" => {
+                let params = msg.get("params")?;
+                let uri = params.pointer("/textDocument/uri")?.as_str()?.to_string();
+                Some(response(id, self.completion(&uri)))
             }
             _ => {
                 id.as_ref()?;
@@ -156,6 +162,22 @@ impl Server {
             }
         })
     }
+
+    /// Completion for a document: the top-level symbols it declares plus the
+    /// language vocabulary (keywords, built-in types, stdlib globals). The
+    /// static vocabulary is offered even when the document does not parse, so
+    /// completion keeps working while an edit is in flight. The client owns
+    /// prefix filtering; the list is complete (`isIncomplete: false`).
+    fn completion(&self, uri: &str) -> Value {
+        let text = match self.docs.get(uri) {
+            Some(t) => t,
+            None => return json!({ "isIncomplete": false, "items": [] }),
+        };
+        let program = lex(text.to_string(), uri.to_string())
+            .ok()
+            .and_then(|tokens| parse(tokens).ok());
+        json!({ "isIncomplete": false, "items": completion_items(program.as_ref()) })
+    }
 }
 
 /// The identifier token covering an Xz `(line, col)` position, if any.
@@ -179,32 +201,13 @@ fn find_symbol(program: &ast::Program, name: &str) -> Option<String> {
     for item in &program.items {
         match item {
             ast::Item::Func(f) if f.name == name => return Some(with_doc(render_func(f), f.doc.as_ref())),
-            ast::Item::Task(t) if t.name == name => return Some(with_doc(format!("task {}", t.name), t.doc.as_ref())),
-            ast::Item::Chan(c) if c.name == name => {
-                return Some(format!("chan {}: Chan[{}]", c.name, render_type(&c.payload)));
+            ast::Item::Task(t) if t.name == name => {
+                return Some(with_doc(format!("task {}", t.name), t.doc.as_ref()));
             }
-            ast::Item::Extern(e) if e.name == name => {
-                let mut sig = String::from("extern func ");
-                sig.push_str(&e.name);
-                sig.push_str(&render_type_params(&e.type_params));
-                sig.push('(');
-                sig.push_str(&render_params(&e.params));
-                sig.push(')');
-                if let Some(ret) = &e.ret {
-                    sig.push_str(" -> ");
-                    sig.push_str(&render_type(ret));
-                }
-                return Some(sig);
-            }
-            ast::Item::Record(r) if r.name == name => {
-                let attr = if r.cstruct { "@cstruct " } else { "" };
-                let fields: Vec<String> = r.fields.iter().map(|f| format!("{}: {}", f.name, render_type(&f.ty))).collect();
-                return Some(format!("{}record {} {{ {} }}", attr, r.name, fields.join(", ")));
-            }
-            ast::Item::Enum(en) if en.name == name => {
-                let variants: Vec<String> = en.variants.iter().map(render_variant).collect();
-                return Some(format!("enum {} {{ {} }}", en.name, variants.join(", ")));
-            }
+            ast::Item::Chan(c) if c.name == name => return Some(render_chan(c)),
+            ast::Item::Extern(e) if e.name == name => return Some(render_extern(e)),
+            ast::Item::Record(r) if r.name == name => return Some(render_record(r)),
+            ast::Item::Enum(en) if en.name == name => return Some(render_enum(en)),
             ast::Item::Enum(en) => {
                 for v in &en.variants {
                     if v.name == name {
@@ -216,6 +219,125 @@ fn find_symbol(program: &ast::Program, name: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// LSP CompletionItemKind values (LSP 3.17).
+const KIND_FUNCTION: i64 = 3;
+const KIND_VARIABLE: i64 = 6;
+const KIND_CLASS: i64 = 7;
+const KIND_ENUM: i64 = 13;
+const KIND_KEYWORD: i64 = 14;
+const KIND_ENUM_MEMBER: i64 = 20;
+const KIND_CONSTANT: i64 = 21;
+const KIND_STRUCT: i64 = 22;
+
+/// Reserved words from the grammar (`docs/11-grammar.md`).
+const KEYWORDS: &[&str] = &[
+    "and", "as", "async", "await", "break", "chan", "continue", "elif", "else", "enum", "err",
+    "extern", "false", "for", "func", "if", "implies", "in", "invariant", "is", "let", "loop",
+    "match", "mut", "none", "not", "ok", "or", "post", "pre", "recv", "record", "send", "some",
+    "task", "transfer", "true",
+];
+
+/// Built-in type names (`docs/03-type-system.md`).
+const BUILTIN_TYPES: &[&str] = &[
+    "Bool", "Int", "usize", "Float", "Char", "Str", "Bytes", "Unit", "Ptr", "Option", "Result",
+    "List", "Map", "Set", "Chan",
+];
+
+/// Global stdlib names: free functions and immutable constants (`docs/12-stdlib.md`).
+const STDLIB_GLOBALS: &[(&str, i64)] = &[
+    ("print", KIND_FUNCTION),
+    ("read_file", KIND_FUNCTION),
+    ("approx_sqrt", KIND_FUNCTION),
+    ("now", KIND_FUNCTION),
+    ("monotonic", KIND_FUNCTION),
+    ("PI", KIND_CONSTANT),
+    ("E", KIND_CONSTANT),
+];
+
+/// stdlib error records usable as value constructors (`docs/12-stdlib.md`).
+const STDLIB_ERRORS: &[&str] = &[
+    "Err", "IoError", "DomainError", "ParseError", "AllocError", "IndexError", "DecodeError",
+    "HttpError",
+];
+
+/// The completion vocabulary: symbols declared by the document (when it
+/// parses), then the static language surface.
+fn completion_items(program: Option<&ast::Program>) -> Vec<Value> {
+    let mut items: Vec<Value> = vec![];
+    if let Some(p) = program {
+        for item in &p.items {
+            match item {
+                ast::Item::Func(f) => items.push(symbol_item(&f.name, KIND_FUNCTION, render_func(f), f.doc.as_ref())),
+                ast::Item::Task(t) => {
+                    items.push(symbol_item(&t.name, KIND_FUNCTION, format!("task {}", t.name), t.doc.as_ref()))
+                }
+                ast::Item::Chan(c) => items.push(symbol_item(&c.name, KIND_VARIABLE, render_chan(c), None)),
+                ast::Item::Extern(e) => items.push(symbol_item(&e.name, KIND_FUNCTION, render_extern(e), None)),
+                ast::Item::Record(r) => items.push(symbol_item(&r.name, KIND_STRUCT, render_record(r), None)),
+                ast::Item::Enum(en) => {
+                    items.push(symbol_item(&en.name, KIND_ENUM, render_enum(en), None));
+                    for v in &en.variants {
+                        items.push(symbol_item(&v.name, KIND_ENUM_MEMBER, render_variant(v), None));
+                    }
+                }
+            }
+        }
+    }
+    for (name, kind) in STDLIB_GLOBALS {
+        items.push(symbol_item(name, *kind, String::new(), None));
+    }
+    for name in STDLIB_ERRORS {
+        items.push(symbol_item(name, KIND_STRUCT, String::new(), None));
+    }
+    for name in BUILTIN_TYPES {
+        items.push(symbol_item(name, KIND_CLASS, String::new(), None));
+    }
+    for name in KEYWORDS {
+        items.push(symbol_item(name, KIND_KEYWORD, String::new(), None));
+    }
+    items
+}
+
+fn symbol_item(label: &str, kind: i64, detail: String, doc: Option<&ast::DocComment>) -> Value {
+    let mut item = json!({ "label": label, "kind": kind });
+    if !detail.is_empty() {
+        item["detail"] = Value::String(detail);
+    }
+    if let Some(md) = doc_markdown(doc) {
+        item["documentation"] = json!({ "kind": "markdown", "value": md });
+    }
+    item
+}
+
+fn render_extern(e: &ast::ExternDecl) -> String {
+    let mut sig = String::from("extern func ");
+    sig.push_str(&e.name);
+    sig.push_str(&render_type_params(&e.type_params));
+    sig.push('(');
+    sig.push_str(&render_params(&e.params));
+    sig.push(')');
+    if let Some(ret) = &e.ret {
+        sig.push_str(" -> ");
+        sig.push_str(&render_type(ret));
+    }
+    sig
+}
+
+fn render_chan(c: &ast::ChanDecl) -> String {
+    format!("chan {}: Chan[{}]", c.name, render_type(&c.payload))
+}
+
+fn render_record(r: &ast::RecordDecl) -> String {
+    let attr = if r.cstruct { "@cstruct " } else { "" };
+    let fields: Vec<String> = r.fields.iter().map(|f| format!("{}: {}", f.name, render_type(&f.ty))).collect();
+    format!("{}record {} {{ {} }}", attr, r.name, fields.join(", "))
+}
+
+fn render_enum(en: &ast::EnumDecl) -> String {
+    let variants: Vec<String> = en.variants.iter().map(render_variant).collect();
+    format!("enum {} {{ {} }}", en.name, variants.join(", "))
 }
 
 fn render_variant(v: &ast::Variant) -> String {
@@ -282,9 +404,23 @@ fn render_type(ty: &ast::Type) -> String {
     }
 }
 
-fn with_doc(mut markdown: String, doc: Option<&ast::DocComment>) -> String {
-    if let Some(d) = doc {
-        for c in &d.claims {
+fn with_doc(markdown: String, doc: Option<&ast::DocComment>) -> String {
+    match doc_markdown(doc) {
+        Some(md) => format!("{markdown}\n\n{md}"),
+        None => markdown,
+    }
+}
+
+/// The doc claims of `doc` as markdown lines, or `None` when there are none.
+fn doc_markdown(doc: Option<&ast::DocComment>) -> Option<String> {
+    let d = doc?;
+    if d.claims.is_empty() {
+        return None;
+    }
+    let lines: Vec<String> = d
+        .claims
+        .iter()
+        .map(|c| {
             let tag = match c.tag {
                 DocTag::Intent => "@intent",
                 DocTag::Requires => "@requires",
@@ -292,10 +428,10 @@ fn with_doc(mut markdown: String, doc: Option<&ast::DocComment>) -> String {
                 DocTag::Effects => "@effects",
                 DocTag::Trusted => "@trusted",
             };
-            markdown.push_str(&format!("\n\n{} {}", tag, c.text));
-        }
-    }
-    markdown
+            format!("{} {}", tag, c.text)
+        })
+        .collect();
+    Some(lines.join("\n\n"))
 }
 
 /// Read/decode JSON-RPC messages from `stdin` and write responses to `stdout`

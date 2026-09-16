@@ -47,6 +47,25 @@ fn hover(s: &mut Server, uri: &str, line: usize, character: usize) -> Value {
     serde_json::from_str(&s.handle(&msg).unwrap()).unwrap()
 }
 
+fn completion(s: &mut Server, uri: &str) -> Value {
+    let msg = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "textDocument/completion",
+        "params": { "textDocument": { "uri": uri } }
+    })
+    .to_string();
+    serde_json::from_str(&s.handle(&msg).unwrap()).unwrap()
+}
+
+fn items<'a>(v: &'a Value) -> &'a Vec<Value> {
+    v["result"]["items"].as_array().unwrap()
+}
+
+fn item<'a>(items: &'a [Value], label: &str) -> Option<&'a Value> {
+    items.iter().find(|i| i["label"] == label)
+}
+
 #[test]
 fn initialize_advertises_full_sync() {
     let mut s = Server::new();
@@ -54,6 +73,7 @@ fn initialize_advertises_full_sync() {
         serde_json::from_str(&s.handle(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#).unwrap()).unwrap();
     assert_eq!(v["result"]["capabilities"]["textDocumentSync"], 1);
     assert_eq!(v["result"]["capabilities"]["hoverProvider"], true);
+    assert_eq!(v["result"]["capabilities"]["completionProvider"]["resolveProvider"], false);
     assert_eq!(v["result"]["serverInfo"]["name"], "xz");
 }
 
@@ -170,6 +190,42 @@ fn hover_on_unopened_document_returns_null() {
     let mut s = Server::new();
     let v = hover(&mut s, "file:///missing.xz", 0, 0);
     assert!(v["result"].is_null());
+}
+
+#[test]
+fn completion_lists_document_symbols_and_vocabulary() {
+    let mut s = Server::new();
+    did_open(&mut s, "file:///complete.xz", VALID);
+    let v = completion(&mut s, "file:///complete.xz");
+    assert_eq!(v["result"]["isIncomplete"], false);
+    let items = items(&v);
+    let one = item(items, "one").expect("document func missing");
+    assert_eq!(one["kind"], 3);
+    assert_eq!(one["detail"], "func one() -> Int");
+    assert!(one["documentation"]["value"].as_str().unwrap().contains("@intent"));
+    assert_eq!(item(items, "func").unwrap()["kind"], 14);
+    assert_eq!(item(items, "Int").unwrap()["kind"], 7);
+    assert_eq!(item(items, "read_file").unwrap()["kind"], 3);
+    assert_eq!(item(items, "PI").unwrap()["kind"], 21);
+    assert_eq!(item(items, "IoError").unwrap()["kind"], 22);
+}
+
+#[test]
+fn completion_works_while_document_has_parse_error() {
+    let mut s = Server::new();
+    did_open(&mut s, "file:///broken.xz", "func main( {");
+    let v = completion(&mut s, "file:///broken.xz");
+    let items = items(&v);
+    assert!(item(items, "func").is_some());
+    assert!(item(items, "main").is_none());
+}
+
+#[test]
+fn completion_on_unopened_document_is_empty() {
+    let mut s = Server::new();
+    let v = completion(&mut s, "file:///missing.xz");
+    assert_eq!(v["result"]["isIncomplete"], false);
+    assert!(items(&v).is_empty());
 }
 
 #[test]
