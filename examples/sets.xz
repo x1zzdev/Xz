@@ -1,0 +1,39 @@
+// Sets: literal construction, membership, non-mutating insert, and
+// insertion-order iteration. See docs/12-stdlib.md and docs/03-type-system.md.
+
+/// Whether `s` contains `tag`.
+/// @intent  Returns true when tag is in s, false otherwise.
+/// @effects none
+func has_tag(s: Set[Str], tag: Str) -> Bool {
+    s.contains(tag)
+}
+
+func main() -> Result[Unit, Err] {
+    // A repeated element keeps its first position.
+    let tags: Set[Str] = {"admin", "ops", "admin"}
+    print("tags: " + tags.len().to_str())
+    print("\n")
+
+    print("admin: " + has_tag(tags, "admin").to_str())
+    print("\n")
+    print("guest: " + has_tag(tags, "guest").to_str())
+    print("\n")
+
+    // `insert` returns a new set; `tags` keeps its two elements.
+    let grown = tags.insert("dev")
+    print("after insert: " + grown.len().to_str())
+    print("\n")
+
+    print("order:")
+    for t in grown {
+        print(" " + t)
+    }
+    print("\n")
+
+    // Inserting a present element is a no-op.
+    let same = grown.insert("ops")
+    print("after re-insert: " + same.len().to_str())
+    print("\n")
+
+    ok()
+}
