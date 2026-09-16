@@ -1,0 +1,29 @@
+// Time: reading the monotonic and wall clocks. See docs/12-stdlib.md.
+
+/// Sums the integers in 0..n.
+/// @intent  Returns the sum of 0, 1, ..., n-1.
+/// @effects mut
+func sum_to(n: Int) -> Int {
+    mut total: Int = 0
+    for i in n {
+        total = total + i
+    }
+    total
+}
+
+func main() -> Result[Unit, Err] {
+    let started = monotonic()
+    let total = sum_to(1000000)
+    let elapsed = monotonic() - started
+
+    print("sum: " + total.to_str())
+    print("\n")
+    print("elapsed: " + elapsed.to_str())
+    print("\n")
+
+    let wall = now()
+    print("now: " + wall.to_str())
+    print("\n")
+
+    ok()
+}

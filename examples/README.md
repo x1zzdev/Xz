@@ -4,8 +4,9 @@ Design-validation programs. They exist to validate ergonomics and to give the
 implementation a concrete target.
 
 **Runnable** (Phase 4): `hello.xz`, `contracts.xz`, `ffi.xz`, `lists.xz`,
-`maps.xz`, `sets.xz`, `io.xz` (from `xz-cli/`), and `shared_lib.xz` pass the
-full front end and execute via the LLVM JIT (and, for these, the native path).
+`maps.xz`, `sets.xz`, `io.xz`, `time.xz` (from `xz-cli/`), and `shared_lib.xz`
+pass the full front end and execute via the LLVM JIT (and, for these, the native
+path).
 The Phase 6 concurrency programs `concurrency.xz` and `async.xz` run on the JIT
 scheduler:
 
@@ -18,6 +19,7 @@ cargo run -- run ../examples/lists.xz       # sum/grown/first/empty first
 cargo run -- run ../examples/maps.xz        # entries: 2 / ada: 40 / ...
 cargo run -- run ../examples/sets.xz        # tags: 2 / admin: true / order: admin ops dev
 cargo run -- run ../examples/io.xz          # Xz file I/O / len: 12 / missing: err
+cargo run -- run ../examples/time.xz        # sum / elapsed / now
 cargo run -- run ../examples/shared_lib.xz  # 42
 cargo run -- run ../examples/concurrency.xz # job 0: ITEM0 ...
 cargo run -- run ../examples/async.xz       # printer ready / pair: 22 / triple: 21
@@ -35,6 +37,7 @@ cargo run -- build --shared ../examples/shared_lib.xz  # libXz.so + libXz.h
 | `maps.xz` | `Map[K, V]` literals, `Option` lookup, non-mutating `insert`, insertion-order `keys`/`values` |
 | `sets.xz` | `Set[T]` literals, `contains`, non-mutating `insert`, insertion-order iteration |
 | `io.xz` | `read_file` returning `Result[Str, IoError]`, `?`, and the `err` path (`io_input.txt` is the input) |
+| `time.xz` | `monotonic()` elapsed timing around a loop and `now()` wall-clock reads |
 | `shared_lib.xz` | `@export` library surface, `@cstruct` argument, `xz build --shared` |
 
 Conventions used throughout:
