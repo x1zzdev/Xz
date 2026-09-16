@@ -164,14 +164,6 @@ runtime as `xz build-native` and has no Rust dependency.
 
 ## Bindings workflow
 
-```
-xz pkg add libcurl            # fetch + verify an interface definition
-xz pkg gen --lang python     # generate ctypes wrappers from .xzint interface files
-```
-
-- Interface files (`.xzint`) are pure declarations: `extern` signatures + contracts. They are written once per library and shared.
-- Every FFI wrapper carries contracts, so unsafe calls stay behind verified boundaries — preserving the "reviewable" promise even at the edge.
-
 `xz bind --lang python <file.xz>` reads the same `@export` functions and
 `@cstruct` records as `xz build --shared` and writes a `ctypes` module named
 after the source file (`foo.xz` -> `foo.py`). The module declares each
@@ -179,6 +171,29 @@ after the source file (`foo.xz` -> `foo.py`). The module declares each
 loads the sibling `libXz.so`. The wrapper deliberately does not reuse the
 `libXz` name: a `.py` module named `libXz` would be shadowed by `libXz.so`,
 which Python treats as an extension module.
+
+### Interface files (`.xzint`)
+
+A `.xzint` interface file is a declaration-only Xz source: `extern func`
+signatures for a C library's symbols plus `@cstruct record` declarations for
+the types they use. It has no bodies, no `main`, and no other top-level
+declarations. Contracts belong to the Xz wrappers that call the externs, not to
+the raw declarations. One interface file is written per library and reused by
+every project that calls it.
+
+```
+xz pkg gen --lang python libcurl.xzint              # -> libcurl.py, loads libcurl.so
+xz pkg gen --lang python libcurl.xzint --lib libcurl.so.4
+```
+
+`xz pkg gen --lang python <file.xzint>` emits a `ctypes` module named after the
+interface file (`libcurl.xzint` -> `libcurl.py`). The module declares each
+`@cstruct` as a `ctypes.Structure` and types every `extern` function, then loads
+the C library named by `--lib`; the default is the interface file's stem plus
+`.so` (`libcurl.xzint` -> `libcurl.so`). Unlike `xz bind`, which loads the
+`libXz.so` produced by `xz build --shared`, the wrapper binds the third-party C
+library directly. Fetching and verifying a definition from a registry
+(`xz pkg add <name>`) is not implemented yet.
 
 ## Python bridge (first-class)
 
