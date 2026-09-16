@@ -2,10 +2,11 @@
 
 Status: this is the **minimum surface** needed to typecheck the example
 programs and to validate Phases 1–3, plus the first collection slices
-(`List[T]`, the `Map[K, V]` first slice, and the `Set[T]` first slice) and the
-first file-I/O slice (`read_file`). The rest of the standard library (`Set`
-removal, networking, time, the remainder of I/O) is Phase 7 on the
-[roadmap](08-roadmap.md). Anything not listed here does not exist yet.
+(`List[T]`, the `Map[K, V]` first slice, and the `Set[T]` first slice), the
+first file-I/O slice (`read_file`), and the first clock slice (`time`). The
+rest of the standard library (`Set` removal, networking, the remainder of I/O)
+is Phase 7 on the [roadmap](08-roadmap.md). Anything not listed here does not
+exist yet.
 
 ## Conventions
 
@@ -157,9 +158,20 @@ untyped failure path. To use a value, `match` it; to assert it exists, use
 | `print(x: Str) -> Unit` | `@effects io`; takes `Str` only — build your string with `+`/`to_str()` |
 | `read_file(path: Str) -> Result[Str, IoError]` | `@effects io`; the whole file decoded as UTF-8. `err` when the path cannot be read or its bytes are not valid UTF-8. The `Str` payload is a fresh heap buffer, freed by the same rules as `concat`/`to_str` results |
 
+## `time`
+
+Clock reads. Both return seconds as `Float` and carry `@effects io` — they read
+the host clock, so a function that calls them declares `io`. There is no
+`Instant`/`Duration` type yet; the unit is seconds, as with `math`.
+
+| Signature | Notes |
+|---|---|
+| `now() -> Float` | wall-clock time as seconds since the Unix epoch (UTC), fractional. May jump forwards or backwards (NTP, manual clock changes); use it for timestamps, not for measuring durations |
+| `monotonic() -> Float` | seconds from a fixed, unspecified origin that never decreases; use it for measuring elapsed time. Only differences are meaningful, never the absolute value |
+
 ## Out of scope (Phase 7)
 
-`Set` removal, networking (HTTP), time, ranges, and any module
-structure. The grammar reserves their syntax; nothing provides it yet.
-`List`, `Map`, `Set` (above) and `read_file` are the collections and I/O so
-far.
+`Set` removal, networking (HTTP), ranges, `Instant`/`Duration` types, and any
+module structure. The grammar reserves their syntax; nothing provides it yet.
+`List`, `Map`, `Set` (above), `read_file`, and `time` are the collections and
+I/O so far.
