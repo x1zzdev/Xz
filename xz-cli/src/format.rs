@@ -50,7 +50,7 @@ struct Printer {
 
 impl Printer {
     fn new(comments: Vec<Comment>) -> Printer {
-        Printer { out: String::new(), comments: comments, ci: 0, last_line: 0 }
+        Printer { out: String::new(), comments, ci: 0, last_line: 0 }
     }
 
     fn program(mut self, program: &Program) -> String {
