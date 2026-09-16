@@ -44,14 +44,19 @@ spans.
 - **Document sync:** full (`TextDocumentSyncKind.Full`); every `didChange`
   carries the whole document, so no incremental edit state is kept.
 - **Methods:** `initialize` / `initialized`, `shutdown` / `exit`,
-  `textDocument/didOpen`, `textDocument/didChange`, `textDocument/didClose`.
-  Diagnostics are published on open and recomputed on every change; `didClose`
-  clears them.
+  `textDocument/didOpen`, `textDocument/didChange`, `textDocument/didClose`,
+  `textDocument/hover`. Diagnostics are published on open and recomputed on
+  every change; `didClose` clears them.
+- **Hover:** hovering an identifier that names a top-level symbol (`func`,
+  `task`, `chan`, `extern`, `record`, `enum`, or enum variant) returns the
+  rendered signature and any doc claims as markdown; anything else is `null`.
+  Resolution is by name from the current document, and requires the document
+  to parse.
 - **Positions:** 1-based Xz spans are converted to 0-based UTF-16 code units
   (the LSP default; advertised as `positionEncoding: "utf-16"`).
 - **Exit code:** 0 after a `shutdown` request, 1 otherwise (per the LSP spec).
 
-Not yet implemented: completion, hover, go-to-definition, and formatting.
+Not yet implemented: completion, go-to-definition, and formatting.
 Type errors carry a real span (`T0001` points at the offending statement or
 declaration, not the document start).
 

@@ -51,7 +51,7 @@ The C ABI bridge, shared-library output (`xz build --shared`), and Python
 deterministic task scheduler, and `async`/`await` run on the JIT path
 (`examples/concurrency.xz`, `examples/async.xz`).
 The Phase 8 language server (`xz lsp`) publishes the same diagnostics as
-`xz check-json` over LSP on stdio.
+`xz check-json` over LSP on stdio, and hovers top-level symbol signatures.
 Phases 7–8 (stdlib, tooling) are on the
 [docs/08-roadmap.md](docs/08-roadmap.md). The backend uses a root-free portable
 LLVM 17 (see [docs/13-codegen.md](docs/13-codegen.md)).
