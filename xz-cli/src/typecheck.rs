@@ -297,6 +297,8 @@ impl TypeChecker {
         self.funcs.insert("print".to_string(), (vec![Kind::Str], Some(Kind::Unit), vec![]));
         self.funcs.insert("read_file".to_string(), (vec![Kind::Str], Some(Kind::Result(Box::new(Kind::Str), Box::new(Kind::Err))), vec![]));
         self.funcs.insert("approx_sqrt".to_string(), (vec![Kind::Float], Some(Kind::Float), vec![]));
+        self.funcs.insert("now".to_string(), (vec![], Some(Kind::Float), vec![]));
+        self.funcs.insert("monotonic".to_string(), (vec![], Some(Kind::Float), vec![]));
     }
 
     fn from_ast(&mut self, ty: &crate::ast::Type) -> Kind {

@@ -272,7 +272,7 @@ fn walk_expr(e: &Expr, set: &mut EffectSet, callees: &CalleeEffects) {
             for a in args { walk_expr(a, set, callees); }
             match &**callee {
                 Expr::Name(n) => {
-                    if n == "print" || n == "read_file" {
+                    if n == "print" || n == "read_file" || n == "now" || n == "monotonic" {
                         set.io = true;
                     } else if let Some(callee_effects) = callees.declared.get(n) {
                         set.merge(callee_effects);

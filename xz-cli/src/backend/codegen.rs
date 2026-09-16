@@ -1903,6 +1903,17 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             let v = self.gen_expr(&args[0])?;
             return self.call_intrinsic("llvm.sqrt.f64", vec![self.backend.types.float.into()], &[v], "sqrt");
         }
+        // stdlib now / monotonic -> host xz_time_now() / xz_time_monotonic()
+        // returning f64 seconds (docs/12, docs/13).
+        if name == "now" || name == "monotonic" {
+            if !args.is_empty() {
+                return self.fail(&format!("{} takes no arguments", name));
+            }
+            let host = if name == "now" { "xz_time_now" } else { "xz_time_monotonic" };
+            let f = self.backend.module.get_function(host).ok_or(format!("{} missing", host))?;
+            let call = self.backend.builder.build_direct_call(f, &[], "time").unwrap();
+            return Ok(call.try_as_basic_value().basic().unwrap());
+        }
         // stdlib read_file -> host xz_read_file(ptr, len, out) -> i1. The host
         // writes a fresh Str payload through `out` on success; codegen wraps it
         // in the Result[Str, Err] struct { payload, ok-flag } (docs/13).

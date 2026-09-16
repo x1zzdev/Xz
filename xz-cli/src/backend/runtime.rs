@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Condvar, LazyLock, Mutex};
 use std::thread;
+use std::time::Instant;
 
 use inkwell::module::Module;
 use inkwell::OptimizationLevel;
@@ -151,6 +152,26 @@ extern "C" fn xz_read_file(path_ptr: usize, path_len: usize, out: usize) -> i8 {
         }
         Err(_) => 0,
     }
+}
+
+/// `now()`: wall-clock seconds since the Unix epoch (UTC) as f64. Reads the
+/// system clock, so it can jump forwards or backwards; use `xz_time_monotonic`
+/// for durations. The JIT host half of `now()` (docs/12-stdlib.md).
+#[unsafe(no_mangle)]
+extern "C" fn xz_time_now() -> f64 {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs_f64(),
+        Err(e) => -e.duration().as_secs_f64(),
+    }
+}
+
+/// `monotonic()`: non-decreasing seconds from a fixed, unspecified origin as
+/// f64. The origin is the process's first call, so only differences are
+/// meaningful. The JIT host half of `monotonic()` (docs/12-stdlib.md).
+#[unsafe(no_mangle)]
+extern "C" fn xz_time_monotonic() -> f64 {
+    static START: LazyLock<Instant> = LazyLock::new(Instant::now);
+    START.elapsed().as_secs_f64()
 }
 
 /// Free a heap-allocated Str buffer. No-op unless the pointer is still live in
@@ -352,6 +373,8 @@ pub fn run(module: Module) -> Result<i32, String> {
     let sfree: unsafe extern "C" fn(usize, usize) -> () = xz_str_free;
     let streq: unsafe extern "C" fn(usize, usize, usize, usize) -> i8 = xz_str_eq;
     let readf: unsafe extern "C" fn(usize, usize, usize) -> i8 = xz_read_file;
+    let time_now: unsafe extern "C" fn() -> f64 = xz_time_now;
+    let time_mono: unsafe extern "C" fn() -> f64 = xz_time_monotonic;
     bind(&module, &ee, "xz_str_free", sfree as usize);
     bind(&module, &ee, "xz_print", p as usize);
     bind(&module, &ee, "xz_concat", c as usize);
@@ -363,6 +386,8 @@ pub fn run(module: Module) -> Result<i32, String> {
     bind(&module, &ee, "xz_str_to_lower", lower as usize);
     bind(&module, &ee, "xz_str_eq", streq as usize);
     bind(&module, &ee, "xz_read_file", readf as usize);
+    bind(&module, &ee, "xz_time_now", time_now as usize);
+    bind(&module, &ee, "xz_time_monotonic", time_mono as usize);
     let sched_init: unsafe extern "C" fn() = xz_sched_init;
     let task_spawn: unsafe extern "C" fn(usize) = xz_task_spawn;
     let task_spawn_arg: unsafe extern "C" fn(usize, usize) = xz_task_spawn_arg;

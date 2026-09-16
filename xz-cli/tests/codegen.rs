@@ -670,6 +670,12 @@ func main() -> Result[Unit, Err] {
     assert!(ir.contains("define i32 @main()"), "native main must return i32");
     assert!(ir.contains("define") && ir.contains("@xz_print"), "runtime bodies must be defined");
     assert!(ir.contains("define i1 @xz_read_file"), "read_file runtime body must be defined:\n{}", ir);
+    assert!(ir.contains("define double @xz_time_now"), "time_now runtime body must be defined:\n{}", ir);
+    assert!(
+        ir.contains("define double @xz_time_monotonic"),
+        "time_monotonic runtime body must be defined:\n{}",
+        ir
+    );
     Ok(())
 }
 
@@ -895,4 +901,27 @@ fn read_file_reads_and_missing_is_err() -> Result<(), String> {
     let r = exec(&src);
     let _ = std::fs::remove_file(&path);
     r
+}
+
+#[test]
+fn time_now_and_monotonic_run() {
+    // Both clock host functions lower to `xz_time_now` / `xz_time_monotonic`
+    // returning f64. The values are non-deterministic, so this asserts the
+    // module verifies and runs (and that a monotonic pair does not go
+    // backwards, observable only through the branch, not stdout).
+    expect_exec(
+        r#"func main() {
+    let before = monotonic()
+    let wall = now()
+    let after = monotonic()
+    if after < before {
+        print("backwards")
+    } else {
+        print("ok ")
+    }
+    print(wall.to_str())
+    print("\n")
+}"#,
+        "time now/monotonic",
+    );
 }

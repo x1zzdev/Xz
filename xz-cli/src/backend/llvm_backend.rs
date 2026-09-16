@@ -659,6 +659,10 @@ fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>,
         // fresh {ptr,len} Str payload through `out` (JIT host in runtime.rs;
         // native body in emit_native_runtime). See docs/13-codegen.md.
         backend.declare_extern("xz_read_file", &[ptr.into(), i64.into(), ptr.into()], Some(i1.into()));
+        // now() / monotonic() -> f64 seconds. JIT host in runtime.rs; native
+        // body (gettimeofday / clock_gettime) in emit_native_runtime.
+        backend.declare_extern("xz_time_now", &[], Some(f64.into()));
+        backend.declare_extern("xz_time_monotonic", &[], Some(f64.into()));
         // Phase 6 scheduler + channels (JIT host in runtime.rs; see
         // docs/13-codegen.md § Concurrency). `id` is the compiler-assigned
         // channel id; the value is copied through a `(ptr, size)` byte range.
@@ -774,6 +778,8 @@ pub fn hide_runtime_symbols(backend: &LlvmBackend<'static>) {
         "xz_str_to_upper",
         "xz_str_to_lower",
         "xz_read_file",
+        "xz_time_now",
+        "xz_time_monotonic",
     ] {
         if let Some(f) = backend.module.get_function(name) {
             if f.get_first_basic_block().is_some() {
@@ -1206,5 +1212,68 @@ pub fn emit_native_runtime(backend: &mut LlvmBackend<'static>) -> Result<(), Str
         backend.builder.build_return(Some(&flag.as_basic_value())).unwrap();
     }
 
+    // xz_time_now / xz_time_monotonic -> f64 seconds. `now` reads the wall
+    // clock via gettimeofday; `monotonic` reads CLOCK_MONOTONIC via
+    // clock_gettime. Both libc calls fill a {sec, subsec} struct (timeval on
+    // Linux is {i64, i64}, timespec likewise), which is scaled to f64 seconds.
+    emit_time_body(backend, "xz_time_now", false);
+    emit_time_body(backend, "xz_time_monotonic", true);
+
     Ok(())
+}
+
+/// Define one clock host function for the native runtime. `monotonic` selects
+/// `clock_gettime(CLOCK_MONOTONIC, &ts)` and a nanosecond scale; otherwise
+/// `gettimeofday(&tv, NULL)` and a microsecond scale. See `emit_native_runtime`.
+fn emit_time_body(backend: &mut LlvmBackend<'static>, fname: &str, monotonic: bool) {
+    let f = match backend.module.get_function(fname) {
+        Some(f) => f,
+        None => return,
+    };
+    let i32_ty = backend.context.i32_type();
+    let i64_ty = backend.types.int;
+    let f64_ty = backend.types.float;
+    let ptr_ty = backend.types.ptr;
+    let tv_ty = backend.context.struct_type(&[i64_ty.into(), i64_ty.into()], false);
+
+    let (host, args_clock): (inkwell::values::FunctionValue<'static>, bool) = if monotonic {
+        let f = match backend.module.get_function("clock_gettime") {
+            Some(f) => f,
+            None => backend
+                .module
+                .add_function("clock_gettime", i32_ty.fn_type(&[i32_ty.into(), ptr_ty.into()], false), None),
+        };
+        (f, true)
+    } else {
+        let f = match backend.module.get_function("gettimeofday") {
+            Some(f) => f,
+            None => backend
+                .module
+                .add_function("gettimeofday", i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false), None),
+        };
+        (f, false)
+    };
+
+    let entry = backend.context.append_basic_block(f, "entry");
+    backend.builder.position_at_end(entry);
+    let tv = backend.builder.build_alloca(tv_ty, "tv").unwrap();
+    if args_clock {
+        let clk = i32_ty.const_int(1, false);
+        backend.builder.build_direct_call(host, &[clk.into(), tv.into()], "clock").unwrap();
+    } else {
+        backend
+            .builder
+            .build_direct_call(host, &[tv.into(), ptr_ty.const_null().into()], "clock")
+            .unwrap();
+    }
+    let sec_p = backend.builder.build_struct_gep(tv_ty, tv, 0, "sec.p").unwrap();
+    let frac_p = backend.builder.build_struct_gep(tv_ty, tv, 1, "frac.p").unwrap();
+    let sec = backend.builder.build_load(i64_ty, sec_p, "sec").unwrap().into_int_value();
+    let frac = backend.builder.build_load(i64_ty, frac_p, "frac").unwrap().into_int_value();
+    let sec_f = backend.builder.build_signed_int_to_float(sec, f64_ty, "sec.f").unwrap();
+    let frac_f = backend.builder.build_signed_int_to_float(frac, f64_ty, "frac.f").unwrap();
+    let scale = f64_ty.const_float(if monotonic { 1e-9 } else { 1e-6 });
+    let frac_s = backend.builder.build_float_mul(frac_f, scale, "frac.s").unwrap();
+    let total = backend.builder.build_float_add(sec_f, frac_s, "time").unwrap();
+    backend.builder.build_return(Some(&total)).unwrap();
 }

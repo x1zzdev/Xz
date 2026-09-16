@@ -88,6 +88,7 @@ system linker.
 | `xz_bool_to_str` | `fn(i1) -> XzStr` | `Bool.to_str()` |
 | `xz_str_eq` | `fn(i8*, i64, i8*, i64) -> i1` | `Map` key equality for `Str` keys |
 | `xz_read_file` | `fn(i8*, i64, ptr) -> i1` | `read_file(path: Str)` — reads the file at the byte path and writes a fresh `{ptr, len}` payload through `out`, returning 1; 0 on any failure |
+| `xz_time_now` / `xz_time_monotonic` | `fn() -> f64` | `now()` / `monotonic()` — wall-clock seconds since the Unix epoch / non-decreasing seconds from a fixed origin |
 | `xz_str_free` | `fn(i8*, i64) -> ()` | frees a heap Str buffer (registry-guarded) |
 
 `abs()` and `approx_sqrt()` are **not** host functions — they lower to LLVM
@@ -107,7 +108,8 @@ in the module as IR that calls libc (`write`, `malloc`, `memcpy`, `free`,
 runtime and libc. `print`/`to_str`/`concat`/`str_free` therefore stay one C-ABI
 call each; `xz_str_eq` is a byte-compare loop; `xz_read_file` copies the path
 into a NUL-terminated buffer and reads the file via libc `fopen`/`fread`;
-`abs`/`sqrt` remain native
+`xz_time_now` calls libc `gettimeofday` and `xz_time_monotonic` calls
+`clock_gettime(CLOCK_MONOTONIC)`; `abs`/`sqrt` remain native
 intrinsics. The JIT path is unaffected — `add_global_mapping` overrides these
 definitions when running in-process.
 
@@ -182,6 +184,7 @@ freed right after the call. See also docs/14-codegen-notes.md § Str memory.
 | method call (`.to_str()`, `.len()`, `.abs()`) | `to_str` → host function; `len`/`is_empty` → field op; `abs`/`approx_sqrt` → LLVM intrinsics |
 | `s.at(i)` / `s.to_bytes()` | `at` → bounds-checked `Result[Char, IndexError]` (shared index helper); `to_bytes` → layout identity (no copy) |
 | `read_file(path)` | host `xz_read_file(ptr, len, out)`: on 1, build a `Result[Str, Err]` `{ payload, 1 }` from the `Str` written through `out`; else `{ zero, 0 }` |
+| `now()` / `monotonic()` | host `xz_time_now()` / `xz_time_monotonic()` → `f64` seconds |
 | `s.to_upper()` / `s.to_lower()` | host `xz_str_to_upper` / `xz_str_to_lower` (libc `toupper`/`tolower` loop in the native runtime) |
 | `main` body | its block is generated into the `main` `FunctionValue` |
 | `await f(args)` | spawn `f` as a child coroutine, then block on a synthetic completion channel (§ Concurrency) |

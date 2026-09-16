@@ -152,7 +152,7 @@ impl Resolver {
         // stdlib functions and methods (see stdlib surface)
         for n in ["print", "read_file", "to_str", "len", "is_empty", "to_upper", "to_lower",
                   "at", "to_bytes", "abs", "is_some", "is_none", "approx_sqrt",
-                  "PI", "E"] {
+                  "now", "monotonic", "PI", "E"] {
             scope.insert(n.to_string());
         }
         // error records are value constructors too

@@ -944,3 +944,48 @@ func slurp(path: Str) -> Result[Str, Err] {
         "read_file needs the io effect",
     );
 }
+
+#[test]
+fn time_reads_accepted_with_io() {
+    expect_ok(
+        r#"/// Reads the monotonic clock.
+/// @intent  Returns monotonic seconds.
+/// @effects io
+func stamp() -> Float {
+    monotonic()
+}
+
+func main() {
+    let t = stamp()
+    print(t.to_str())
+}"#,
+        "monotonic with io",
+    );
+}
+
+#[test]
+fn time_reads_derive_io_effect() {
+    expect_intent_code(
+        r#"/// Reads the clock.
+/// @intent  Returns the wall clock.
+/// @effects none
+func stamp() -> Float {
+    now()
+}"#,
+        "I0020",
+        "now needs the io effect",
+    );
+}
+
+#[test]
+fn time_now_rejects_arguments() {
+    let err = typecheck_error(
+        r#"func main() {
+    let t = now(1)
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("now") && e.contains("0 args"), "unexpected error: {}", e),
+        None => panic!("now(1) must be rejected"),
+    }
+}
