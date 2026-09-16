@@ -106,7 +106,8 @@ reads); Phase 8 has begun with the LSP diagnostics server.
   `didOpen`/`didChange`/`didClose` → `publishDiagnostics`; [07-compiler.md](07-compiler.md))
 - [x] LSP server — type-error spans; hover over top-level symbols
 - [x] LSP server — completion (document symbols + language vocabulary)
-- [ ] LSP server — go-to-definition, formatting
+- [x] LSP server — go-to-definition
+- [ ] LSP server — formatting
 - [ ] Formatter
 - [ ] AI toolchain integration (JSON diagnostics + editor loop)
 - [ ] Package manager (`xz pkg`) for `.xzint` interface files

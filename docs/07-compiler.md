@@ -45,7 +45,8 @@ spans.
   carries the whole document, so no incremental edit state is kept.
 - **Methods:** `initialize` / `initialized`, `shutdown` / `exit`,
   `textDocument/didOpen`, `textDocument/didChange`, `textDocument/didClose`,
-  `textDocument/hover`, `textDocument/completion`. Diagnostics are published on
+  `textDocument/hover`, `textDocument/completion`, `textDocument/definition`.
+  Diagnostics are published on
   open and recomputed on every change; `didClose` clears them.
 - **Hover:** hovering an identifier that names a top-level symbol (`func`,
   `task`, `chan`, `extern`, `record`, `enum`, or enum variant) returns the
@@ -58,11 +59,16 @@ spans.
   static vocabulary is still offered when the document has a parse error, so
   completion keeps working mid-edit; only a document that is not open returns
   an empty list. The client owns prefix filtering (`isIncomplete: false`).
+- **Definition:** go-to-definition on an identifier that names a top-level
+  symbol returns the `Location` of its declaration (`func`, `task`, `chan`,
+  `extern`, `record`, `enum`, or enum variant); anything else is `null`. Like
+  hover, resolution is by name within the current document and requires the
+  document to parse.
 - **Positions:** 1-based Xz spans are converted to 0-based UTF-16 code units
   (the LSP default; advertised as `positionEncoding: "utf-16"`).
 - **Exit code:** 0 after a `shutdown` request, 1 otherwise (per the LSP spec).
 
-Not yet implemented: go-to-definition and formatting.
+Not yet implemented: formatting.
 Type errors carry a real span (`T0001` points at the offending statement or
 declaration, not the document start).
 
