@@ -6,7 +6,8 @@ C ABI bridge, shared-library output, and `xz bind --lang python` work.
 Phase 6 has typed channels, a deterministic task scheduler, and `async`/`await`
 lowering on the JIT path; the native runtime does not yet emit the scheduler.
 Phase 7 has begun (`List`/`Map`/`Set` first slices, `read_file`, and clock
-reads); Phase 8 has begun with the LSP diagnostics server.
+reads); Phase 8 has begun with the LSP diagnostics server and now includes the
+`xz fmt` formatter.
 
 ## Phase 0 — Design (current)
 
@@ -107,8 +108,8 @@ reads); Phase 8 has begun with the LSP diagnostics server.
 - [x] LSP server — type-error spans; hover over top-level symbols
 - [x] LSP server — completion (document symbols + language vocabulary)
 - [x] LSP server — go-to-definition
-- [ ] LSP server — formatting
-- [ ] Formatter
+- [ ] LSP server — formatting (`textDocument/formatting` over the `xz fmt` engine)
+- [x] Formatter (`xz fmt`; comment-preserving AST pretty-printer — [07-compiler.md](07-compiler.md))
 - [ ] AI toolchain integration (JSON diagnostics + editor loop)
 - [ ] Package manager (`xz pkg`) for `.xzint` interface files
 

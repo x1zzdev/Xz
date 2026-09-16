@@ -115,9 +115,10 @@ Canonical layout, fixed here (the "mandatory layout convention" of
   re-inserted from the AST.
 
 Known limits of the first slice (tracked as follow-ups): block comments that
-span lines are emitted verbatim, and a comment inside a multi-line expression
-is attached to the enclosing statement because expressions do not carry spans
-yet.
+span lines are emitted verbatim; a comment inside a multi-line expression is
+attached to the enclosing statement because expressions do not carry spans
+yet; and integer literals are re-emitted in decimal because the AST keeps only
+their value, not the original radix.
 
 ## JSON Diagnostics (for LLM self-correction)
 
