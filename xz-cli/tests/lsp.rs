@@ -66,6 +66,20 @@ fn item<'a>(items: &'a [Value], label: &str) -> Option<&'a Value> {
     items.iter().find(|i| i["label"] == label)
 }
 
+fn definition(s: &mut Server, uri: &str, line: usize, character: usize) -> Value {
+    let msg = json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "textDocument/definition",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character }
+        }
+    })
+    .to_string();
+    serde_json::from_str(&s.handle(&msg).unwrap()).unwrap()
+}
+
 #[test]
 fn initialize_advertises_full_sync() {
     let mut s = Server::new();
@@ -74,6 +88,7 @@ fn initialize_advertises_full_sync() {
     assert_eq!(v["result"]["capabilities"]["textDocumentSync"], 1);
     assert_eq!(v["result"]["capabilities"]["hoverProvider"], true);
     assert_eq!(v["result"]["capabilities"]["completionProvider"]["resolveProvider"], false);
+    assert_eq!(v["result"]["capabilities"]["definitionProvider"], true);
     assert_eq!(v["result"]["serverInfo"]["name"], "xz");
 }
 
@@ -226,6 +241,48 @@ fn completion_on_unopened_document_is_empty() {
     let v = completion(&mut s, "file:///missing.xz");
     assert_eq!(v["result"]["isIncomplete"], false);
     assert!(items(&v).is_empty());
+}
+
+#[test]
+fn definition_on_function_use_points_at_declaration() {
+    let mut s = Server::new();
+    did_open(&mut s, "file:///def.xz", VALID);
+    let v = definition(&mut s, "file:///def.xz", 11, 4);
+    assert_eq!(v["result"]["uri"], "file:///def.xz");
+    assert_eq!(v["result"]["range"]["start"]["line"], 4);
+    assert_eq!(v["result"]["range"]["start"]["character"], 5);
+}
+
+#[test]
+fn definition_on_enum_variant_points_at_variant() {
+    let mut s = Server::new();
+    did_open(&mut s, "file:///def.xz", "enum Color {\n    red()\n}\n\nfunc main() {\n    let c = Color.red()\n}");
+    let v = definition(&mut s, "file:///def.xz", 5, 18);
+    assert_eq!(v["result"]["range"]["start"]["line"], 1);
+    assert_eq!(v["result"]["range"]["start"]["character"], 4);
+}
+
+#[test]
+fn definition_off_identifier_returns_null() {
+    let mut s = Server::new();
+    did_open(&mut s, "file:///def.xz", VALID);
+    let v = definition(&mut s, "file:///def.xz", 11, 9);
+    assert!(v["result"].is_null());
+}
+
+#[test]
+fn definition_on_unknown_identifier_returns_null() {
+    let mut s = Server::new();
+    did_open(&mut s, "file:///unknown.xz", "func main() {\n    nope()\n}");
+    let v = definition(&mut s, "file:///unknown.xz", 1, 4);
+    assert!(v["result"].is_null());
+}
+
+#[test]
+fn definition_on_unopened_document_returns_null() {
+    let mut s = Server::new();
+    let v = definition(&mut s, "file:///missing.xz", 0, 0);
+    assert!(v["result"].is_null());
 }
 
 #[test]

@@ -4,7 +4,8 @@
 //!
 //! Supported methods: `initialize`, `initialized`, `shutdown`, `exit`,
 //! `textDocument/didOpen`, `textDocument/didChange`, `textDocument/didClose`,
-//! `textDocument/hover`, `textDocument/completion`. Document sync is "full" (`TextDocumentSyncKind.Full`
+//! `textDocument/hover`, `textDocument/completion`, `textDocument/definition`.
+//! Document sync is "full" (`TextDocumentSyncKind.Full`
 //! = 1): every `didChange` carries the whole document, so the server keeps no
 //! incremental edit state. Positions are emitted as UTF-16 code units (the LSP
 //! default).
@@ -56,7 +57,8 @@ impl Server {
                         "positionEncoding": "utf-16",
                         "textDocumentSync": 1,
                         "hoverProvider": true,
-                        "completionProvider": { "resolveProvider": false }
+                        "completionProvider": { "resolveProvider": false },
+                        "definitionProvider": true
                     },
                     "serverInfo": { "name": "xz", "version": env!("CARGO_PKG_VERSION") }
                 });
@@ -102,6 +104,13 @@ impl Server {
                 let params = msg.get("params")?;
                 let uri = params.pointer("/textDocument/uri")?.as_str()?.to_string();
                 Some(response(id, self.completion(&uri)))
+            }
+            "textDocument/definition" => {
+                let params = msg.get("params")?;
+                let uri = params.pointer("/textDocument/uri")?.as_str()?.to_string();
+                let line = params.pointer("/position/line")?.as_u64()? as usize;
+                let character = params.pointer("/position/character")?.as_u64()? as usize;
+                Some(response(id, self.definition(&uri, line, character)))
             }
             _ => {
                 id.as_ref()?;
@@ -178,6 +187,43 @@ impl Server {
             .and_then(|tokens| parse(tokens).ok());
         json!({ "isIncomplete": false, "items": completion_items(program.as_ref()) })
     }
+
+    /// Go-to-definition at an LSP position: when the cursor is on an identifier
+    /// naming a top-level symbol, return the `Location` of its declaration,
+    /// else `null`. Same resolution contract as hover: by name within the
+    /// current document, requiring a clean parse.
+    fn definition(&self, uri: &str, line: usize, character: usize) -> Value {
+        let text = match self.docs.get(uri) {
+            Some(t) => t,
+            None => return Value::Null,
+        };
+        let tokens = match lex(text.to_string(), uri.to_string()) {
+            Ok(t) => t,
+            Err(_) => return Value::Null,
+        };
+        let pos = from_lsp_position(text, line, character);
+        let (name, _) = match ident_at(&tokens, pos) {
+            Some(found) => found,
+            None => return Value::Null,
+        };
+        let program = match parse(tokens) {
+            Ok(p) => p,
+            Err(_) => return Value::Null,
+        };
+        let span = match find_symbol_span(&program, &name) {
+            Some(s) => s,
+            None => return Value::Null,
+        };
+        let start = to_lsp_position(text, span.start.0, span.start.1);
+        let end = to_lsp_position(text, span.end.0, span.end.1);
+        json!({
+            "uri": uri,
+            "range": {
+                "start": { "line": start.0, "character": start.1 },
+                "end": { "line": end.0, "character": end.1 }
+            }
+        })
+    }
 }
 
 /// The identifier token covering an Xz `(line, col)` position, if any.
@@ -212,6 +258,30 @@ fn find_symbol(program: &ast::Program, name: &str) -> Option<String> {
                 for v in &en.variants {
                     if v.name == name {
                         return Some(render_variant(v));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The declaration span of the top-level symbol `name`, if the document
+/// declares it. Mirrors [`find_symbol`] for go-to-definition.
+fn find_symbol_span(program: &ast::Program, name: &str) -> Option<Span> {
+    for item in &program.items {
+        match item {
+            ast::Item::Func(f) if f.name == name => return Some(f.span.clone()),
+            ast::Item::Task(t) if t.name == name => return Some(t.span.clone()),
+            ast::Item::Chan(c) if c.name == name => return Some(c.span.clone()),
+            ast::Item::Extern(e) if e.name == name => return Some(e.span.clone()),
+            ast::Item::Record(r) if r.name == name => return Some(r.span.clone()),
+            ast::Item::Enum(en) if en.name == name => return Some(en.span.clone()),
+            ast::Item::Enum(en) => {
+                for v in &en.variants {
+                    if v.name == name {
+                        return Some(v.span.clone());
                     }
                 }
             }
