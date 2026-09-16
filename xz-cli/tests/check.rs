@@ -847,3 +847,66 @@ fn map_insert_key_type_mismatch_rejected() {
         None => panic!("Int key inserted into Map[Str, Int]"),
     }
 }
+
+#[test]
+fn set_literal_and_methods_accepted() {
+    expect_ok(
+        r#"func main() {
+    let tags: Set[Str] = {"a", "b", "a"}
+    let n: Int = tags.len()
+    let empty: Bool = tags.is_empty()
+    let grown: Set[Str] = tags.insert("c")
+    let has: Bool = grown.contains("a")
+    let empty_set: Set[Int] = {}
+    for t in grown {
+        print(t)
+    }
+    print(n.to_str() + empty.to_str() + has.to_str() + empty_set.len().to_str())
+}"#,
+        "set literal and methods",
+    );
+}
+
+#[test]
+fn float_set_element_rejected() {
+    let err = typecheck_error(
+        r#"func main() {
+    let s: Set[Float] = {}
+    print(s.len().to_str())
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("Set element type"), "unexpected error: {}", e),
+        None => panic!("Float Set element accepted"),
+    }
+}
+
+#[test]
+fn set_insert_element_type_mismatch_rejected() {
+    let err = typecheck_error(
+        r#"func main() {
+    let s: Set[Str] = {}
+    let s2 = s.insert(1)
+    print(s2.len().to_str())
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("insert element expects"), "unexpected error: {}", e),
+        None => panic!("Int element inserted into Set[Str]"),
+    }
+}
+
+#[test]
+fn set_contains_element_type_mismatch_rejected() {
+    let err = typecheck_error(
+        r#"func main() {
+    let s: Set[Str] = {"a"}
+    let b = s.contains(1)
+    print(b.to_str())
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("contains element expects"), "unexpected error: {}", e),
+        None => panic!("Int probed in Set[Str]"),
+    }
+}

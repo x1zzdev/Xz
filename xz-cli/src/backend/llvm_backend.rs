@@ -186,6 +186,10 @@ impl<'ctx> LlvmBackend<'ctx> {
             // Map[K, V] is { K*, V*, i64 } regardless of K/V: entries live in
             // separately allocated key/value buffers (opaque pointers erase K/V).
             Kind::Map(_, _) => self.types.xz_map.into(),
+            // Set[T] is also { ptr, i64 }: the element buffer + count. Same
+            // shape as List[T], so it lowers to the same LLVM type; the front
+            // end keeps Set and List apart (opaque pointers erase T).
+            Kind::Set(_) => self.types.xz_list.into(),
             Kind::Err | Kind::ErrUnion(_) => self.types.unit.into(),
             // A channel name lowers to its integer id; `send`/`recv` pass the id
             // to the scheduler runtime (docs/13-codegen.md § Concurrency).
@@ -383,6 +387,10 @@ fn kind_from_ast_named(name: &str, args: &[Type], backend: &LlvmBackend<'_>) -> 
             let val = kind_from_ast(&args[1], backend);
             Kind::Map(Box::new(key), Box::new(val))
         }
+        "Set" => {
+            let inner = kind_from_ast(&args[0], backend);
+            Kind::Set(Box::new(inner))
+        }
         "Err" => Kind::Err,
         _ => {
             // record or enum or (unlikely) type variable
@@ -423,6 +431,7 @@ fn kind_named_subst(name: &str, args: &[Type], backend: &LlvmBackend<'_>, subst:
             Box::new(kind_from_ast_subst(&args[1], backend, subst)),
         ),
         "Chan" => Kind::Chan(Box::new(kind_from_ast_subst(&args[0], backend, subst))),
+        "Set" => Kind::Set(Box::new(kind_from_ast_subst(&args[0], backend, subst))),
         _ => kind_from_ast_named(name, args, backend),
     }
 }
@@ -471,6 +480,7 @@ pub fn mangle_type_tag(k: &Kind) -> String {
         Kind::Option(t) => format!("O{}", mangle_type_tag(t)),
         Kind::Result(t, _) => format!("R{}", mangle_type_tag(t)),
         Kind::List(t) => format!("L{}", mangle_type_tag(t)),
+        Kind::Set(t) => format!("S{}", mangle_type_tag(t)),
         Kind::Err => "e".into(),
         Kind::Record(n) => format!("r{}", n),
         Kind::Enum(n) => format!("E{}", n),

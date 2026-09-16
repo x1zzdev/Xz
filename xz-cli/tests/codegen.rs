@@ -820,3 +820,47 @@ func main() -> Result[Unit, Err] {
     run(backend.module)?;
     Ok(())
 }
+
+#[test]
+fn set_literal_insert_contains_and_iteration_run() {
+    // Set[T]: literal dedup (first position kept), non-mutating insert
+    // (a present element is a no-op), contains hit/miss, len/is_empty, and
+    // insertion-order iteration over elements and an empty set.
+    expect_exec(
+        r#"func main() -> Result[Unit, Err] {
+    let tags: Set[Str] = {"a", "b", "a"}
+    print(tags.len().to_str())
+    print(" ")
+    let grown = tags.insert("c")
+    print(grown.len().to_str())
+    print(" ")
+    let again = grown.insert("a")
+    print(again.len().to_str())
+    print(" ")
+    if grown.contains("b") {
+        print("has-b")
+    } else {
+        print("missing-b")
+    }
+    print(" ")
+    if grown.contains("z") {
+        print("has-z")
+    } else {
+        print("missing-z")
+    }
+    print(" ")
+    for t in grown {
+        print(t)
+    }
+    print(" ")
+    let empty: Set[Int] = {}
+    print(empty.len().to_str())
+    print(" ")
+    let one = empty.insert(7)
+    print(one.contains(7).to_str())
+    print("\n")
+    ok()
+}"#,
+        "set literal, insert, contains, iteration",
+    );
+}

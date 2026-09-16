@@ -31,9 +31,15 @@ pub struct Codegen<'b, 'ctx> {
     /// while evaluating a `let xs: List[T] = ...`, the declared element kind,
     /// so an empty `[]` literal can materialize a typed buffer.
     list_hint: Option<Kind>,
+    /// while evaluating a `let s: Set[T] = {}`, the declared kind, so the
+    /// empty brace literal materializes an empty set, not an empty map.
+    set_hint: Option<Kind>,
     /// list-typed binding name -> element kind, so `for x in xs` and `xs[i]`
     /// can load the right element type (codegen carries no types otherwise).
     list_elems: HashMap<String, Kind>,
+    /// set-typed binding name -> element kind, so `s.contains`/`insert` and
+    /// `for e in s` can load the right element type.
+    set_elems: HashMap<String, Kind>,
     /// map-typed binding name -> (key kind, value kind), so `m.get`/`insert`/
     /// `keys`/`values` can load the right key/value types.
     map_kvs: HashMap<String, (Kind, Kind)>,
@@ -71,6 +77,7 @@ fn kind_contains_str(k: &Kind, backend: &LlvmBackend<'_>) -> bool {
         Kind::Option(t) | Kind::Result(t, _) => kind_contains_str(t, backend),
         Kind::List(t) => kind_contains_str(t, backend),
         Kind::Map(k, v) => kind_contains_str(k, backend) || kind_contains_str(v, backend),
+        Kind::Set(t) => kind_contains_str(t, backend),
         Kind::Record(name) => backend
             .record_fields
             .get(name)
@@ -279,10 +286,12 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// `xs[i]`, which must load the element's LLVM type.
     fn list_elem_kind(&self, e: &Expr) -> Option<Kind> {
         match e {
-            Expr::Name(n) => self.list_elems.get(n).cloned(),
+            Expr::Name(n) => self.list_elems.get(n).cloned().or_else(|| self.set_elems.get(n).cloned()),
             Expr::ListLit(elems) => elems.first().and_then(|x| self.scalar_kind(x)),
+            Expr::SetLit(elems) => elems.first().and_then(|x| self.scalar_kind(x)),
             Expr::Call(callee, _) => match &**callee {
                 Expr::Field(recv, m) if m == "append" => self.list_elem_kind(recv),
+                Expr::Field(recv, m) if m == "insert" => self.set_elem_kind(recv),
                 Expr::Field(recv, m) if m == "keys" => self.map_kv_kind(recv).map(|(k, _)| k),
                 Expr::Field(recv, m) if m == "values" => self.map_kv_kind(recv).map(|(_, v)| v),
                 _ => None,
@@ -321,6 +330,22 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         }
     }
 
+    /// The element kind of a set-typed expression, determinable without a full
+    /// type pass: a set binding's recorded element kind, a literal's first
+    /// element, or an `insert` receiver. Used by `s.contains`/`insert` and
+    /// `for e in s`.
+    fn set_elem_kind(&self, e: &Expr) -> Option<Kind> {
+        match e {
+            Expr::Name(n) => self.set_elems.get(n).cloned(),
+            Expr::SetLit(elems) => elems.first().and_then(|x| self.scalar_kind(x)),
+            Expr::Call(callee, _) => match &**callee {
+                Expr::Field(recv, m) if m == "insert" => self.set_elem_kind(recv),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Split a `{ keys, vals, len }` Map value into its three fields.
     fn map_parts(
         &mut self,
@@ -336,6 +361,10 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// Lower `{k1: v1, ...}`: start from the empty map and `insert` each entry
     /// in order, so a repeated key replaces at its first position (docs/12).
     fn gen_map_lit(&mut self, entries: &[(Expr, Expr)]) -> GenResult<'ctx> {
+        // `{}` is Map or Set by the binding's declared type (docs/11).
+        if entries.is_empty() {
+            return self.gen_empty_brace();
+        }
         let mut agg: BasicValueEnum<'ctx> = self.backend.types.xz_map.const_zero().into();
         for (k, v) in entries {
             let kv = self.gen_expr(k)?;
@@ -544,6 +573,120 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         agg = self.backend.builder.build_insert_value(agg, buf, 0, "l.ptr").unwrap().into_struct_value();
         agg = self.backend.builder.build_insert_value(agg, len, 1, "l.len").unwrap().into_struct_value();
         Ok(agg.into())
+    }
+
+    /// Lower an empty `{}` when the binding is a Set; otherwise an empty Map.
+    fn gen_empty_brace(&mut self) -> GenResult<'ctx> {
+        match &self.set_hint {
+            Some(Kind::Set(_)) => Ok(self.backend.types.xz_list.const_zero().into()),
+            _ => Ok(self.backend.types.xz_map.const_zero().into()),
+        }
+    }
+
+    /// Lower `{e1, e2, ...}`: start from the empty set and `insert` each
+    /// element in order, so a repeated element keeps its first position
+    /// (docs/12).
+    fn gen_set_lit(&mut self, elems: &[Expr]) -> GenResult<'ctx> {
+        let mut agg: BasicValueEnum<'ctx> = self.backend.types.xz_list.const_zero().into();
+        for e in elems {
+            let ev = self.gen_expr(e)?;
+            let kind = kind_from_llvm(self.backend, self.basic_type_of(ev));
+            agg = self.set_insert_value(agg, ev, &kind)?;
+        }
+        Ok(agg)
+    }
+
+    /// Linear scan for `element` in the set's element buffer; returns the
+    /// matching index or -1. Elements compare with the same rule as Map keys
+    /// (`map_key_eq`: by value for Int/usize/Bool/Char, by content for Str).
+    fn set_find(
+        &mut self,
+        set_val: BasicValueEnum<'ctx>,
+        elem_val: BasicValueEnum<'ctx>,
+        elem_kind: &Kind,
+    ) -> Result<inkwell::values::IntValue<'ctx>, String> {
+        let (buf, len) = self.str_parts(set_val);
+        let elem_bt = self.basic_type_of(elem_val);
+        let int = self.backend.types.int;
+        let fnv = self.cur_fn();
+        let header = self.backend.context.append_basic_block(fnv, "sfind.header");
+        let body = self.backend.context.append_basic_block(fnv, "sfind.body");
+        let next = self.backend.context.append_basic_block(fnv, "sfind.next");
+        let found = self.backend.context.append_basic_block(fnv, "sfind.found");
+        let done = self.backend.context.append_basic_block(fnv, "sfind.done");
+        let i_ptr = self.backend.builder.build_alloca(int, "sfind.i").unwrap();
+        let idx_ptr = self.backend.builder.build_alloca(int, "sfind.idx").unwrap();
+        self.backend.builder.build_store(i_ptr, int.const_zero()).unwrap();
+        self.backend.builder.build_store(idx_ptr, int.const_int(u64::MAX, false)).unwrap();
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        self.backend.builder.position_at_end(header);
+        let i_cur = self.build_load(int.into(), i_ptr, "sfind.ic").into_int_value();
+        let cond = self.backend.builder.build_int_compare(IntPredicate::SLT, i_cur, len, "sfind.cond").unwrap();
+        self.backend.builder.build_conditional_branch(cond, body, done).unwrap();
+
+        self.backend.builder.position_at_end(body);
+        let slot = unsafe { self.backend.builder.build_in_bounds_gep(elem_bt, buf, &[i_cur], "sfind.es").unwrap() };
+        let ecur = self.backend.builder.build_load(elem_bt, slot, "sfind.e").unwrap();
+        let eq = self.map_key_eq(ecur, elem_val, elem_kind)?;
+        self.backend.builder.build_conditional_branch(eq, found, next).unwrap();
+
+        self.backend.builder.position_at_end(next);
+        let i_next = self.backend.builder.build_int_add(i_cur, int.const_int(1, false), "sfind.in").unwrap();
+        self.backend.builder.build_store(i_ptr, i_next).unwrap();
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        self.backend.builder.position_at_end(found);
+        self.backend.builder.build_store(idx_ptr, i_cur).unwrap();
+        self.backend.builder.build_unconditional_branch(done).unwrap();
+
+        self.backend.builder.position_at_end(done);
+        Ok(self.build_load(int.into(), idx_ptr, "sfind.ret").into_int_value())
+    }
+
+    /// Return a new Set with `element` added: when already present the same
+    /// elements stay in the same positions; otherwise malloc `len+1`, copy the
+    /// old buffer, and store the element at the end (docs/12).
+    fn set_insert_value(
+        &mut self,
+        set_val: BasicValueEnum<'ctx>,
+        elem_val: BasicValueEnum<'ctx>,
+        elem_kind: &Kind,
+    ) -> GenResult<'ctx> {
+        let (buf, len) = self.str_parts(set_val);
+        let idx = self.set_find(set_val, elem_val, elem_kind)?;
+        let elem_bt = self.basic_type_of(elem_val);
+        let elem_size = self.abi_size(elem_bt);
+        let int = self.backend.types.int;
+        let zero = int.const_zero();
+        let one = int.const_int(1, false);
+        let found = self.backend.builder.build_int_compare(IntPredicate::SGE, idx, zero, "s.found").unwrap();
+        let grow = self.backend.builder.build_select(found, zero, one, "s.grow").unwrap().into_int_value();
+        let new_len = self.backend.builder.build_int_add(len, grow, "s.newlen").unwrap();
+        let new_buf = self.alloc_map_column(elem_size, new_len, "s.buf")?;
+        let old_bytes = self.backend.builder.build_int_mul(len, int.const_int(elem_size, false), "s.bytes").unwrap();
+        let _ = self.backend.builder.build_memcpy(new_buf, 1, buf, 1, old_bytes).unwrap();
+        // Store at the existing slot when found, else at the end.
+        let slot = self.backend.builder.build_select(found, idx, len, "s.slot").unwrap().into_int_value();
+        let eslot = unsafe { self.backend.builder.build_in_bounds_gep(elem_bt, new_buf, &[slot], "s.eslot").unwrap() };
+        self.backend.builder.build_store(eslot, elem_val).unwrap();
+        let mut agg = self.backend.types.xz_list.const_zero();
+        agg = self.backend.builder.build_insert_value(agg, new_buf, 0, "s.bp").unwrap().into_struct_value();
+        agg = self.backend.builder.build_insert_value(agg, new_len, 1, "s.len").unwrap().into_struct_value();
+        Ok(agg.into())
+    }
+
+    /// `s.contains(e) -> Bool`: membership by linear scan.
+    fn gen_set_contains(
+        &mut self,
+        set_val: BasicValueEnum<'ctx>,
+        elem_val: BasicValueEnum<'ctx>,
+        elem_kind: &Kind,
+    ) -> GenResult<'ctx> {
+        let idx = self.set_find(set_val, elem_val, elem_kind)?;
+        let int = self.backend.types.int;
+        let r = self.backend.builder.build_int_compare(IntPredicate::SGE, idx, int.const_zero(), "s.has").unwrap();
+        Ok(r.into())
     }
 
     /// Lower a `[e1, e2, ...]` literal: allocate an element buffer, store the
@@ -886,14 +1029,17 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         };
         match &d.init {
             Some(e) => {
-                // Let `none` and an empty `[]` literal see the declared type.
+                // Let `none`, an empty `[]`, and an empty `{}` see the declared type.
                 let saved_hint = self.none_hint.clone();
                 let saved_list_hint = self.list_hint.clone();
+                let saved_set_hint = self.set_hint.clone();
                 self.none_hint = declared_kind.clone();
                 self.list_hint = declared_kind.clone();
+                self.set_hint = declared_kind.clone();
                 let r = self.gen_expr(e);
                 self.none_hint = saved_hint;
                 self.list_hint = saved_list_hint;
+                self.set_hint = saved_set_hint;
                 match r {
                     Ok(v) => match &declared_kind {
                         Some(k) => {
@@ -926,6 +1072,16 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 if let Some(kv) = kv {
                     self.map_kvs.insert(d.name.clone(), kv);
                 }
+                // Track Set element kinds so `s.contains`/`insert` and
+                // `for e in s` can load the right element type. From the
+                // declared type, or inferred from a set literal.
+                let selem = match &declared_kind {
+                    Some(Kind::Set(t)) => Some((**t).clone()),
+                    _ => self.set_elem_kind(e),
+                };
+                if let Some(ek) = selem {
+                    self.set_elems.insert(d.name.clone(), ek);
+                }
                 // Track Str ownership: a fresh buffer bound to `name` becomes
                 // this binding's, freed at scope exit; an alias downgrades the
                 // source binding so neither is freed.
@@ -941,6 +1097,9 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                         }
                         if let Kind::Map(kk, vv) = &k {
                             self.map_kvs.insert(d.name.clone(), ((**kk).clone(), (**vv).clone()));
+                        }
+                        if let Kind::Set(t) = &k {
+                            self.set_elems.insert(d.name.clone(), (**t).clone());
                         }
                         let lty = self.backend.kind_to_llvm(&k);
                         let alloca = self.backend.builder.build_alloca(lty, &d.name).unwrap();
@@ -1270,6 +1429,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             Expr::Field(base, fname) => self.gen_field(base, fname),
             Expr::ListLit(elems) => self.gen_list_lit(elems),
             Expr::MapLit(entries) => self.gen_map_lit(entries),
+            Expr::SetLit(elems) => self.gen_set_lit(elems),
             Expr::Index(base, idx) => {
                 let bv = self.gen_expr(base)?;
                 let iv = self.gen_expr(idx)?;
@@ -1875,9 +2035,29 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             let kv = self.gen_expr(&args[0])?;
             return self.gen_map_get(rv, kv, &val_kind);
         }
+        if method == "contains" {
+            if args.len() != 1 {
+                return self.fail("contains takes one argument");
+            }
+            let elem_kind = match self.set_elem_kind(receiver) {
+                Some(k) => k,
+                None => return self.fail("cannot determine the set element type for contains; bind the set with a declared `Set[T]` type"),
+            };
+            let ev = self.gen_expr(&args[0])?;
+            return self.gen_set_contains(rv, ev, &elem_kind);
+        }
         if method == "insert" {
+            // `Set.insert(e)` takes one argument; `Map.insert(k, v)` takes two.
+            if args.len() == 1 {
+                let elem_kind = match self.set_elem_kind(receiver) {
+                    Some(k) => k,
+                    None => return self.fail("cannot determine the set element type for insert; bind the set with a declared `Set[T]` type"),
+                };
+                let ev = self.gen_expr(&args[0])?;
+                return self.set_insert_value(rv, ev, &elem_kind);
+            }
             if args.len() != 2 {
-                return self.fail("insert takes two arguments");
+                return self.fail("insert takes one or two arguments");
             }
             let key_kind = match self.map_kv_kind(receiver) {
                 Some((k, _)) => k,
@@ -2518,7 +2698,9 @@ pub fn gen_function(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         str_count: 0,
         none_hint: None,
         list_hint: None,
+        set_hint: None,
         list_elems: HashMap::new(),
+        set_elems: HashMap::new(),
         map_kvs: HashMap::new(),
         owns: HashMap::new(),
         leak_strs,
@@ -2549,7 +2731,9 @@ pub fn gen_specialized(
         str_count: 0,
         none_hint: None,
         list_hint: None,
+        set_hint: None,
         list_elems: HashMap::new(),
+        set_elems: HashMap::new(),
         map_kvs: HashMap::new(),
         owns: HashMap::new(),
         leak_strs,
@@ -2575,7 +2759,9 @@ pub fn gen_task(backend: &mut LlvmBackend<'static>, t: &ast::TaskDecl) {
         str_count: 0,
         none_hint: None,
         list_hint: None,
+        set_hint: None,
         list_elems: HashMap::new(),
+        set_elems: HashMap::new(),
         map_kvs: HashMap::new(),
         owns: HashMap::new(),
         leak_strs: false,
@@ -2605,7 +2791,9 @@ pub fn gen_main(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         str_count: 0,
         none_hint: None,
         list_hint: None,
+        set_hint: None,
         list_elems: HashMap::new(),
+        set_elems: HashMap::new(),
         map_kvs: HashMap::new(),
         owns: HashMap::new(),
         leak_strs,
@@ -2659,6 +2847,10 @@ impl<'ctx> Codegen<'_, 'ctx> {
                 // Record a Map parameter's key/value kinds for get/insert/columns.
                 if let Kind::Map(k, v) = self.kind_of(&p.ty) {
                     self.map_kvs.insert(p.name.clone(), (*k, *v));
+                }
+                // Record a Set parameter's element kind for contains/insert/iteration.
+                if let Kind::Set(t) = self.kind_of(&p.ty) {
+                    self.set_elems.insert(p.name.clone(), *t);
                 }
             }
         }

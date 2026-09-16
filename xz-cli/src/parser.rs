@@ -750,20 +750,36 @@ let mut trusted = false;
             }
             TokKind::LBrace => {
                 self.i += 1;
-                let mut entries: Vec<(Expr, Expr)> = vec![];
-                if !self.at(TokKind::RBrace) {
-                    loop {
+                // `{}` is an empty Map or Set; the binding's declared type
+                // decides which (docs/11). Represented as an empty Map literal
+                // and accepted by both.
+                if self.at(TokKind::RBrace) {
+                    self.i += 1;
+                    return Ok(Expr::MapLit(vec![]));
+                }
+                let first = self.expr()?;
+                if self.at(TokKind::Colon) {
+                    // Map literal: `{k: v, ...}`.
+                    self.i += 1;
+                    let first_value = self.expr()?;
+                    let mut entries: Vec<(Expr, Expr)> = vec![(first, first_value)];
+                    while self.eat(TokKind::Comma).is_some() {
                         let key = self.expr()?;
                         self.expect(TokKind::Colon, String::from("':'"))?;
                         let value = self.expr()?;
                         entries.push((key, value));
-                        if self.eat(TokKind::Comma).is_none() {
-                            break;
-                        }
                     }
+                    self.expect(TokKind::RBrace, String::from("'}'"))?;
+                    Ok(Expr::MapLit(entries))
+                } else {
+                    // Set literal: `{e, ...}`.
+                    let mut elems: Vec<Expr> = vec![first];
+                    while self.eat(TokKind::Comma).is_some() {
+                        elems.push(self.expr()?);
+                    }
+                    self.expect(TokKind::RBrace, String::from("'}'"))?;
+                    Ok(Expr::SetLit(elems))
                 }
-                self.expect(TokKind::RBrace, String::from("'}'"))?;
-                Ok(Expr::MapLit(entries))
             }
             TokKind::LParen => {
                 self.i += 1;
