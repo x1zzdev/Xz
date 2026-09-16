@@ -31,6 +31,7 @@ xz check <file.xz>          # type/contract check only, no codegen
 xz check --strict <file.xz> # intent checks enforced (I0004: untrusted claims fail)
 xz check-json [--strict] <file.xz>   # same, diagnostics as a JSON array
 xz run <file.xz>            # build and JIT-execute
+xz fmt <file.xz>            # parse and print the canonical layout on stdout
 xz lsp                      # language server on stdio (Phase 8, first slice)
 ```
 
@@ -68,9 +69,55 @@ spans.
   (the LSP default; advertised as `positionEncoding: "utf-16"`).
 - **Exit code:** 0 after a `shutdown` request, 1 otherwise (per the LSP spec).
 
-Not yet implemented: formatting.
+`textDocument/formatting` is not served yet; the CLI formatter below is the
+engine a later slice will expose over LSP.
 Type errors carry a real span (`T0001` points at the offending statement or
 declaration, not the document start).
+
+## Formatter (`xz fmt`)
+
+`xz fmt <file.xz>` parses the file and prints its canonical layout on stdout.
+It is read-only: unlike `gofmt -w` it never rewrites the file, so an editor
+owns applying the result. A file that does not parse is rejected with the same
+parse error `xz check` reports; the formatter never emits output for it.
+
+The formatter is an **AST pretty-printer**: it prints from the parsed program,
+not from the token stream. That is what makes the layout deterministic, but it
+means the AST must carry everything the output needs. Two facts shape the
+first slice:
+
+- **Comments are the source of truth.** The lexer also returns every line
+  comment, block comment, and `///` intent comment in source order. The printer
+  emits them verbatim (doc claims are not re-rendered from the AST, which
+  cannot distinguish a prose line from an `@intent` line).
+- **Placement is by source position.** Before printing each top-level
+  declaration or statement, the printer flushes any comment that starts before
+  it, as its own line at that indentation; a comment that starts on the same
+  line as a statement's end is kept trailing, separated by two spaces. This
+  needs a start span for every statement, which is why statements carry one.
+
+Canonical layout, fixed here (the "mandatory layout convention" of
+[11-grammar.md](11-grammar.md)):
+
+- 4 spaces per brace level; no tabs, no trailing whitespace, one final newline.
+- `func`/`task` open their block on the signature line. A declaration with
+  contracts prints the signature, then one contract per line (indent + 1), then
+  `{` on its own line at the declaration's indent.
+- `record`/`enum` open on the declaration line; fields/variants are one per
+  line at indent + 1.
+- Binary operators are surrounded by spaces; `,` is followed by one space;
+  `:` in a type, field, or map entry is followed by one space; unary `-`/`not`
+  bind tight.
+- `if`/`match`/`loop`/`for` are laid out across lines; `elif`/`else` continue
+  the closing `}` line (`} elif cond {`). Every other statement and top-level
+  declaration is one line.
+- Redundant parentheses are dropped; parentheses required by precedence are
+  re-inserted from the AST.
+
+Known limits of the first slice (tracked as follow-ups): block comments that
+span lines are emitted verbatim, and a comment inside a multi-line expression
+is attached to the enclosing statement because expressions do not carry spans
+yet.
 
 ## JSON Diagnostics (for LLM self-correction)
 
