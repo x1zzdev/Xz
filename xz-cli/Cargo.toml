@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 inkwell = "0.10.0"
+serde_json = "1"
 
 # LLVM 17 feature selection. See .cargo/config.toml (env pinning) and
 # docs/13-codegen.md for how LLVM_SYS_170_PREFIX / LIBRARY_PATH are set.

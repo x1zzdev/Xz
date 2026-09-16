@@ -3,17 +3,20 @@ use xz_cli::token::{TokKind};
 use xz_cli::parser::{parse};
 use xz_cli::resolve::{resolve};
 use xz_cli::typecheck::{typecheck};
-use xz_cli::intent::{check_intent, check_intent_strict};
-use xz_cli::diagnostic::{Diagnostic, Severity, Category, Span as DSpan, to_json_array};
-use xz_cli::token::{Span, Token};
+use xz_cli::intent::{check_intent};
+use xz_cli::diagnostic::{to_json_array};
+use xz_cli::token::{Token};
 fn main() {
     let args = std::env::args();
     let mut argv: Vec<String> = vec![];
     for a in args {
         argv.push(a);
     }
+    if argv.len() >= 2 && argv[1] == "lsp" {
+        std::process::exit(xz_cli::lsp::run_stdio());
+    }
     if argv.len() < 3 {
-        println!("usage: xz <lex|parse|check|check-json|build|run|build-native|bind> [--strict] [--shared] [--lang python] <file.xz>");
+        println!("usage: xz <lex|parse|check|check-json|build|run|build-native|bind|lsp> [--strict] [--shared] [--lang python] <file.xz>");
         return;
     }
     let cmd = argv[1].clone();
@@ -39,7 +42,7 @@ fn main() {
         i += 1;
     }
     if path == "" {
-        println!("usage: xz <lex|parse|check|check-json|build|run|build-native|bind> [--strict] [--shared] [--lang python] <file.xz>");
+        println!("usage: xz <lex|parse|check|check-json|build|run|build-native|bind|lsp> [--strict] [--shared] [--lang python] <file.xz>");
         return;
     }
     let source = std::fs::read_to_string(path.clone());
@@ -99,78 +102,7 @@ fn main() {
 }
 
 fn run_check(tokens: Vec<Token>, strict: bool, json: bool) -> i32 {
-    let mut diags: Vec<Diagnostic> = vec![];
-    let parsed = parse(tokens);
-    match parsed {
-        Err(e) => {
-            diags.push(Diagnostic {
-                version: 1,
-                severity: Severity::Error,
-                code: "P0001".to_string(),
-                message: e.message.clone(),
-                category: Category::Parse,
-                span: dspan(e.span),
-                suggestion: None,
-            });
-        }
-        Ok(program) => {
-            match resolve(&program) {
-                Err(errors) => {
-                    for err in errors {
-                        diags.push(Diagnostic {
-                            version: 1,
-                            severity: Severity::Error,
-                            code: "R0001".to_string(),
-                            message: err.message.clone(),
-                            category: Category::Resolve,
-                            span: dspan(err.span),
-                            suggestion: None,
-                        });
-                    }
-                }
-                Ok(_) => {
-                    match typecheck(&program) {
-                        Err(errors) => {
-                            for err in errors {
-                                diags.push(Diagnostic {
-                                    version: 1,
-                                    severity: Severity::Error,
-                                    code: "T0001".to_string(),
-                                    message: err.message.clone(),
-                                    category: Category::Type,
-                                    span: DSpan { file: err.file.clone(), start: (0, 0), end: (0, 0) },
-                                    suggestion: None,
-                                });
-                            }
-                        }
-                        Ok(_) => {
-                            let intent = if strict { check_intent_strict(&program) } else { check_intent(&program) };
-                            match intent {
-                                Err(errors) => {
-                                    for err in errors {
-                                        let suggestion: Option<xz_cli::diagnostic::Suggestion> = match &err.suggestion {
-                                            Some(s) => Some(xz_cli::diagnostic::Suggestion { fix: s.fix.clone(), confidence: s.confidence }),
-                                            None => None,
-                                        };
-                                        diags.push(Diagnostic {
-                                            version: 1,
-                                            severity: Severity::Error,
-                                            code: err.code.clone(),
-                                            message: err.message.clone(),
-                                            category: Category::Intent,
-                                            span: dspan(err.span),
-                                            suggestion: suggestion,
-                                        });
-                                    }
-                                }
-                                Ok(_) => {}
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let diags: Vec<xz_cli::diagnostic::Diagnostic> = xz_cli::driver::check_tokens(tokens, strict);
     let failed = !diags.is_empty();
     if json {
         println!("{}", to_json_array(&diags));
@@ -183,10 +115,6 @@ fn run_check(tokens: Vec<Token>, strict: bool, json: bool) -> i32 {
         println!("ok: all checks passed");
     }
     if failed { 1 } else { 0 }
-}
-
-fn dspan(s: Span) -> DSpan {
-    DSpan { file: s.file, start: s.start, end: s.end }
 }
 
 /// Phase 4 backend: run the full front-end check, then lower to LLVM IR and
