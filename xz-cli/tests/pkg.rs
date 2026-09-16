@@ -1,0 +1,107 @@
+use xz_cli::ast::Program;
+use xz_cli::lexer::lex;
+use xz_cli::parser::parse;
+use xz_cli::pkg;
+
+fn parse_interface(src: &str) -> Program {
+    let tokens = match lex(src.to_string(), "lib.xzint".to_string()) {
+        Ok(t) => t,
+        Err(e) => panic!("lex error: {}", e.message),
+    };
+    match parse(tokens) {
+        Ok(p) => p,
+        Err(e) => panic!("parse error: {}", e.message),
+    }
+}
+
+#[test]
+fn pkg_gen_binds_extern_interface() {
+    // `xz pkg gen --lang python` transcribes a `.xzint` interface: every
+    // `extern` is bound against the named C library (not the sibling
+    // `libXz.so`), and every `@cstruct` becomes a `ctypes.Structure`.
+    let src = r#"extern func curl_easy_init() -> Ptr
+extern func curl_easy_setopt(handle: Ptr, option: Int, param: Ptr) -> Int
+extern func curl_easy_cleanup(handle: Ptr)
+
+@cstruct record curl_slist {
+    data: Str
+    next: Ptr
+}
+"#;
+    let program = parse_interface(src);
+    let out = pkg::generate_python(&program, "libcurl.so").expect("generate");
+
+    assert!(
+        out.contains("ctypes.CDLL(\"libcurl.so\")"),
+        "library must be loaded by name:\n{}",
+        out
+    );
+    assert!(
+        out.contains("_lib.curl_easy_init.argtypes = []"),
+        "missing zero-arg argtypes:\n{}",
+        out
+    );
+    assert!(
+        out.contains("_lib.curl_easy_init.restype = ctypes.c_void_p"),
+        "Ptr must map to c_void_p:\n{}",
+        out
+    );
+    assert!(
+        out.contains(
+            "_lib.curl_easy_setopt.argtypes = [ctypes.c_void_p, ctypes.c_int64, ctypes.c_void_p]"
+        ),
+        "missing typed argtypes:\n{}",
+        out
+    );
+    assert!(
+        out.contains("curl_easy_cleanup = _lib.curl_easy_cleanup"),
+        "missing binding:\n{}",
+        out
+    );
+    assert!(
+        out.contains("class curl_slist(ctypes.Structure):"),
+        "missing cstruct class:\n{}",
+        out
+    );
+    assert!(
+        out.contains("(\"data\", XzStr)"),
+        "Str field must map to XzStr:\n{}",
+        out
+    );
+}
+
+#[test]
+fn pkg_gen_escapes_library_name() {
+    let program = parse_interface("extern func noop()\n");
+    let out = pkg::generate_python(&program, "weird\"lib.so").expect("generate");
+    assert!(
+        out.contains("ctypes.CDLL(\"weird\\\"lib.so\")"),
+        "library name must be escaped:\n{}",
+        out
+    );
+}
+
+#[test]
+fn pkg_gen_rejects_function_bodies() {
+    let program = parse_interface(
+        r#"extern func puts(s: Str) -> Int
+func helper() -> Int {
+    1
+}
+"#,
+    );
+    let err = pkg::generate_python(&program, "libc.so").unwrap_err();
+    assert!(err.contains("func 'helper'"), "unexpected error: {}", err);
+}
+
+#[test]
+fn pkg_gen_rejects_plain_record() {
+    let program = parse_interface(
+        r#"record Buffer {
+    ptr: Ptr
+}
+"#,
+    );
+    let err = pkg::generate_python(&program, "libx.so").unwrap_err();
+    assert!(err.contains("record 'Buffer'"), "unexpected error: {}", err);
+}

@@ -1,11 +1,11 @@
-use xz_cli::lexer::{lex};
-use xz_cli::token::{TokKind};
-use xz_cli::parser::{parse};
-use xz_cli::resolve::{resolve};
-use xz_cli::typecheck::{typecheck};
-use xz_cli::intent::{check_intent};
-use xz_cli::diagnostic::{to_json_array};
-use xz_cli::token::{Token};
+use xz_cli::diagnostic::to_json_array;
+use xz_cli::intent::check_intent;
+use xz_cli::lexer::lex;
+use xz_cli::parser::parse;
+use xz_cli::resolve::resolve;
+use xz_cli::token::TokKind;
+use xz_cli::token::Token;
+use xz_cli::typecheck::typecheck;
 fn main() {
     let args = std::env::args();
     let mut argv: Vec<String> = vec![];
@@ -15,8 +15,14 @@ fn main() {
     if argv.len() >= 2 && argv[1] == "lsp" {
         std::process::exit(xz_cli::lsp::run_stdio());
     }
+    if argv.len() >= 2 && argv[1] == "pkg" {
+        std::process::exit(run_pkg(&argv[2..]));
+    }
     if argv.len() < 3 {
-        println!("usage: xz <lex|parse|check|check-json|build|run|build-native|bind|fmt|lsp> [--strict] [--shared] [--lang python] <file.xz>");
+        println!(
+            "usage: xz <lex|parse|check|check-json|build|run|build-native|bind|fmt|lsp> [--strict] [--shared] [--lang python] <file.xz>"
+        );
+        println!("       xz pkg gen --lang python [--lib <name>] <file.xzint>");
         return;
     }
     let cmd = argv[1].clone();
@@ -42,7 +48,10 @@ fn main() {
         i += 1;
     }
     if path == "" {
-        println!("usage: xz <lex|parse|check|check-json|build|run|build-native|bind|fmt|lsp> [--strict] [--shared] [--lang python] <file.xz>");
+        println!(
+            "usage: xz <lex|parse|check|check-json|build|run|build-native|bind|fmt|lsp> [--strict] [--shared] [--lang python] <file.xz>"
+        );
+        println!("       xz pkg gen --lang python [--lib <name>] <file.xzint>");
         return;
     }
     let source = std::fs::read_to_string(path.clone());
@@ -85,7 +94,10 @@ fn main() {
                                 std::process::exit(1);
                             }
                             Ok(program) => {
-                                println!("ok: parsed {} top-level declarations", program.items.len());
+                                println!(
+                                    "ok: parsed {} top-level declarations",
+                                    program.items.len()
+                                );
                             }
                         }
                     } else if cmd == "check" {
@@ -121,7 +133,10 @@ fn run_check(tokens: Vec<Token>, strict: bool, json: bool) -> i32 {
     } else if failed {
         for d in diags {
             let (sl, sc) = d.span.start;
-            println!("  [{}] {} at {}:{}:{}", d.code, d.message, d.span.file, sl, sc);
+            println!(
+                "  [{}] {} at {}:{}:{}",
+                d.code, d.message, d.span.file, sl, sc
+            );
         }
     } else {
         println!("ok: all checks passed");
@@ -135,7 +150,10 @@ fn run_backend(tokens: Vec<Token>, execute: bool) -> i32 {
     let parsed = parse(tokens);
     let program = match parsed {
         Err(e) => {
-            println!("error: {} at {}:{}:{}", e.message, e.span.file, e.span.start.0, e.span.start.1);
+            println!(
+                "error: {} at {}:{}:{}",
+                e.message, e.span.file, e.span.start.0, e.span.start.1
+            );
             return 1;
         }
         Ok(p) => p,
@@ -146,7 +164,10 @@ fn run_backend(tokens: Vec<Token>, execute: bool) -> i32 {
     }
     if let Err(errors) = typecheck(&program) {
         for err in &errors {
-            println!("type error: {} at {}:{}:{}", err.message, err.span.file, err.span.start.0, err.span.start.1);
+            println!(
+                "type error: {} at {}:{}:{}",
+                err.message, err.span.file, err.span.start.0, err.span.start.1
+            );
         }
         println!("error: {} type errors", errors.len());
         return 1;
@@ -188,7 +209,10 @@ fn run_native_build(tokens: Vec<Token>) -> i32 {
     let parsed = parse(tokens);
     let program = match parsed {
         Err(e) => {
-            println!("error: {} at {}:{}:{}", e.message, e.span.file, e.span.start.0, e.span.start.1);
+            println!(
+                "error: {} at {}:{}:{}",
+                e.message, e.span.file, e.span.start.0, e.span.start.1
+            );
             return 1;
         }
         Ok(p) => p,
@@ -199,7 +223,10 @@ fn run_native_build(tokens: Vec<Token>) -> i32 {
     }
     if let Err(errors) = typecheck(&program) {
         for err in &errors {
-            println!("type error: {} at {}:{}:{}", err.message, err.span.file, err.span.start.0, err.span.start.1);
+            println!(
+                "type error: {} at {}:{}:{}",
+                err.message, err.span.file, err.span.start.0, err.span.start.1
+            );
         }
         println!("error: {} type errors", errors.len());
         return 1;
@@ -241,8 +268,9 @@ fn run_native_build(tokens: Vec<Token>) -> i32 {
     }
 
     // llc: IR -> object file.
-    let llc = std::env::var("LLC")
-        .unwrap_or_else(|_| "/home/x1zz/.local/share/xz-llvm17/debroot/usr/lib/llvm-17/bin/llc".to_string());
+    let llc = std::env::var("LLC").unwrap_or_else(|_| {
+        "/home/x1zz/.local/share/xz-llvm17/debroot/usr/lib/llvm-17/bin/llc".to_string()
+    });
     let st = std::process::Command::new(&llc)
         .arg(&ir_path)
         .arg("-filetype=obj")
@@ -252,7 +280,10 @@ fn run_native_build(tokens: Vec<Token>) -> i32 {
         .status();
     match st {
         Err(e) => {
-            println!("error: llc not found ({:?}); set LLC to the portable llc path", e);
+            println!(
+                "error: llc not found ({:?}); set LLC to the portable llc path",
+                e
+            );
             return 1;
         }
         Ok(s) if !s.success() => {
@@ -266,10 +297,21 @@ fn run_native_build(tokens: Vec<Token>) -> i32 {
     let ld = std::env::var("LD").unwrap_or_else(|_| "ld".to_string());
     let dyn_loader = "/lib64/ld-linux-x86-64.so.2";
     let st = std::process::Command::new(&ld)
-        .args(["-o", out_path.to_str().unwrap(), "-dynamic-linker", dyn_loader])
-        .args([obj_path.to_str().unwrap(), "/usr/lib/x86_64-linux-gnu/crt1.o",
-               "/usr/lib/x86_64-linux-gnu/crti.o", "/usr/lib/x86_64-linux-gnu/crtn.o",
-               "-lc", "-lm", "--as-needed"])
+        .args([
+            "-o",
+            out_path.to_str().unwrap(),
+            "-dynamic-linker",
+            dyn_loader,
+        ])
+        .args([
+            obj_path.to_str().unwrap(),
+            "/usr/lib/x86_64-linux-gnu/crt1.o",
+            "/usr/lib/x86_64-linux-gnu/crti.o",
+            "/usr/lib/x86_64-linux-gnu/crtn.o",
+            "-lc",
+            "-lm",
+            "--as-needed",
+        ])
         .status();
     match st {
         Err(e) => {
@@ -299,7 +341,10 @@ fn run_shared_build(tokens: Vec<Token>) -> i32 {
     let parsed = parse(tokens);
     let program = match parsed {
         Err(e) => {
-            println!("error: {} at {}:{}:{}", e.message, e.span.file, e.span.start.0, e.span.start.1);
+            println!(
+                "error: {} at {}:{}:{}",
+                e.message, e.span.file, e.span.start.0, e.span.start.1
+            );
             return 1;
         }
         Ok(p) => p,
@@ -310,7 +355,10 @@ fn run_shared_build(tokens: Vec<Token>) -> i32 {
     }
     if let Err(errors) = typecheck(&program) {
         for err in &errors {
-            println!("type error: {} at {}:{}:{}", err.message, err.span.file, err.span.start.0, err.span.start.1);
+            println!(
+                "type error: {} at {}:{}:{}",
+                err.message, err.span.file, err.span.start.0, err.span.start.1
+            );
         }
         println!("error: {} type errors", errors.len());
         return 1;
@@ -351,8 +399,9 @@ fn run_shared_build(tokens: Vec<Token>) -> i32 {
         return 1;
     }
 
-    let llc = std::env::var("LLC")
-        .unwrap_or_else(|_| "/home/x1zz/.local/share/xz-llvm17/debroot/usr/lib/llvm-17/bin/llc".to_string());
+    let llc = std::env::var("LLC").unwrap_or_else(|_| {
+        "/home/x1zz/.local/share/xz-llvm17/debroot/usr/lib/llvm-17/bin/llc".to_string()
+    });
     let st = std::process::Command::new(&llc)
         .arg(&ir_path)
         .arg("-filetype=obj")
@@ -363,7 +412,10 @@ fn run_shared_build(tokens: Vec<Token>) -> i32 {
         .status();
     match st {
         Err(e) => {
-            println!("error: llc not found ({:?}); set LLC to the portable llc path", e);
+            println!(
+                "error: llc not found ({:?}); set LLC to the portable llc path",
+                e
+            );
             return 1;
         }
         Ok(s) if !s.success() => {
@@ -422,7 +474,10 @@ fn run_bind(tokens: Vec<Token>, lang: Option<String>, path: String) -> i32 {
     let parsed = parse(tokens);
     let program = match parsed {
         Err(e) => {
-            println!("error: {} at {}:{}:{}", e.message, e.span.file, e.span.start.0, e.span.start.1);
+            println!(
+                "error: {} at {}:{}:{}",
+                e.message, e.span.file, e.span.start.0, e.span.start.1
+            );
             return 1;
         }
         Ok(p) => p,
@@ -433,7 +488,10 @@ fn run_bind(tokens: Vec<Token>, lang: Option<String>, path: String) -> i32 {
     }
     if let Err(errors) = typecheck(&program) {
         for err in &errors {
-            println!("type error: {} at {}:{}:{}", err.message, err.span.file, err.span.start.0, err.span.start.1);
+            println!(
+                "type error: {} at {}:{}:{}",
+                err.message, err.span.file, err.span.start.0, err.span.start.1
+            );
         }
         println!("error: {} type errors", errors.len());
         return 1;
@@ -449,6 +507,126 @@ fn run_bind(tokens: Vec<Token>, lang: Option<String>, path: String) -> i32 {
         .unwrap_or_else(|| "xz_bindings".to_string());
     let out_name = format!("{}.py", stem);
     let bindings = xz_cli::backend::python::generate_python_bindings(&program);
+    if let Err(e) = std::fs::write(&out_name, bindings) {
+        println!("error: cannot write ./{}: {}", out_name, e);
+        return 1;
+    }
+    println!("ok: wrote ./{}", out_name);
+    0
+}
+
+/// `xz pkg gen --lang python [--lib <name>] <file.xzint>`: emit a ctypes
+/// wrapper named after the interface file, bound to the C library named by
+/// `--lib` (default: the interface file's stem + `.so`). Unlike `xz bind`,
+/// which loads the sibling `libXz.so`, this targets a third-party library
+/// (docs/10-ffi-interop.md).
+fn run_pkg(args: &[String]) -> i32 {
+    let Some(sub) = args.first() else {
+        println!("usage: xz pkg gen --lang python [--lib <name>] <file.xzint>");
+        return 1;
+    };
+    if sub != "gen" {
+        println!("error: unknown 'xz pkg' subcommand '{}' (only gen)", sub);
+        return 1;
+    }
+
+    let mut lang: Option<String> = None;
+    let mut lib: Option<String> = None;
+    let mut path: String = "".to_string();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--lang" => {
+                i += 1;
+                if i < args.len() {
+                    lang = Some(args[i].clone());
+                }
+            }
+            "--lib" => {
+                i += 1;
+                if i < args.len() {
+                    lib = Some(args[i].clone());
+                }
+            }
+            other if path == "" => path = other.to_string(),
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let Some(lang) = lang else {
+        println!("error: xz pkg gen requires --lang <language>");
+        return 1;
+    };
+    if lang != "python" {
+        println!(
+            "error: unsupported pkg gen language '{}' (only python)",
+            lang
+        );
+        return 1;
+    }
+    if path == "" {
+        println!("usage: xz pkg gen --lang python [--lib <name>] <file.xzint>");
+        return 1;
+    }
+
+    let source = match std::fs::read_to_string(path.clone()) {
+        Ok(src) => src,
+        Err(e) => {
+            println!("error: cannot read {}: {}", path, e);
+            return 1;
+        }
+    };
+    let tokens = match lex(source, path.clone()) {
+        Ok(t) => t,
+        Err(e) => {
+            let (l, c) = e.span.start;
+            println!("error: {} at {}:{}:{}", e.message, e.span.file, l, c);
+            return 1;
+        }
+    };
+    let program = match parse(tokens) {
+        Ok(p) => p,
+        Err(e) => {
+            println!(
+                "error: {} at {}:{}:{}",
+                e.message, e.span.file, e.span.start.0, e.span.start.1
+            );
+            return 1;
+        }
+    };
+    if let Err(e) = xz_cli::pkg::validate_interface(&program) {
+        println!("error: {}", e);
+        return 1;
+    }
+    if let Err(errors) = resolve(&program) {
+        println!("error: {} resolution errors", errors.len());
+        return 1;
+    }
+    if let Err(errors) = typecheck(&program) {
+        for err in &errors {
+            println!(
+                "type error: {} at {}:{}:{}",
+                err.message, err.span.file, err.span.start.0, err.span.start.1
+            );
+        }
+        println!("error: {} type errors", errors.len());
+        return 1;
+    }
+
+    let stem = std::path::Path::new(&path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "xz_interface".to_string());
+    let lib = lib.unwrap_or_else(|| format!("{}.so", stem));
+    let bindings = match xz_cli::pkg::generate_python(&program, &lib) {
+        Ok(b) => b,
+        Err(e) => {
+            println!("error: {}", e);
+            return 1;
+        }
+    };
+    let out_name = format!("{}.py", stem);
     if let Err(e) = std::fs::write(&out_name, bindings) {
         println!("error: cannot write ./{}: {}", out_name, e);
         return 1;
@@ -540,6 +718,6 @@ fn tok_name(kind: &TokKind) -> String {
             TokKind::DocTrusted => "DocTrusted".to_string(),
             TokKind::Eof => "Eof".to_string(),
             _ => "".to_string(),
-        }
+        },
     }
 }
