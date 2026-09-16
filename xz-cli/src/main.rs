@@ -134,7 +134,7 @@ fn run_backend(tokens: Vec<Token>, execute: bool) -> i32 {
     }
     if let Err(errors) = typecheck(&program) {
         for err in &errors {
-            println!("type error: {}", err.message);
+            println!("type error: {} at {}:{}:{}", err.message, err.span.file, err.span.start.0, err.span.start.1);
         }
         println!("error: {} type errors", errors.len());
         return 1;
@@ -187,7 +187,7 @@ fn run_native_build(tokens: Vec<Token>) -> i32 {
     }
     if let Err(errors) = typecheck(&program) {
         for err in &errors {
-            println!("type error: {}", err.message);
+            println!("type error: {} at {}:{}:{}", err.message, err.span.file, err.span.start.0, err.span.start.1);
         }
         println!("error: {} type errors", errors.len());
         return 1;
@@ -298,7 +298,7 @@ fn run_shared_build(tokens: Vec<Token>) -> i32 {
     }
     if let Err(errors) = typecheck(&program) {
         for err in &errors {
-            println!("type error: {}", err.message);
+            println!("type error: {} at {}:{}:{}", err.message, err.span.file, err.span.start.0, err.span.start.1);
         }
         println!("error: {} type errors", errors.len());
         return 1;
@@ -421,7 +421,7 @@ fn run_bind(tokens: Vec<Token>, lang: Option<String>, path: String) -> i32 {
     }
     if let Err(errors) = typecheck(&program) {
         for err in &errors {
-            println!("type error: {}", err.message);
+            println!("type error: {} at {}:{}:{}", err.message, err.span.file, err.span.start.0, err.span.start.1);
         }
         println!("error: {} type errors", errors.len());
         return 1;

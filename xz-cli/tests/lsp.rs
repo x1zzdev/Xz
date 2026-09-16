@@ -71,6 +71,22 @@ fn did_open_lex_error_is_published_as_l0001() {
 }
 
 #[test]
+fn did_open_type_error_publishes_real_span() {
+    let mut s = Server::new();
+    let publish = did_open(
+        &mut s,
+        "file:///type.xz",
+        "func main() {\n    let x: Int = \"s\"\n    print(x.to_str())\n}",
+    );
+    let diags = diagnostics(&publish);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0]["code"], "T0001");
+    // The `let` on 1-based line 2 must map to LSP line 1, not the (0,0) fallback.
+    assert_eq!(diags[0]["range"]["start"]["line"], 1);
+    assert_eq!(diags[0]["range"]["start"]["character"], 4);
+}
+
+#[test]
 fn did_change_recomputes_diagnostics() {
     let mut s = Server::new();
     did_open(&mut s, "file:///doc.xz", "func main( {");

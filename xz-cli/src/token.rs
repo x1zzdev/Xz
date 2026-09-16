@@ -93,7 +93,7 @@ pub enum TokKind {
     Eof,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Span {
     pub file: String,
     pub start: (usize, usize),

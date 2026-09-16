@@ -39,7 +39,7 @@ pub fn check_tokens(tokens: Vec<Token>, strict: bool) -> Vec<Diagnostic> {
                             code: "T0001".to_string(),
                             message: err.message.clone(),
                             category: Category::Type,
-                            span: DSpan { file: err.file.clone(), start: (0, 0), end: (0, 0) },
+                            span: dspan(err.span.clone()),
                             suggestion: None,
                         });
                     }

@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast;
 use crate::ast::{Program, Item, Type, Expr, Stmt, BinOp, UnaryOp, Contract};
+use crate::token::Span;
 
 /// Scope map from name to type plus whether the binding is `mut`
 /// (docs/04, docs/11): mutation requires an explicit `mut` binding.
@@ -62,7 +63,7 @@ pub enum Kind {
 
 pub struct TypeError {
     pub message: String,
-    pub file: String,
+    pub span: Span,
 }
 
 pub struct TypeChecker {
@@ -86,6 +87,9 @@ pub struct TypeChecker {
     cur_constraints: Vec<Option<String>>,
     /// the enclosing function's declared error channel (for `?` acceptance)
     cur_error_channel: Option<Kind>,
+    /// span of the construct currently being checked; `error` attaches it so
+    /// front-end diagnostics (LSP, check-json) can point at a real location.
+    cur_span: Span,
     errors: Vec<TypeError>,
 }
 
@@ -101,6 +105,7 @@ pub fn typecheck(program: &Program) -> Result<(), Vec<TypeError>> {
         cur_tparams: vec![],
         cur_constraints: vec![],
         cur_error_channel: None,
+        cur_span: Span::default(),
         errors: vec![],
     };
     tc.build_world(program);
@@ -119,8 +124,12 @@ pub fn typecheck(program: &Program) -> Result<(), Vec<TypeError>> {
 }
 
 impl TypeChecker {
-    fn error(&mut self, message: String, file: String) {
-        self.errors.push(TypeError { message: message, file: file });
+    fn error(&mut self, message: String) {
+        self.errors.push(TypeError { message: message, span: self.cur_span.clone() });
+    }
+
+    fn error_at(&mut self, message: String, span: Span) {
+        self.errors.push(TypeError { message: message, span: span });
     }
 
     fn build_world(&mut self, program: &Program) {
@@ -132,6 +141,7 @@ impl TypeChecker {
                     self.decls.insert(name.clone(), ty);
                     let mut ctors: Vec<Kind> = vec![];
                     for f in &rec.fields {
+                        self.cur_span = f.span.clone();
                         let ft = self.from_ast(&f.ty);
                         self.fields.insert((name.clone(), f.name.clone()), ft.clone());
                         ctors.push(ft);
@@ -144,6 +154,7 @@ impl TypeChecker {
                     self.decls.insert(name.clone(), ty);
                     let mut vnames: Vec<String> = vec![];
                     for v in &en.variants {
+                        self.cur_span = v.span.clone();
                         let ft: Vec<Kind> = v.fields.iter().map(|f| self.from_ast(&f.ty)).collect();
                         self.variants.insert(v.name.clone(), (name.clone(), ft));
                         vnames.push(v.name.clone());
@@ -151,6 +162,7 @@ impl TypeChecker {
                     self.enum_variants.insert(name.clone(), vnames);
                 }
                 Item::Chan(c) => {
+                    self.cur_span = c.span.clone();
                     let payload = self.from_ast(&c.payload);
                     self.chans.insert(c.name.clone(), payload);
                 }
@@ -182,7 +194,6 @@ impl TypeChecker {
             }
         }
 
-        let mut errors: Vec<(String, String)> = vec![];
         for item in &program.items {
             if let Item::Record(r) = item {
                 if !r.cstruct {
@@ -192,13 +203,13 @@ impl TypeChecker {
                 visiting.insert(r.name.clone());
                 for f in &r.fields {
                     if let Err(msg) = cstruct_field_ok(&f.ty, &cstruct, &records, &enums, &mut visiting) {
-                        errors.push((format!("@cstruct record '{}' field '{}': {}", r.name, f.name, msg), r.span.file.clone()));
+                        self.error_at(
+                            format!("@cstruct record '{}' field '{}': {}", r.name, f.name, msg),
+                            f.span.clone(),
+                        );
                     }
                 }
             }
-        }
-        for (msg, file) in errors {
-            self.error(msg, file);
         }
     }
 
@@ -224,7 +235,6 @@ impl TypeChecker {
             }
         }
 
-        let mut errors: Vec<(String, String)> = vec![];
         for item in &program.items {
             let f = match item {
                 Item::Func(f) => f,
@@ -234,33 +244,30 @@ impl TypeChecker {
                 continue;
             }
             if f.name == "main" {
-                errors.push((String::from("'main' cannot be @export; a library has no entry point"), f.span.file.clone()));
+                self.error_at(String::from("'main' cannot be @export; a library has no entry point"), f.span.clone());
                 continue;
             }
             if !f.type_params.is_empty() {
-                errors.push((format!("@export func '{}' cannot be generic; a C symbol has one concrete signature", f.name), f.span.file.clone()));
+                self.error_at(format!("@export func '{}' cannot be generic; a C symbol has one concrete signature", f.name), f.span.clone());
                 continue;
             }
             if f.is_async {
-                errors.push((format!("@export func '{}' cannot be async", f.name), f.span.file.clone()));
+                self.error_at(format!("@export func '{}' cannot be async", f.name), f.span.clone());
                 continue;
             }
             let mut visiting: HashSet<String> = HashSet::new();
             for p in &f.params {
                 if let Err(msg) = cstruct_field_ok(&p.ty, &cstruct, &records, &enums, &mut visiting) {
-                    errors.push((format!("@export func '{}' parameter '{}': {}", f.name, p.name, msg), f.span.file.clone()));
+                    self.error_at(format!("@export func '{}' parameter '{}': {}", f.name, p.name, msg), p.span.clone());
                 }
             }
             if let Some(rt) = &f.ret {
                 if !is_unit_type(rt) {
                     if let Err(msg) = cstruct_field_ok(rt, &cstruct, &records, &enums, &mut visiting) {
-                        errors.push((format!("@export func '{}' return: {}", f.name, msg), f.span.file.clone()));
+                        self.error_at(format!("@export func '{}' return: {}", f.name, msg), f.span.clone());
                     }
                 }
             }
-        }
-        for (msg, file) in errors {
-            self.error(msg, file);
         }
     }
 
@@ -268,6 +275,7 @@ impl TypeChecker {
         for item in &program.items {
             match item {
                 Item::Func(f) => {
+                    self.cur_span = f.span.clone();
                     self.cur_tparams = f.type_params.iter().map(|tp| tp.name.clone()).collect();
                     self.cur_constraints = f.type_params.iter().map(|tp| tp.constraint.clone()).collect();
                     let param_tys: Vec<Kind> = f.params.iter().map(|p| self.from_ast(&p.ty)).collect();
@@ -276,6 +284,7 @@ impl TypeChecker {
                     self.funcs.insert(f.name.clone(), (param_tys, ret_ty, tvs));
                 }
                 Item::Extern(e) => {
+                    self.cur_span = e.span.clone();
                     self.cur_tparams = e.type_params.iter().map(|tp| tp.name.clone()).collect();
                     self.cur_constraints = e.type_params.iter().map(|tp| tp.constraint.clone()).collect();
                     let param_tys: Vec<Kind> = e.params.iter().map(|p| self.from_ast(&p.ty)).collect();
@@ -284,6 +293,7 @@ impl TypeChecker {
                     self.funcs.insert(e.name.clone(), (param_tys, ret_ty, tvs));
                 }
                 Item::Chan(c) => {
+                    self.cur_span = c.span.clone();
                     let payload = self.from_ast(&c.payload);
                     self.chans.insert(c.name.clone(), Kind::Chan(Box::new(payload)));
                 }
@@ -348,14 +358,14 @@ impl TypeChecker {
                 let key = self.from_ast(&args[0]);
                 let val = self.from_ast(&args[1]);
                 if !map_key_ok(&key) && !matches!(key, Kind::Unknown | Kind::TypeVar(_)) {
-                    self.error(format!("Map key type must be Int, usize, Bool, Char, or Str, got {:?}", key), "".to_string());
+                    self.error(format!("Map key type must be Int, usize, Bool, Char, or Str, got {:?}", key));
                 }
                 Kind::Map(Box::new(key), Box::new(val))
             }
             "Set" => {
                 let elem = self.from_ast(&args[0]);
                 if !map_key_ok(&elem) && !matches!(elem, Kind::Unknown | Kind::TypeVar(_)) {
-                    self.error(format!("Set element type must be Int, usize, Bool, Char, or Str, got {:?}", elem), "".to_string());
+                    self.error(format!("Set element type must be Int, usize, Bool, Char, or Str, got {:?}", elem));
                 }
                 Kind::Set(Box::new(elem))
             }
@@ -385,6 +395,7 @@ impl TypeChecker {
         for item in &program.items {
             match item {
 Item::Func(f) => {
+                    self.cur_span = f.span.clone();
                     self.cur_tparams = f.type_params.iter().map(|tp| tp.name.clone()).collect();
                     self.cur_constraints = f.type_params.iter().map(|tp| tp.constraint.clone()).collect();
                     let ret_ty: Option<Kind> = match &f.ret { Some(t) => Some(self.from_ast(t)), None => None };
@@ -394,6 +405,7 @@ Item::Func(f) => {
                     };
                     let mut env: Env = Env::default();
                     for p in &f.params {
+                        self.cur_span = p.span.clone();
                         env.insert_binding(p.name.clone(), self.from_ast(&p.ty), p.mutable);
                     }
                     self.seed_env(&mut env);
@@ -402,6 +414,7 @@ Item::Func(f) => {
                     
                 }
                 Item::Task(t) => {
+                    self.cur_span = t.span.clone();
                     let mut env: Env = Env::default();
                     self.seed_env(&mut env);
                     self.check_block(&t.body, &mut env);
@@ -448,10 +461,10 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
             let constrained = idx < self.cur_constraints.len()
                 && match &self.cur_constraints[idx] { Some(c) => c == "Ordered", None => false };
             if !constrained {
-                self.error(format!("type parameter must be constrained (T: Ordered) to compare values of type {:?}/{:?}", at, bt), "".to_string());
+                self.error(format!("type parameter must be constrained (T: Ordered) to compare values of type {:?}/{:?}", at, bt));
             }
         } else {
-            self.error(format!("cannot use arithmetic on type parameter (constraint not defined)"), "".to_string());
+            self.error(format!("cannot use arithmetic on type parameter (constraint not defined)"));
         }
     }
 
@@ -467,7 +480,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                 Contract::Pre(e) => {
                     let t = self.check_expr(e, env);
                     if t != Kind::Bool && t != Kind::Unknown {
-                        self.error(String::from("precondition must be a Bool expression"), "".to_string());
+                        self.error(String::from("precondition must be a Bool expression"));
                     }
                 }
                 Contract::Post(e) => {
@@ -481,13 +494,13 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     post_env.insert("result".to_string(), ret);
                     let t = self.check_expr(e, &mut post_env);
                     if t != Kind::Bool && t != Kind::Unknown {
-                        self.error(String::from("postcondition must be a Bool expression"), "".to_string());
+                        self.error(String::from("postcondition must be a Bool expression"));
                     }
                 }
                 Contract::Invariant(e) => {
                     let t = self.check_expr(e, env);
                     if t != Kind::Bool && t != Kind::Unknown {
-                        self.error(String::from("invariant must be a Bool expression"), "".to_string());
+                        self.error(String::from("invariant must be a Bool expression"));
                     }
                 }
             }
@@ -521,6 +534,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
         for stmt in &block.stmts {
             match stmt {
                 Stmt::Decl(d) => {
+                    self.cur_span = d.span.clone();
                     let declared_ty = match &d.ty {
                         Some(t) => Some(self.from_ast(t)),
                         None => None,
@@ -537,15 +551,15 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             Some(Kind::Chan(inner)) => {
                                 env.insert_binding(d.name.clone(), *inner, d.mutable);
                             }
-                            Some(_) => self.error(format!("'{}' is not a channel", d.chan.clone().unwrap()), "".to_string()),
-                            None => self.error(format!("unknown channel '{}'", d.chan.clone().unwrap()), "".to_string()),
+                            Some(_) => self.error(format!("'{}' is not a channel", d.chan.clone().unwrap())),
+                            None => self.error(format!("unknown channel '{}'", d.chan.clone().unwrap())),
                         }
                         continue;
                     }
                     match (declared_ty, init_ty) {
                         (Some(dt), Some(it)) => {
                             if !self.accepts(&it, &dt) {
-                                self.error(format!("binding '{}' declared as {:?} but initializer is {:?}", d.name, dt, it), "".to_string());
+                                self.error(format!("binding '{}' declared as {:?} but initializer is {:?}", d.name, dt, it));
                             }
                             env.insert_binding(d.name.clone(), dt, d.mutable);
                         }
@@ -561,26 +575,27 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     }
                 }
                 Stmt::Assign(a) => {
+                    self.cur_span = a.span.clone();
                     let val_ty = self.check_expr(&a.value, env);
                     match &a.target {
                         ast::AssignTarget::Name(n) => {
                             if env.get(n).is_some() && !env.is_mut(n) {
-                                self.error(format!("cannot assign to immutable binding '{}' (declare it with `mut`)", n), "".to_string());
+                                self.error(format!("cannot assign to immutable binding '{}' (declare it with `mut`)", n));
                             }
                             let target_ty = env.get(n).cloned();
                             match target_ty {
                                 Some(tt) => {
                                     if !self.accepts(&val_ty, &tt) {
-                                        self.error(format!("cannot assign {:?} to '{}' of type {:?}", val_ty, n, tt), "".to_string());
+                                        self.error(format!("cannot assign {:?} to '{}' of type {:?}", val_ty, n, tt));
                                     }
                                 }
-                                None => self.error(format!("unknown name '{}' in assignment", n), "".to_string()),
+                                None => self.error(format!("unknown name '{}' in assignment", n)),
                             }
                         }
                         ast::AssignTarget::Field(base, fname) => {
                             if let Some(root) = root_name(base) {
                                 if env.get(&root).is_some() && !env.is_mut(&root) {
-                                    self.error(format!("cannot assign to field of immutable binding '{}' (declare it with `mut`)", root), "".to_string());
+                                    self.error(format!("cannot assign to field of immutable binding '{}' (declare it with `mut`)", root));
                                 }
                             }
                             let base_ty = self.check_expr(base, env);
@@ -589,13 +604,13 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                                     match self.fields.get(&(rec.clone(), fname.clone())) {
                                         Some(ft) => {
                                             if !self.accepts(&val_ty, ft) {
-                                                self.error(format!("cannot assign {:?} to field '{}' of type {:?}", val_ty, fname, ft), "".to_string());
+                                                self.error(format!("cannot assign {:?} to field '{}' of type {:?}", val_ty, fname, ft));
                                             }
                                         }
-                                        None => self.error(format!("record '{}' has no field '{}'", rec, fname), "".to_string()),
+                                        None => self.error(format!("record '{}' has no field '{}'", rec, fname)),
                                     }
                                 }
-                                _ => self.error(format!("cannot assign field on non-record"), "".to_string()),
+                                _ => self.error(format!("cannot assign field on non-record")),
                             }
                         }
                     }
@@ -656,13 +671,13 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         // enum variant constructor
                         if let Some((en, fts)) = self.variants.get(n).cloned() {
                             if args.len() != fts.len() {
-                                self.error(format!("variant '{}' expects {} fields, got {}", n, fts.len(), args.len()), "".to_string());
+                                self.error(format!("variant '{}' expects {} fields, got {}", n, fts.len(), args.len()));
                             }
                             for (i, a) in args.iter().enumerate() {
                                 let at = self.check_expr(a, env);
                                 if i < fts.len() {
                                     if !self.accepts(&at, &fts[i]) {
-                                        self.error(format!("variant '{}' field {} type mismatch", n, i), "".to_string());
+                                        self.error(format!("variant '{}' field {} type mismatch", n, i));
                                     }
                                 }
                             }
@@ -676,13 +691,13 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         // record constructor
                         if let Some(ft) = self.record_ctors.get(n).cloned() {
                             if args.len() != ft.len() {
-                                self.error(format!("'{}' expects {} args, got {}", n, ft.len(), args.len()), "".to_string());
+                                self.error(format!("'{}' expects {} args, got {}", n, ft.len(), args.len()));
                             }
                             for (i, a) in args.iter().enumerate() {
                                 let at = self.check_expr(a, env);
                                 if i < ft.len() {
                                     if !self.accepts(&at, &ft[i]) {
-                                        self.error(format!("argument {} to record constructor '{}' type mismatch", i, n), "".to_string());
+                                        self.error(format!("argument {} to record constructor '{}' type mismatch", i, n));
                                     }
                                 }
                             }
@@ -692,7 +707,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         match self.funcs.get(n).cloned() {
                             Some((params, ret, _tvs)) => {
                                 if args.len() != params.len() {
-                                    self.error(format!("function '{}' expects {} args, got {}", n, params.len(), args.len()), "".to_string());
+                                    self.error(format!("function '{}' expects {} args, got {}", n, params.len(), args.len()));
                                 }
                                 // infer type arguments from the argument list:
                                 // wherever a parameter is TypeVar(i), bind it to the arg's type
@@ -706,7 +721,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                                             }
                                             bindings[*ti] = Some(at.clone());
                                         } else if !self.accepts(&at, &params[i]) {
-                                            self.error(format!("argument {} to '{}' type mismatch", i, n), "".to_string());
+                                            self.error(format!("argument {} to '{}' type mismatch", i, n));
                                         }
                                     }
                                 }
@@ -716,7 +731,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                                 }
                             }
                             None => {
-                                self.error(format!("unknown function '{}'", n), "".to_string());
+                                self.error(format!("unknown function '{}'", n));
                                 Kind::Unknown
                             }
                         }
@@ -726,17 +741,17 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         let mt = method_type(&rt, method);
                         // check arg count for the method
                         if matches!(method.as_str(), "len" | "abs" | "to_str" | "to_upper" | "to_lower" | "is_empty" | "keys" | "values") && args.len() != 0 {
-                            self.error(format!("method '{}' takes no arguments", method), "".to_string());
+                            self.error(format!("method '{}' takes no arguments", method));
                         }
                         if method == "append" {
                             if args.len() != 1 {
-                                self.error(format!("append takes one argument"), "".to_string());
+                                self.error(format!("append takes one argument"));
                             }
                             if let Kind::List(t) = &rt {
                                 for a in args {
                                     let at = self.check_expr(a, env);
                                     if !self.accepts(&at, t) {
-                                        self.error(format!("append expects {:?}, got {:?}", t, at), "".to_string());
+                                        self.error(format!("append expects {:?}, got {:?}", t, at));
                                     }
                                 }
                             } else {
@@ -746,29 +761,29 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             match &rt {
                                 Kind::Map(k, v) => {
                                     if args.len() != 2 {
-                                        self.error(String::from("insert takes two arguments"), "".to_string());
+                                        self.error(String::from("insert takes two arguments"));
                                     }
                                     if let Some(a) = args.first() {
                                         let at = self.check_expr(a, env);
                                         if !self.accepts(&at, k) {
-                                            self.error(format!("insert key expects {:?}, got {:?}", k, at), "".to_string());
+                                            self.error(format!("insert key expects {:?}, got {:?}", k, at));
                                         }
                                     }
                                     if let Some(a) = args.get(1) {
                                         let at = self.check_expr(a, env);
                                         if !self.accepts(&at, v) {
-                                            self.error(format!("insert value expects {:?}, got {:?}", v, at), "".to_string());
+                                            self.error(format!("insert value expects {:?}, got {:?}", v, at));
                                         }
                                     }
                                 }
                                 Kind::Set(t) => {
                                     if args.len() != 1 {
-                                        self.error(String::from("insert takes one argument"), "".to_string());
+                                        self.error(String::from("insert takes one argument"));
                                     }
                                     if let Some(a) = args.first() {
                                         let at = self.check_expr(a, env);
                                         if !self.accepts(&at, t) {
-                                            self.error(format!("insert element expects {:?}, got {:?}", t, at), "".to_string());
+                                            self.error(format!("insert element expects {:?}, got {:?}", t, at));
                                         }
                                     }
                                 }
@@ -778,14 +793,14 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             }
                         } else if method == "contains" {
                             if args.len() != 1 {
-                                self.error(String::from("contains takes one argument"), "".to_string());
+                                self.error(String::from("contains takes one argument"));
                             }
                             match &rt {
                                 Kind::Set(t) => {
                                     if let Some(a) = args.first() {
                                         let at = self.check_expr(a, env);
                                         if !self.accepts(&at, t) {
-                                            self.error(format!("contains element expects {:?}, got {:?}", t, at), "".to_string());
+                                            self.error(format!("contains element expects {:?}, got {:?}", t, at));
                                         }
                                     }
                                 }
@@ -795,14 +810,14 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             }
                         } else if method == "get" {
                             if args.len() != 1 {
-                                self.error(String::from("get takes one argument"), "".to_string());
+                                self.error(String::from("get takes one argument"));
                             }
                             match &rt {
                                 Kind::Map(k, _) => {
                                     if let Some(a) = args.first() {
                                         let at = self.check_expr(a, env);
                                         if !self.accepts(&at, k) {
-                                            self.error(format!("get key expects {:?}, got {:?}", k, at), "".to_string());
+                                            self.error(format!("get key expects {:?}, got {:?}", k, at));
                                         }
                                     }
                                 }
@@ -818,7 +833,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         match mt {
                             Some(t) => t,
                             None => {
-                                self.error(format!("no method '{}' on {:?}", method, rt), "".to_string());
+                                self.error(format!("no method '{}' on {:?}", method, rt));
                                 Kind::Unknown
                             }
                         }
@@ -836,7 +851,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         match self.fields.get(&(rec.clone(), fname.clone())) {
                             Some(ft) => ft.clone(),
                             None => {
-                                self.error(format!("record '{}' has no field '{}'", rec, fname), "".to_string());
+                                self.error(format!("record '{}' has no field '{}'", rec, fname));
                                 Kind::Unknown
                             }
                         }
@@ -849,13 +864,13 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         } else if fname == "err" {
                             Kind::Unknown
                         } else {
-                            self.error(format!("Result has no field '{}' (use .value / .err)", fname), "".to_string());
+                            self.error(format!("Result has no field '{}' (use .value / .err)", fname));
                             Kind::Unknown
                         }
                     }
                     Kind::Enum(_) => Kind::Unknown,
                     _ => {
-                        self.error(format!("cannot access field '{}' of {:?}", fname, bt), "".to_string());
+                        self.error(format!("cannot access field '{}' of {:?}", fname, bt));
                         Kind::Unknown
                     }
                 }
@@ -869,7 +884,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     for e in &elems[1..] {
                         let t = self.check_expr(e, env);
                         if t != first {
-                            self.error(format!("list literal elements must share a type: {:?} vs {:?}", first, t), "".to_string());
+                            self.error(format!("list literal elements must share a type: {:?} vs {:?}", first, t));
                         }
                     }
                     Kind::List(Box::new(first))
@@ -886,14 +901,14 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         let kt = self.check_expr(k, env);
                         let vt = self.check_expr(v, env);
                         if kt != k0 {
-                            self.error(format!("map literal keys must share a type: {:?} vs {:?}", k0, kt), "".to_string());
+                            self.error(format!("map literal keys must share a type: {:?} vs {:?}", k0, kt));
                         }
                         if vt != v0 {
-                            self.error(format!("map literal values must share a type: {:?} vs {:?}", v0, vt), "".to_string());
+                            self.error(format!("map literal values must share a type: {:?} vs {:?}", v0, vt));
                         }
                     }
                     if !map_key_ok(&k0) && !matches!(k0, Kind::Unknown) {
-                        self.error(format!("Map key type must be Int, usize, Bool, Char, or Str, got {:?}", k0), "".to_string());
+                        self.error(format!("Map key type must be Int, usize, Bool, Char, or Str, got {:?}", k0));
                     }
                     Kind::Map(Box::new(k0), Box::new(v0))
                 }
@@ -907,11 +922,11 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     for e in &elems[1..] {
                         let et = self.check_expr(e, env);
                         if et != e0 {
-                            self.error(format!("set literal elements must share a type: {:?} vs {:?}", e0, et), "".to_string());
+                            self.error(format!("set literal elements must share a type: {:?} vs {:?}", e0, et));
                         }
                     }
                     if !map_key_ok(&e0) && !matches!(e0, Kind::Unknown) {
-                        self.error(format!("Set element type must be Int, usize, Bool, Char, or Str, got {:?}", e0), "".to_string());
+                        self.error(format!("Set element type must be Int, usize, Bool, Char, or Str, got {:?}", e0));
                     }
                     Kind::Set(Box::new(e0))
                 }
@@ -920,13 +935,13 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                 let bt = self.check_expr(base, env);
                 let it = self.check_expr(idx, env);
                 if it != Kind::Int && it != Kind::Unknown {
-                    self.error(format!("index must be an Int, got {:?}", it), "".to_string());
+                    self.error(format!("index must be an Int, got {:?}", it));
                 }
                 match &bt {
                     // bounds-checked indexing: Result[T, IndexError] (docs/12)
                     Kind::List(t) => Kind::Result(t.clone(), Box::new(Kind::Err)),
                     _ => {
-                        self.error(format!("indexing is only defined for List[T], got {:?}", bt), "".to_string());
+                        self.error(format!("indexing is only defined for List[T], got {:?}", bt));
                         Kind::Unknown
                     }
                 }
@@ -942,17 +957,17 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         match &self.cur_error_channel {
                             Some(caller_e) => {
                                 if !self.accepts_error(&callee_e, caller_e) {
-                                    self.error(format!("cannot propagate {:?} via '?': the enclosing function's error channel is {:?}", callee_e, caller_e), "".to_string());
+                                    self.error(format!("cannot propagate {:?} via '?': the enclosing function's error channel is {:?}", callee_e, caller_e));
                                 }
                             }
                             None => {
-                                self.error(format!("cannot use '?' here: the enclosing function has no error channel (declare Result[_, E])"), "".to_string());
+                                self.error(format!("cannot use '?' here: the enclosing function has no error channel (declare Result[_, E])"));
                             }
                         }
                         (**t).clone()
                     }
                     _ => {
-                        self.error(format!("'?' not allowed on {:?}", bt), "".to_string());
+                        self.error(format!("'?' not allowed on {:?}", bt));
                         Kind::Unknown
                     }
                 }
@@ -978,13 +993,13 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             return Kind::Str;
                         }
                         if at != bt {
-                            self.error(format!("arithmetic on mismatched types"), "".to_string());
+                            self.error(format!("arithmetic on mismatched types"));
                         }
                         at
                     }
                     BinOp::And | BinOp::Or | BinOp::Implies => {
                         if at != Kind::Bool || bt != Kind::Bool {
-                            self.error(format!("logical op requires Bools"), "".to_string());
+                            self.error(format!("logical op requires Bools"));
                         }
                         Kind::Bool
                     }
@@ -997,7 +1012,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                 let at = self.check_expr(a, env);
                 let tt = self.from_ast(ty);
                 if !self.accepts_cast(&at, &tt) {
-                    self.error(format!("cannot cast {:?} to {:?} (allowed: Int<->usize, Int->Float, Float->Int, Str<->Bytes)", at, tt), "".to_string());
+                    self.error(format!("cannot cast {:?} to {:?} (allowed: Int<->usize, Int->Float, Float->Int, Str<->Bytes)", at, tt));
                 }
                 tt
             }
@@ -1034,7 +1049,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         result_ty = bt.clone();
                     }
                     if result_ty != bt {
-                        self.error(format!("match arms produce different types: {:?} vs {:?}", result_ty, bt), "".to_string());
+                        self.error(format!("match arms produce different types: {:?} vs {:?}", result_ty, bt));
                     }
                 }
                 // exhaustiveness: an enum subject must cover all its variants
@@ -1043,7 +1058,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         if let Some(vnames) = self.enum_variants.get(ename).cloned() {
                             for v in &vnames {
                                 if !covered.contains(v) {
-                                    self.error(format!("match on enum '{}' is not exhaustive: missing variant '{}'", ename, v), "".to_string());
+                                    self.error(format!("match on enum '{}' is not exhaustive: missing variant '{}'", ename, v));
                                 }
                             }
                         }
@@ -1091,7 +1106,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     Kind::Set(t) => (**t).clone(),
                     Kind::Unknown => Kind::Unknown,
                     _ => {
-                        self.error(format!("for-in iterable must be an Int range, a List[T], or a Set[T], got {:?}", it), "".to_string());
+                        self.error(format!("for-in iterable must be an Int range, a List[T], or a Set[T], got {:?}", it));
                         Kind::Unknown
                     }
                 };
