@@ -669,6 +669,7 @@ func main() -> Result[Unit, Err] {
     let ir = backend.module.print_to_string().to_string();
     assert!(ir.contains("define i32 @main()"), "native main must return i32");
     assert!(ir.contains("define") && ir.contains("@xz_print"), "runtime bodies must be defined");
+    assert!(ir.contains("define i1 @xz_read_file"), "read_file runtime body must be defined:\n{}", ir);
     Ok(())
 }
 
@@ -863,4 +864,35 @@ fn set_literal_insert_contains_and_iteration_run() {
 }"#,
         "set literal, insert, contains, iteration",
     );
+}
+
+#[test]
+fn read_file_reads_and_missing_is_err() -> Result<(), String> {
+    // `read_file` reads a real temp file through the JIT host (fresh heap Str
+    // payload wrapped in Result[Str, Err]); a missing path yields err.
+    let pid = std::process::id();
+    let path = std::env::temp_dir().join(format!("xz_read_file_{}.txt", pid));
+    let missing = std::env::temp_dir().join(format!("xz_read_file_{}_missing.txt", pid));
+    std::fs::write(&path, b"hello\n").map_err(|e| e.to_string())?;
+    let src = format!(
+        r#"func main() -> Result[Unit, Err] {{
+    let contents = read_file("{p}")?
+    print(contents)
+    print(contents.len().to_str())
+    print(" ")
+    let gone = read_file("{m}")
+    if gone is err {{
+        print("err")
+    }} else {{
+        print("unexpected")
+    }}
+    print("\n")
+    ok()
+}}"#,
+        p = path.display(),
+        m = missing.display()
+    );
+    let r = exec(&src);
+    let _ = std::fs::remove_file(&path);
+    r
 }

@@ -1903,6 +1903,35 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             let v = self.gen_expr(&args[0])?;
             return self.call_intrinsic("llvm.sqrt.f64", vec![self.backend.types.float.into()], &[v], "sqrt");
         }
+        // stdlib read_file -> host xz_read_file(ptr, len, out) -> i1. The host
+        // writes a fresh Str payload through `out` on success; codegen wraps it
+        // in the Result[Str, Err] struct { payload, ok-flag } (docs/13).
+        if name == "read_file" {
+            if args.len() != 1 {
+                return self.fail("read_file takes one Str argument");
+            }
+            self.degrade_str_expr(&args[0]);
+            let v = self.gen_expr(&args[0])?;
+            let (ptr, len) = self.str_parts(v);
+            let str_ty = self.backend.types.xz_str;
+            let out = self.backend.builder.build_alloca(str_ty, "read.out").unwrap();
+            let f = self.backend.module.get_function("xz_read_file").ok_or("xz_read_file missing")?;
+            let ok = self
+                .backend
+                .builder
+                .build_direct_call(f, &[ptr.into(), len.into(), out.into()], "read")
+                .unwrap()
+                .try_as_basic_value()
+                .basic()
+                .unwrap()
+                .into_int_value();
+            let payload = self.build_load(str_ty.into(), out, "read.str");
+            let st = self.backend.context.struct_type(&[str_ty.into(), self.backend.types.bool.into()], false);
+            let mut agg = st.const_zero();
+            agg = self.backend.builder.build_insert_value(agg, payload, 0, "r.p").unwrap().into_struct_value();
+            agg = self.backend.builder.build_insert_value(agg, ok, 1, "r.f").unwrap().into_struct_value();
+            return Ok(agg.into());
+        }
         self.fail(&format!("unknown function '{}'", name))
     }
 

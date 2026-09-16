@@ -655,6 +655,10 @@ fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>,
         backend.declare_extern("xz_str_to_lower", &[ptr.into(), i64.into()], Some(xstr.into()));
         // Str key equality for Map[Str, V] lookup/insert (JIT host in runtime.rs).
         backend.declare_extern("xz_str_eq", &[ptr.into(), i64.into(), ptr.into(), i64.into()], Some(i1.into()));
+        // read_file(path_ptr, path_len, out) -> i1: reads the file and writes a
+        // fresh {ptr,len} Str payload through `out` (JIT host in runtime.rs;
+        // native body in emit_native_runtime). See docs/13-codegen.md.
+        backend.declare_extern("xz_read_file", &[ptr.into(), i64.into(), ptr.into()], Some(i1.into()));
         // Phase 6 scheduler + channels (JIT host in runtime.rs; see
         // docs/13-codegen.md § Concurrency). `id` is the compiler-assigned
         // channel id; the value is copied through a `(ptr, size)` byte range.
@@ -769,6 +773,7 @@ pub fn hide_runtime_symbols(backend: &LlvmBackend<'static>) {
         "xz_char_to_str",
         "xz_str_to_upper",
         "xz_str_to_lower",
+        "xz_read_file",
     ] {
         if let Some(f) = backend.module.get_function(name) {
             if f.get_first_basic_block().is_some() {
@@ -1086,6 +1091,119 @@ pub fn emit_native_runtime(backend: &mut LlvmBackend<'static>) -> Result<(), Str
         let result = backend.builder.build_phi(i1, "eq").unwrap();
         result.add_incoming(&[(&i1.const_zero(), neq_bb), (&i1.const_int(1, false), eq_bb)]);
         backend.builder.build_return(Some(&result.as_basic_value())).unwrap();
+    }
+
+    // xz_read_file(path_ptr, path_len, out) -> i1: read the whole file into a
+    // fresh heap buffer and publish the {ptr, len} payload through `out`.
+    // libc: fopen("rb") / fseek(END) / ftell / fseek(SET) / fread / fclose.
+    if let Some(f) = backend.module.get_function("xz_read_file") {
+        let i1 = backend.types.bool;
+        let fopen = backend.module.add_function(
+            "fopen",
+            ptr.fn_type(&[ptr.into(), ptr.into()], false),
+            None,
+        );
+        let fseek = backend.module.add_function(
+            "fseek",
+            i32.fn_type(&[ptr.into(), i64.into(), i32.into()], false),
+            None,
+        );
+        let ftell = backend.module.add_function("ftell", i64.fn_type(&[ptr.into()], false), None);
+        let fread = backend.module.add_function(
+            "fread",
+            i64.fn_type(&[ptr.into(), i64.into(), i64.into(), ptr.into()], false),
+            None,
+        );
+        let fclose = backend.module.add_function("fclose", i32.fn_type(&[ptr.into()], false), None);
+
+        let path_ptr = f.get_nth_param(0).unwrap().into_pointer_value();
+        let path_len = f.get_nth_param(1).unwrap().into_int_value();
+        let out = f.get_nth_param(2).unwrap().into_pointer_value();
+
+        let entry = backend.context.append_basic_block(f, "entry");
+        let open_bb = backend.context.append_basic_block(f, "open");
+        let fail_bb = backend.context.append_basic_block(f, "fail");
+        let ret_bb = backend.context.append_basic_block(f, "ret");
+
+        backend.builder.position_at_end(entry);
+        // libc paths are NUL-terminated: copy the byte path into malloc(len+1).
+        let psize = backend.builder.build_int_add(path_len, i64.const_int(1, false), "psize").unwrap();
+        let cpath = backend
+            .builder
+            .build_direct_call(malloc, &[psize.into()], "cpath")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        let _ = backend.builder.build_memcpy(cpath, 1, path_ptr, 1, path_len).unwrap();
+        let nul = unsafe { backend.builder.build_in_bounds_gep(i8, cpath, &[path_len], "nul").unwrap() };
+        backend.builder.build_store(nul, i8.const_zero()).unwrap();
+        let mode = backend.builder.build_global_string_ptr("rb", "mode.rb").unwrap().as_pointer_value();
+        let handle = backend
+            .builder
+            .build_direct_call(fopen, &[cpath.into(), mode.into()], "fopen")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        backend.builder.build_direct_call(free, &[cpath.into()], "freepath").unwrap();
+        let is_null = backend
+            .builder
+            .build_int_compare(inkwell::IntPredicate::EQ, handle, ptr.const_null(), "null")
+            .unwrap();
+        backend.builder.build_conditional_branch(is_null, fail_bb, open_bb).unwrap();
+
+        backend.builder.position_at_end(open_bb);
+        let _ = backend
+            .builder
+            .build_direct_call(fseek, &[handle.into(), i64.const_zero().into(), i32.const_int(2, false).into()], "seekend")
+            .unwrap();
+        let flen = backend
+            .builder
+            .build_direct_call(ftell, &[handle.into()], "ftell")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value();
+        let _ = backend
+            .builder
+            .build_direct_call(fseek, &[handle.into(), i64.const_zero().into(), i32.const_zero().into()], "seekstart")
+            .unwrap();
+        // malloc(max(len, 1)) so a zero-length file still gets a pointer.
+        let nonempty = backend
+            .builder
+            .build_int_compare(inkwell::IntPredicate::SGT, flen, i64.const_zero(), "nonempty")
+            .unwrap();
+        let asize = backend.builder.build_select(nonempty, flen, i64.const_int(1, false), "asize").unwrap().into_int_value();
+        let data = backend
+            .builder
+            .build_direct_call(malloc, &[asize.into()], "data")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        let _ = backend
+            .builder
+            .build_direct_call(fread, &[data.into(), i64.const_int(1, false).into(), flen.into(), handle.into()], "fread")
+            .unwrap();
+        let _ = backend.builder.build_direct_call(fclose, &[handle.into()], "fclose").unwrap();
+        let out_ptr = backend.builder.build_struct_gep(backend.types.xz_str, out, 0, "out.ptr").unwrap();
+        backend.builder.build_store(out_ptr, data).unwrap();
+        let out_len = backend.builder.build_struct_gep(backend.types.xz_str, out, 1, "out.len").unwrap();
+        backend.builder.build_store(out_len, flen).unwrap();
+        backend.builder.build_unconditional_branch(ret_bb).unwrap();
+
+        backend.builder.position_at_end(fail_bb);
+        backend.builder.build_unconditional_branch(ret_bb).unwrap();
+
+        backend.builder.position_at_end(ret_bb);
+        let flag = backend.builder.build_phi(i1, "read.ok").unwrap();
+        flag.add_incoming(&[(&i1.const_zero(), fail_bb), (&i1.const_int(1, false), open_bb)]);
+        backend.builder.build_return(Some(&flag.as_basic_value())).unwrap();
     }
 
     Ok(())

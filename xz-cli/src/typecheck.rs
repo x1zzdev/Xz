@@ -295,6 +295,7 @@ impl TypeChecker {
 
     fn predeclare_stdlib(&mut self) {
         self.funcs.insert("print".to_string(), (vec![Kind::Str], Some(Kind::Unit), vec![]));
+        self.funcs.insert("read_file".to_string(), (vec![Kind::Str], Some(Kind::Result(Box::new(Kind::Str), Box::new(Kind::Err))), vec![]));
         self.funcs.insert("approx_sqrt".to_string(), (vec![Kind::Float], Some(Kind::Float), vec![]));
     }
 

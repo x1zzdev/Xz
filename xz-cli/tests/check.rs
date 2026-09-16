@@ -910,3 +910,37 @@ fn set_contains_element_type_mismatch_rejected() {
         None => panic!("Int probed in Set[Str]"),
     }
 }
+
+#[test]
+fn read_file_accepted_with_question_mark() {
+    expect_ok(
+        r#"/// Reads and prints a file.
+/// @intent  Reads the file at `path` and prints it.
+/// @effects io
+func show(path: Str) -> Result[Unit, Err] {
+    let contents = read_file(path)?
+    print(contents)
+    ok()
+}
+
+func main() -> Result[Unit, Err] {
+    show("input.txt")?
+    ok()
+}"#,
+        "read_file with ?",
+    );
+}
+
+#[test]
+fn read_file_derives_io_effect() {
+    expect_intent_code(
+        r#"/// Reads a file.
+/// @intent  Reads the file at `path`.
+/// @effects none
+func slurp(path: Str) -> Result[Str, Err] {
+    read_file(path)
+}"#,
+        "I0020",
+        "read_file needs the io effect",
+    );
+}

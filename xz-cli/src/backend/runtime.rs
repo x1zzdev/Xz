@@ -124,6 +124,35 @@ extern "C" fn xz_str_eq(ap: usize, al: usize, bp: usize, bl: usize) -> i8 {
     1
 }
 
+/// `read_file(path_ptr, path_len, out) -> i1`: read the file at the byte path
+/// and, on success, write a fresh `{ptr, len}` Str payload through `out` and
+/// return 1; return 0 when the path cannot be read or is not valid UTF-8 (the
+/// front end's `IoError`). This is the JIT host half of `read_file`
+/// (docs/12-stdlib.md, docs/13-codegen.md).
+#[unsafe(no_mangle)]
+extern "C" fn xz_read_file(path_ptr: usize, path_len: usize, out: usize) -> i8 {
+    let mut bytes: Vec<u8> = Vec::with_capacity(path_len);
+    for i in 0..path_len {
+        bytes.push(unsafe { *((path_ptr + i) as *const u8) });
+    }
+    let path = match std::str::from_utf8(&bytes) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    match std::fs::read(path) {
+        Ok(data) => {
+            let ptr = copy_to_leaked(&data);
+            let len = data.len();
+            unsafe {
+                *(out as *mut usize) = ptr;
+                *((out + std::mem::size_of::<usize>()) as *mut usize) = len;
+            }
+            1
+        }
+        Err(_) => 0,
+    }
+}
+
 /// Free a heap-allocated Str buffer. No-op unless the pointer is still live in
 /// the registry, so it is safe to call on literals or already-freed buffers.
 #[unsafe(no_mangle)]
@@ -322,6 +351,7 @@ pub fn run(module: Module) -> Result<i32, String> {
     let lower: unsafe extern "C" fn(usize, usize) -> XzStr = xz_str_to_lower;
     let sfree: unsafe extern "C" fn(usize, usize) -> () = xz_str_free;
     let streq: unsafe extern "C" fn(usize, usize, usize, usize) -> i8 = xz_str_eq;
+    let readf: unsafe extern "C" fn(usize, usize, usize) -> i8 = xz_read_file;
     bind(&module, &ee, "xz_str_free", sfree as usize);
     bind(&module, &ee, "xz_print", p as usize);
     bind(&module, &ee, "xz_concat", c as usize);
@@ -332,6 +362,7 @@ pub fn run(module: Module) -> Result<i32, String> {
     bind(&module, &ee, "xz_str_to_upper", upper as usize);
     bind(&module, &ee, "xz_str_to_lower", lower as usize);
     bind(&module, &ee, "xz_str_eq", streq as usize);
+    bind(&module, &ee, "xz_read_file", readf as usize);
     let sched_init: unsafe extern "C" fn() = xz_sched_init;
     let task_spawn: unsafe extern "C" fn(usize) = xz_task_spawn;
     let task_spawn_arg: unsafe extern "C" fn(usize, usize) = xz_task_spawn_arg;
