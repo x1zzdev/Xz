@@ -18,7 +18,8 @@ runs on a root-free portable LLVM 17 (`xz-cli/.cargo/config.toml` + `scripts/set
 Shared-library output (`xz build --shared`) is implemented: it emits `libXz.so`
 + a generated `libXz.h` for the `@export` functions; `xz bind --lang python`
 and `xz pkg gen --lang python` generate Python wrappers from Xz sources and
-`.xzint` interface files respectively (see
+`.xzint` interface files respectively, and `xz pkg add` fetches and verifies an
+interface file from a registry (see
 [10-ffi-interop.md](10-ffi-interop.md)).
 
 ## CLI
@@ -29,6 +30,7 @@ xz build --shared <file.xz> # emit libXz.so + libXz.h for the @export functions
 xz build-native <file.xz>   # emit IR + native runtime, compile with llc, link with ld -> ./xz_program
 xz bind --lang python <file.xz>  # emit a ctypes wrapper (<stem>.py) for the @export functions
 xz pkg gen --lang python [--lib <name>] <file.xzint>  # emit a ctypes wrapper (<stem>.py) for an extern interface
+xz pkg add <name> [--registry <base_url>]            # fetch + verify <name>.xzint from a registry
 xz check <file.xz>          # type/contract check only, no codegen
 xz check --strict <file.xz> # intent checks enforced (I0004: untrusted claims fail)
 xz check-json [--strict] <file.xz>   # same, diagnostics as a JSON array
