@@ -50,8 +50,8 @@ spans.
   carries the whole document, so no incremental edit state is kept.
 - **Methods:** `initialize` / `initialized`, `shutdown` / `exit`,
   `textDocument/didOpen`, `textDocument/didChange`, `textDocument/didClose`,
-  `textDocument/hover`, `textDocument/completion`, `textDocument/definition`.
-  Diagnostics are published on
+  `textDocument/hover`, `textDocument/completion`, `textDocument/definition`,
+  `textDocument/formatting`. Diagnostics are published on
   open and recomputed on every change; `didClose` clears them.
 - **Hover:** hovering an identifier that names a top-level symbol (`func`,
   `task`, `chan`, `extern`, `record`, `enum`, or enum variant) returns the
@@ -69,12 +69,15 @@ spans.
   `extern`, `record`, `enum`, or enum variant); anything else is `null`. Like
   hover, resolution is by name within the current document and requires the
   document to parse.
+- **Formatting:** `textDocument/formatting` runs the `xz fmt` engine and returns
+  a single `TextEdit` that replaces the whole document with its canonical
+  layout. A document that is not open, or does not parse, returns `null`; the
+  server never applies edits (the client owns that), matching the read-only
+  contract of `xz fmt`.
 - **Positions:** 1-based Xz spans are converted to 0-based UTF-16 code units
   (the LSP default; advertised as `positionEncoding: "utf-16"`).
 - **Exit code:** 0 after a `shutdown` request, 1 otherwise (per the LSP spec).
 
-`textDocument/formatting` is not served yet; the CLI formatter below is the
-engine a later slice will expose over LSP.
 Type errors carry a real span (`T0001` points at the offending statement or
 declaration, not the document start).
 

@@ -109,7 +109,7 @@ reads); Phase 8 has begun with the LSP diagnostics server and now includes the
 - [x] LSP server — type-error spans; hover over top-level symbols
 - [x] LSP server — completion (document symbols + language vocabulary)
 - [x] LSP server — go-to-definition
-- [ ] LSP server — formatting (`textDocument/formatting` over the `xz fmt` engine)
+- [x] LSP server — formatting (`textDocument/formatting` over the `xz fmt` engine)
 - [x] Formatter (`xz fmt`; comment-preserving AST pretty-printer — [07-compiler.md](07-compiler.md))
 - [ ] AI toolchain integration (JSON diagnostics + editor loop)
 - [x] `xz pkg gen --lang python` — ctypes wrappers from `.xzint` interface

@@ -52,8 +52,9 @@ deterministic task scheduler, and `async`/`await` run on the JIT path
 (`examples/concurrency.xz`, `examples/async.xz`).
 The Phase 8 language server (`xz lsp`) publishes the same diagnostics as
 `xz check-json` over LSP on stdio, hovers top-level symbol signatures,
-completes document symbols plus the language vocabulary, and resolves
-go-to-definition for top-level symbols. The `xz fmt` formatter prints a
+completes document symbols plus the language vocabulary, resolves
+go-to-definition for top-level symbols, and formats documents over the
+`xz fmt` engine. The `xz fmt` formatter prints a
 canonical layout from the parsed program while preserving comments,
 `xz pkg gen --lang python` emits `ctypes` wrappers from `.xzint` interface
 files, and `xz pkg add` fetches and verifies an interface file from a registry
