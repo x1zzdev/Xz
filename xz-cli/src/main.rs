@@ -23,6 +23,7 @@ fn main() {
             "usage: xz <lex|parse|check|check-json|build|run|build-native|bind|fmt|lsp> [--strict] [--shared] [--lang python] <file.xz>"
         );
         println!("       xz pkg gen --lang python [--lib <name>] <file.xzint>");
+        println!("       xz pkg add <name> [--registry <base_url>]");
         return;
     }
     let cmd = argv[1].clone();
@@ -52,6 +53,7 @@ fn main() {
             "usage: xz <lex|parse|check|check-json|build|run|build-native|bind|fmt|lsp> [--strict] [--shared] [--lang python] <file.xz>"
         );
         println!("       xz pkg gen --lang python [--lib <name>] <file.xzint>");
+        println!("       xz pkg add <name> [--registry <base_url>]");
         return;
     }
     let source = std::fs::read_to_string(path.clone());
@@ -522,18 +524,31 @@ fn run_bind(tokens: Vec<Token>, lang: Option<String>, path: String) -> i32 {
 /// (docs/10-ffi-interop.md).
 fn run_pkg(args: &[String]) -> i32 {
     let Some(sub) = args.first() else {
-        println!("usage: xz pkg gen --lang python [--lib <name>] <file.xzint>");
+        println!("usage: xz pkg <gen|add> ...");
+        println!("       xz pkg gen --lang python [--lib <name>] <file.xzint>");
+        println!("       xz pkg add <name> [--registry <base_url>]");
         return 1;
     };
-    if sub != "gen" {
-        println!("error: unknown 'xz pkg' subcommand '{}' (only gen)", sub);
-        return 1;
+    match sub.as_str() {
+        "gen" => run_pkg_gen(&args[1..]),
+        "add" => run_pkg_add(&args[1..]),
+        other => {
+            println!("error: unknown 'xz pkg' subcommand '{}' (gen, add)", other);
+            1
+        }
     }
+}
 
+/// `xz pkg gen --lang python [--lib <name>] <file.xzint>`: emit a ctypes
+/// wrapper named after the interface file, bound to the C library named by
+/// `--lib` (default: the interface file's stem + `.so`). Unlike `xz bind`,
+/// which loads the sibling `libXz.so`, this targets a third-party library
+/// (docs/10-ffi-interop.md).
+fn run_pkg_gen(args: &[String]) -> i32 {
     let mut lang: Option<String> = None;
     let mut lib: Option<String> = None;
     let mut path: String = "".to_string();
-    let mut i = 1;
+    let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--lang" => {
@@ -628,6 +643,65 @@ fn run_pkg(args: &[String]) -> i32 {
     };
     let out_name = format!("{}.py", stem);
     if let Err(e) = std::fs::write(&out_name, bindings) {
+        println!("error: cannot write ./{}: {}", out_name, e);
+        return 1;
+    }
+    println!("ok: wrote ./{}", out_name);
+    0
+}
+
+/// `xz pkg add <name> [--registry <base_url>]`: fetch `<name>.xzint` from the
+/// registry, verify it with the same pipeline as `xz pkg gen`, and write it
+/// into the current directory. The registry comes from `--registry` or
+/// `XZ_REGISTRY`; the fetched interface is untrusted until it passes
+/// (docs/10-ffi-interop.md).
+fn run_pkg_add(args: &[String]) -> i32 {
+    let mut registry: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--registry" => {
+                i += 1;
+                if i < args.len() {
+                    registry = Some(args[i].clone());
+                }
+            }
+            other if name.is_none() => name = Some(other.to_string()),
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let Some(name) = name else {
+        println!("usage: xz pkg add <name> [--registry <base_url>]");
+        return 1;
+    };
+    if let Err(e) = xz_cli::pkg::validate_name(&name) {
+        println!("error: {}", e);
+        return 1;
+    }
+    let base = match xz_cli::pkg::registry_base(registry.as_deref()) {
+        Ok(base) => base,
+        Err(e) => {
+            println!("error: {}", e);
+            return 1;
+        }
+    };
+    let url = xz_cli::pkg::interface_url(&base, &name);
+    let source = match xz_cli::pkg::fetch_interface(&url) {
+        Ok(source) => source,
+        Err(e) => {
+            println!("error: cannot fetch {}: {}", url, e);
+            return 1;
+        }
+    };
+    if let Err(e) = xz_cli::pkg::verify_interface_source(&source, &url) {
+        println!("error: {} rejected: {}", url, e);
+        return 1;
+    }
+    let out_name = xz_cli::pkg::interface_file(&name);
+    if let Err(e) = std::fs::write(&out_name, source) {
         println!("error: cannot write ./{}: {}", out_name, e);
         return 1;
     }

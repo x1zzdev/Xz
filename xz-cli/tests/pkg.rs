@@ -105,3 +105,48 @@ fn pkg_gen_rejects_plain_record() {
     let err = pkg::generate_python(&program, "libx.so").unwrap_err();
     assert!(err.contains("record 'Buffer'"), "unexpected error: {}", err);
 }
+
+#[test]
+fn pkg_add_builds_registry_url() {
+    assert_eq!(
+        pkg::interface_url("https://xz.example/interfaces/", "libcurl"),
+        "https://xz.example/interfaces/libcurl.xzint"
+    );
+    assert_eq!(pkg::interface_file("libcurl"), "libcurl.xzint");
+    assert_eq!(
+        pkg::registry_base(Some("https://xz.example/")).unwrap(),
+        "https://xz.example"
+    );
+}
+
+#[test]
+fn pkg_add_rejects_unsafe_names() {
+    assert!(pkg::validate_name("libcurl").is_ok());
+    assert!(pkg::validate_name("libcurl-8").is_ok());
+    assert!(pkg::validate_name("../evil").is_err());
+    assert!(pkg::validate_name("a/b").is_err());
+    assert!(pkg::validate_name("-rf").is_err());
+    assert!(pkg::validate_name(".hidden").is_err());
+    assert!(pkg::validate_name("").is_err());
+}
+
+#[test]
+fn pkg_add_verifies_fetched_interface() {
+    // A fetched interface is untrusted until it passes the same checks as
+    // `xz pkg gen`: only `extern func` and `@cstruct record` survive.
+    let src = "extern func puts(s: Str) -> Int\n";
+    assert!(pkg::verify_interface_source(src, "libc.xzint").is_ok());
+    let with_body = "extern func puts(s: Str) -> Int\nfunc helper() -> Int {\n    1\n}\n";
+    let err = match pkg::verify_interface_source(with_body, "libc.xzint") {
+        Ok(_) => panic!("a function body must be rejected"),
+        Err(e) => e,
+    };
+    assert!(err.contains("'helper'"), "unexpected error: {}", err);
+
+    let plain = "record Buffer {\n    ptr: Ptr\n}\n";
+    let err = match pkg::verify_interface_source(plain, "libx.xzint") {
+        Ok(_) => panic!("a plain record must be rejected"),
+        Err(e) => e,
+    };
+    assert!(err.contains("'Buffer'"), "unexpected error: {}", err);
+}
