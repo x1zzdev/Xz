@@ -192,8 +192,36 @@ interface file (`libcurl.xzint` -> `libcurl.py`). The module declares each
 the C library named by `--lib`; the default is the interface file's stem plus
 `.so` (`libcurl.xzint` -> `libcurl.so`). Unlike `xz bind`, which loads the
 `libXz.so` produced by `xz build --shared`, the wrapper binds the third-party C
-library directly. Fetching and verifying a definition from a registry
-(`xz pkg add <name>`) is not implemented yet.
+library directly.
+
+### Fetching interfaces (`xz pkg add`)
+
+A `.xzint` file is written once per library and reused by every project that
+calls it, so a project can pull one from a registry instead of vendoring it by
+hand:
+
+```
+xz pkg add libcurl                              # -> ./libcurl.xzint
+xz pkg add libcurl --registry https://xz.example/interfaces
+```
+
+`xz pkg add <name>` fetches `<registry>/<name>.xzint` and writes `<name>.xzint`
+into the current directory. The registry is named by `--registry`; when it is
+absent the `XZ_REGISTRY` environment variable is used, and with neither set the
+command fails rather than guessing a host. `<name>` must be a plain identifier
+(letters, digits, `.`, `_`, `-`, not starting with `-` or `.`), so it can neither
+escape the registry path nor be read as a command-line flag.
+
+The fetched text is untrusted until it passes exactly the checks `xz pkg gen`
+applies: lex, parse, `validate_interface` (only `extern func` and `@cstruct
+record`), name resolution, and type checking. A file that fails any check is
+rejected and nothing is written, so a malformed or hostile interface never
+reaches the project.
+
+Fetching shells out to the host `curl`, falling back to `wget`; no HTTP client
+is linked into the compiler. This first slice is fetch-and-verify only: it does
+not resolve dependencies, pin versions, or authenticate the registry — a hash or
+signature is future work.
 
 ## Python bridge (first-class)
 
