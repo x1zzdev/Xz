@@ -4,7 +4,8 @@
 //!
 //! Supported methods: `initialize`, `initialized`, `shutdown`, `exit`,
 //! `textDocument/didOpen`, `textDocument/didChange`, `textDocument/didClose`,
-//! `textDocument/hover`, `textDocument/completion`, `textDocument/definition`.
+//! `textDocument/hover`, `textDocument/completion`, `textDocument/definition`,
+//! `textDocument/formatting`.
 //! Document sync is "full" (`TextDocumentSyncKind.Full`
 //! = 1): every `didChange` carries the whole document, so the server keeps no
 //! incremental edit state. Positions are emitted as UTF-16 code units (the LSP
@@ -12,6 +13,7 @@
 use crate::ast;
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::driver;
+use crate::format;
 use crate::lexer::lex;
 use crate::parser::parse;
 use crate::token::{DocTag, Span, TokKind};
@@ -58,7 +60,8 @@ impl Server {
                         "textDocumentSync": 1,
                         "hoverProvider": true,
                         "completionProvider": { "resolveProvider": false },
-                        "definitionProvider": true
+                        "definitionProvider": true,
+                        "documentFormattingProvider": true
                     },
                     "serverInfo": { "name": "xz", "version": env!("CARGO_PKG_VERSION") }
                 });
@@ -111,6 +114,11 @@ impl Server {
                 let line = params.pointer("/position/line")?.as_u64()? as usize;
                 let character = params.pointer("/position/character")?.as_u64()? as usize;
                 Some(response(id, self.definition(&uri, line, character)))
+            }
+            "textDocument/formatting" => {
+                let params = msg.get("params")?;
+                let uri = params.pointer("/textDocument/uri")?.as_str()?.to_string();
+                Some(response(id, self.formatting(&uri)))
             }
             _ => {
                 id.as_ref()?;
@@ -223,6 +231,29 @@ impl Server {
                 "end": { "line": end.0, "character": end.1 }
             }
         })
+    }
+
+    /// Whole-document formatting over the `xz fmt` engine: returns a single
+    /// `TextEdit` that replaces the document with its canonical layout, or
+    /// `null` when the document is not open or does not parse (the formatter
+    /// never emits output for a file it cannot parse).
+    fn formatting(&self, uri: &str) -> Value {
+        let text = match self.docs.get(uri) {
+            Some(t) => t,
+            None => return Value::Null,
+        };
+        let formatted = match format::format_source(text, uri) {
+            Ok(out) => out,
+            Err(_) => return Value::Null,
+        };
+        let (end_line, end_char) = document_end(text);
+        json!([{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": end_line, "character": end_char }
+            },
+            "newText": formatted
+        }])
     }
 }
 
@@ -590,6 +621,15 @@ fn diagnostic_json(d: &Diagnostic, text: &str) -> Value {
         "source": "xz",
         "message": &d.message
     })
+}
+
+/// The 0-based UTF-16 position just past the last character of `text`: the
+/// end of the whole document for a formatting `TextEdit`.
+fn document_end(text: &str) -> (usize, usize) {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let line = lines.len() - 1;
+    let character = lines[line].chars().map(char::len_utf16).sum();
+    (line, character)
 }
 
 /// Convert a 1-based Xz span position (line, Unicode scalar column) to a

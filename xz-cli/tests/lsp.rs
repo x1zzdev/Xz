@@ -80,6 +80,20 @@ fn definition(s: &mut Server, uri: &str, line: usize, character: usize) -> Value
     serde_json::from_str(&s.handle(&msg).unwrap()).unwrap()
 }
 
+fn formatting(s: &mut Server, uri: &str) -> Value {
+    let msg = json!({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "textDocument/formatting",
+        "params": {
+            "textDocument": { "uri": uri },
+            "options": { "tabSize": 4, "insertSpaces": true }
+        }
+    })
+    .to_string();
+    serde_json::from_str(&s.handle(&msg).unwrap()).unwrap()
+}
+
 #[test]
 fn initialize_advertises_full_sync() {
     let mut s = Server::new();
@@ -89,6 +103,7 @@ fn initialize_advertises_full_sync() {
     assert_eq!(v["result"]["capabilities"]["hoverProvider"], true);
     assert_eq!(v["result"]["capabilities"]["completionProvider"]["resolveProvider"], false);
     assert_eq!(v["result"]["capabilities"]["definitionProvider"], true);
+    assert_eq!(v["result"]["capabilities"]["documentFormattingProvider"], true);
     assert_eq!(v["result"]["serverInfo"]["name"], "xz");
 }
 
@@ -282,6 +297,36 @@ fn definition_on_unknown_identifier_returns_null() {
 fn definition_on_unopened_document_returns_null() {
     let mut s = Server::new();
     let v = definition(&mut s, "file:///missing.xz", 0, 0);
+    assert!(v["result"].is_null());
+}
+
+#[test]
+fn formatting_replaces_whole_document_with_canonical_layout() {
+    let mut s = Server::new();
+    let text = "func main(){print(1)}";
+    did_open(&mut s, "file:///fmt.xz", text);
+    let v = formatting(&mut s, "file:///fmt.xz");
+    let edits = v["result"].as_array().unwrap();
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0]["newText"], "func main() {\n    print(1)\n}\n");
+    assert_eq!(edits[0]["range"]["start"]["line"], 0);
+    assert_eq!(edits[0]["range"]["start"]["character"], 0);
+    assert_eq!(edits[0]["range"]["end"]["line"], 0);
+    assert_eq!(edits[0]["range"]["end"]["character"], text.chars().count());
+}
+
+#[test]
+fn formatting_on_parse_error_returns_null() {
+    let mut s = Server::new();
+    did_open(&mut s, "file:///fmt.xz", "func main( {");
+    let v = formatting(&mut s, "file:///fmt.xz");
+    assert!(v["result"].is_null());
+}
+
+#[test]
+fn formatting_on_unopened_document_returns_null() {
+    let mut s = Server::new();
+    let v = formatting(&mut s, "file:///missing.xz");
     assert!(v["result"].is_null());
 }
 
