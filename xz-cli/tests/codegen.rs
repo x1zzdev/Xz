@@ -722,6 +722,109 @@ func main() {
 }
 
 #[test]
+fn record_bool_fields_round_trip() {
+    // A `Bool` record field is stored as one byte (`i8`), matching C's `bool`
+    // (docs/13-codegen.md). Construction zero-extends the value `i1` and a
+    // field read narrows it back, including across a by-value function
+    // argument and a `mut` field assignment. A `Char` field (also `i8`) must
+    // not be narrowed by that rule.
+    expect_output(
+        r#"record Flags {
+    on: Bool
+    ch: Char
+    n: Int
+}
+
+/// Builds a Flags.
+/// @intent  Returns Flags(on, ch, n).
+/// @effects none
+func make(on: Bool, ch: Char, n: Int) -> Flags {
+    Flags(on, ch, n)
+}
+
+/// Reads the flag.
+/// @intent  Returns f.on.
+/// @effects none
+func flag_of(f: Flags) -> Bool {
+    f.on
+}
+
+func main() {
+    let f = make(true, 'A', 7)
+    print(flag_of(f).to_str())
+    print(" ")
+    print(f.ch.to_str())
+    print(" ")
+    print(f.n.to_str())
+    print("\n")
+    let off = make(false, 'Z', 3)
+    print(off.on.to_str())
+    print(" ")
+    print(off.ch.to_str())
+    print("\n")
+    mut g: Flags = Flags(false, 1, 2)
+    g.on = true
+    print(g.on.to_str())
+    print("\n")
+}"#,
+        "true A 7\nfalse Z\ntrue\n",
+        "record_bool_fields",
+    );
+}
+
+#[test]
+fn cstruct_bool_field_uses_c_memory_layout() -> Result<(), String> {
+    // A `@cstruct` `Bool` field must be one byte in the LLVM struct, so the
+    // struct's field order, padding, and ABI size match the C declaration the
+    // generated header promises (docs/10-ffi-interop.md, docs/13-codegen.md).
+    let src = r#"@cstruct record Header {
+    tag: Char
+    active: Bool
+    count: Int
+}
+
+@cstruct record Pair {
+    first: Bool
+    second: Bool
+}
+
+/// Returns the count.
+/// @intent  Returns h.count.
+/// @effects none
+@export func count(h: Header) -> Int {
+    h.count
+}
+
+/// Returns the second flag.
+/// @intent  Returns p.second.
+/// @effects none
+@export func second(p: Pair) -> Bool {
+    p.second
+}
+
+func main() {
+    print("x")
+}"#;
+    let tokens = lex(src.to_string(), "shared.xz".to_string()).map_err(|e| e.message)?;
+    let program = parse(tokens).map_err(|e| e.message)?;
+    resolve(&program).map_err(|_| "resolve failed".to_string())?;
+    typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
+    check_intent(&program).map_err(|e| e[0].code.clone())?;
+    let backend = compile_shared(&program)?;
+    let ir = backend.module.print_to_string().to_string();
+    assert!(ir.contains("%Header = type { i8, i8, i64 }"), "Bool @cstruct field must be one byte:\n{}", ir);
+    assert!(ir.contains("%Pair = type { i8, i8 }"), "two Bool @cstruct fields must be two bytes:\n{}", ir);
+
+    let td = backend.target_data.ok_or("host target data unavailable")?;
+    let header_ty = backend.record_types.get("Header").copied().ok_or("Header type missing")?;
+    // C layout: char(1) + bool(1) + pad(6) + int64(8) = 16.
+    assert_eq!(td.get_abi_size(&header_ty), 16, "Header must match the C ABI layout");
+    let pair_ty = backend.record_types.get("Pair").copied().ok_or("Pair type missing")?;
+    assert_eq!(td.get_abi_size(&pair_ty), 2, "Pair must match the C ABI layout");
+    Ok(())
+}
+
+#[test]
 fn mut_param_maps_to_pointer_in_bindings() -> Result<(), String> {
     // A `mut` parameter is in/out and crosses as `T*` in the C header and
     // Python bindings (docs/04, docs/10, docs/13).

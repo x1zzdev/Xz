@@ -153,6 +153,27 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         self.backend.builder.build_load(ty, ptr, name).unwrap()
     }
 
+    /// Match an integer value to the LLVM type of its storage slot. `Bool` is
+    /// `i1` as a value but one byte (`i8`) as a record field (docs/13-codegen.md),
+    /// so a record constructor zero-extends and a field read truncates. Other
+    /// kinds share the value mapping and pass through unchanged.
+    fn coerce_to(&mut self, ty: BasicTypeEnum<'ctx>, v: BasicValueEnum<'ctx>) -> BasicValueEnum<'ctx> {
+        match (ty, v) {
+            (BasicTypeEnum::IntType(t), BasicValueEnum::IntValue(iv)) => {
+                let want = t.get_bit_width();
+                let have = iv.get_type().get_bit_width();
+                if want > have {
+                    self.backend.builder.build_int_z_extend(iv, t, "mem.zext").unwrap().into()
+                } else if want < have {
+                    self.backend.builder.build_int_truncate(iv, t, "mem.trunc").unwrap().into()
+                } else {
+                    v
+                }
+            }
+            _ => v,
+        }
+    }
+
     /// Alloca + store a value and bind it in scope, remembering its type.
     fn bind_value(&mut self, name: &str, v: BasicValueEnum<'ctx>) -> PointerValue<'ctx> {
         let ty = self.basic_type_of(v);
@@ -1201,6 +1222,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         use crate::ast::AssignOp::*;
         match op {
             Set => {
+                let v = self.coerce_to(ty, v);
                 self.backend.builder.build_store(ptr, v).unwrap();
                 Ok(v)
             }
@@ -1871,6 +1893,8 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             let mut agg = st.const_zero();
             for (i, a) in args.iter().enumerate() {
                 let v = self.gen_expr(a)?;
+                let field_ty = st.get_field_type_at_index(i as u32).unwrap_or_else(|| v.get_type());
+                let v = self.coerce_to(field_ty, v);
                 agg = self
                     .backend
                     .builder
@@ -2300,7 +2324,19 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 match self.backend.record_field_index(&rec_name, fname) {
                     Some(i) => {
                         let v = self.backend.builder.build_extract_value(st, i, fname).unwrap();
-                        Ok(v)
+                        // A Bool field is stored as one byte (`i8`); codegen uses
+                        // `i1` for Bool values, so narrow it back (docs/13-codegen.md).
+                        let is_bool = self
+                            .backend
+                            .record_fields
+                            .get(&rec_name)
+                            .and_then(|fs| fs.get(i as usize))
+                            .is_some_and(|k| matches!(k, Kind::Bool));
+                        if is_bool {
+                            Ok(self.coerce_to(self.backend.types.bool.into(), v))
+                        } else {
+                            Ok(v)
+                        }
                     }
                     None => self.fail(&format!("record '{}' has no field '{}'", rec_name, fname)),
                 }

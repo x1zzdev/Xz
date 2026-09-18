@@ -202,6 +202,18 @@ impl<'ctx> LlvmBackend<'ctx> {
         }
     }
 
+    /// Convert a `Kind` to the LLVM type used when it is *stored in memory*.
+    /// Only `Bool` differs from [`kind_to_llvm`]: a record/`@cstruct` field is
+    /// one byte (`i8`), matching C's `bool` so the struct layout is identical
+    /// to C; the register ABI still uses `i1`
+    /// (docs/10-ffi-interop.md, docs/13-codegen.md).
+    pub fn kind_to_llvm_mem(&self, kind: &Kind) -> BasicTypeEnum<'ctx> {
+        match kind {
+            Kind::Bool => self.context.i8_type().into(),
+            _ => self.kind_to_llvm(kind),
+        }
+    }
+
     /// The LLVM enum representation: `struct { i8*, i32 }` (boxed payload + tag).
     pub fn enum_struct(&self, _name: &str) -> StructType<'ctx> {
         self.context.struct_type(&[self.types.ptr.into(), self.context.i32_type().into()], false)
@@ -227,7 +239,7 @@ impl<'ctx> LlvmBackend<'ctx> {
         self.record_types.insert(name.to_string(), opaque);
 
         let field_kinds: Vec<Kind> = fields.iter().map(|f| kind_from_ast(&f.ty, self)).collect();
-        let field_tys: Vec<BasicTypeEnum<'ctx>> = field_kinds.iter().map(|k| self.kind_to_llvm(k)).collect();
+        let field_tys: Vec<BasicTypeEnum<'ctx>> = field_kinds.iter().map(|k| self.kind_to_llvm_mem(k)).collect();
         opaque.set_body(&field_tys, false);
 
         self.record_fields.insert(name.to_string(), field_kinds);
