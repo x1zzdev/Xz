@@ -508,6 +508,37 @@ func main() {
 }
 
 #[test]
+fn mutable_param_copy_in_copy_out_runs() {
+    // A `mut` parameter is copy-in/copy-out: the callee mutates its own copy
+    // and the caller's variable is updated at return. Passing the same
+    // variable to two `mut` parameters stays alias-free: each gets an
+    // independent copy, copied back in parameter order (docs/04, docs/13).
+    expect_output(
+        r#"func add_to(mut acc: Int, n: Int) {
+    acc += n
+}
+
+func bump(mut a: Int, mut b: Int) {
+    a = a + 1
+    b = b + 10
+}
+
+func main() {
+    mut x: Int = 10
+    add_to(x, 5)
+    print(x.to_str())
+    print(" ")
+    mut y: Int = 1
+    bump(y, y)
+    print(y.to_str())
+    print("\n")
+}"#,
+        "15 11\n",
+        "mut parameter copy-in/copy-out",
+    );
+}
+
+#[test]
 fn generic_functions_monomorphize_and_run() {
     // Generic functions are monomorphized per concrete argument type at the
     // call site (a distinct LLVM function per type-argument tuple).
@@ -652,6 +683,39 @@ func main() {
     let inner_pos = bindings.find("class Inner(ctypes.Structure):").ok_or("Inner class missing")?;
     let outer_pos = bindings.find("class Outer(ctypes.Structure):").ok_or("Outer class missing")?;
     assert!(inner_pos < outer_pos, "nested record must be defined before its user:\n{}", bindings);
+    Ok(())
+}
+
+#[test]
+fn mut_param_maps_to_pointer_in_bindings() -> Result<(), String> {
+    // A `mut` parameter is in/out and crosses as `T*` in the C header and
+    // Python bindings (docs/04, docs/10, docs/13).
+    let src = r#"/// Increments in place.
+/// @intent  Adds one to x.
+/// @effects mut
+@export func inc(mut x: Int) {
+    x = x + 1
+}
+
+func main() {
+    mut n: Int = 0
+    inc(n)
+    print(n.to_str())
+}"#;
+    let tokens = lex(src.to_string(), "shared.xz".to_string()).map_err(|e| e.message)?;
+    let program = parse(tokens).map_err(|e| e.message)?;
+    resolve(&program).map_err(|_| "resolve failed".to_string())?;
+    typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
+    check_intent(&program).map_err(|e| e[0].code.clone())?;
+
+    let header = generate_c_header(&program);
+    assert!(header.contains("void inc(int64_t* x);"), "mut param must map to a pointer:\n{}", header);
+    let bindings = generate_python_bindings(&program);
+    assert!(
+        bindings.contains("_lib.inc.argtypes = [ctypes.POINTER(ctypes.c_int64)]"),
+        "mut param must map to a pointer:\n{}",
+        bindings
+    );
     Ok(())
 }
 

@@ -148,6 +148,11 @@ a `Result`/`Option`/`List`/`enum`/plain `record`, or `Chan` has no single C
 declaration. This keeps the generated header an honest, complete description of
 the library's ABI ([11-grammar.md](11-grammar.md)).
 
+A `mut` parameter maps to `T*` in the header and bindings — the C in/out
+convention. The callee still uses copy-in/copy-out internally
+([04-memory-model.md](04-memory-model.md), [13-codegen.md](13-codegen.md)), so
+a C caller passes the address of the value it wants updated.
+
 `Str`/`Bytes` cross as the two-field `XzStr`/`XzBytes` structs (pointer +
 length, no NUL guarantee); `Ptr` is `void*`. The `.so` carries the same libc
 runtime as `xz build-native` and has no Rust dependency.

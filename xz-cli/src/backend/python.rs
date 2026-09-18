@@ -109,7 +109,16 @@ fn emit_module(program: &Program, lib_expr: &str, header: &str, sigs: &[Signatur
     for (name, params, ret) in sigs {
         let argtypes: Vec<String> = params
             .iter()
-            .map(|p| py_type(&p.ty, &cstruct).unwrap_or_else(|| "ctypes.c_void_p".to_string()))
+            .map(|p| {
+                let t = py_type(&p.ty, &cstruct).unwrap_or_else(|| "ctypes.c_void_p".to_string());
+                // A `mut` parameter is in/out: it crosses as a pointer to the
+                // value type (docs/04-memory-model.md, docs/10).
+                if p.mutable {
+                    format!("ctypes.POINTER({})", t)
+                } else {
+                    t
+                }
+            })
             .collect();
         let restype = match ret {
             Some(t) => py_type(t, &cstruct).unwrap_or_else(|| "None".to_string()),

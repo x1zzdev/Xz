@@ -67,6 +67,14 @@ returned by value — matching how the C-ABI host functions (`print`, `to_str`)
 expect them. Records and enums are *value types* ([04-memory-model.md](04-memory-model.md)),
 so a function that takes a record copies it in by value.
 
+A `mut` parameter is the exception: it crosses as a **pointer to the value
+type**. The callee copies the pointed-to value into its own binding on entry
+(copy-in) and writes the final value back through the pointer before returning
+(copy-out), so the caller's variable is updated but never aliased during the
+call ([04-memory-model.md](04-memory-model.md)). An `@export`ed `mut`
+parameter therefore appears as `T*` in the generated header and Python
+bindings, the usual C in/out convention.
+
 `main` is special: it may return `Unit` or `Result[Unit, Err]`. In the JIT the
 runtime calls a `void` main; for `xz build-native` it is declared `i32`
 (returning 0) so the C runtime/linker accepts it as the process entry point.

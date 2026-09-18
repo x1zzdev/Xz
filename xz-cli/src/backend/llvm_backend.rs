@@ -22,6 +22,10 @@ pub struct LlvmSig<'ctx> {
     /// the param kinds (post-check), for call-argument type hints (e.g. an
     /// empty `[]` argument whose element type comes from the parameter).
     pub param_kinds: Vec<Kind>,
+    /// per-parameter `mut` flag. A `mut` parameter lowers to a pointer to its
+    /// value type (copy-in/copy-out — docs/04-memory-model.md), so call sites
+    /// pass an address instead of a value.
+    pub param_muts: Vec<bool>,
 }
 
 /// The lowered LLVM type of an Xz `Kind`. Only `BasicTypeEnum` (i.e. a value
@@ -262,10 +266,24 @@ impl<'ctx> LlvmBackend<'ctx> {
         &mut self,
         name: &str,
         param_kinds: &[Kind],
+        param_muts: &[bool],
         ret: &Option<Kind>,
         explicit_ret: Option<BasicTypeEnum<'ctx>>,
     ) -> FunctionValue<'ctx> {
-        let param_tys: Vec<BasicTypeEnum<'ctx>> = param_kinds.iter().map(|k| self.kind_to_llvm(k)).collect();
+        // A `mut` parameter crosses the ABI as a pointer to its value type: the
+        // callee copies the pointed-to value in at entry and writes the final
+        // value back before returning (copy-in/copy-out, docs/04-memory-model.md).
+        let param_tys: Vec<BasicTypeEnum<'ctx>> = param_kinds
+            .iter()
+            .enumerate()
+            .map(|(i, k)| {
+                if param_muts.get(i).copied().unwrap_or(false) {
+                    self.types.ptr.into()
+                } else {
+                    self.kind_to_llvm(k)
+                }
+            })
+            .collect();
         let ret_ty = match explicit_ret {
             Some(t) => Some(t),
             None => self.ret_type(ret),
@@ -275,6 +293,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             ret: ret_ty,
             xz_ret: ret.clone(),
             param_kinds: param_kinds.to_vec(),
+            param_muts: param_muts.to_vec(),
         };
         self.sigs.insert(name.to_string(), sig);
 
@@ -336,8 +355,9 @@ impl<'ctx> LlvmBackend<'ctx> {
             tparams.iter().cloned().zip(type_args.iter().cloned()).collect();
         let param_kinds: Vec<Kind> =
             f.params.iter().map(|p| kind_from_ast_subst(&p.ty, self, &subst)).collect();
+        let param_muts: Vec<bool> = f.params.iter().map(|p| p.mutable).collect();
         let ret = f.ret.as_ref().map(|t| kind_from_ast_subst(t, self, &subst));
-        let fv = self.declare_function(&mangled, &param_kinds, &ret, None);
+        let fv = self.declare_function(&mangled, &param_kinds, &param_muts, &ret, None);
         fv.set_linkage(Linkage::Internal);
         self.monos.insert(mangled.clone(), fv);
         self.pending_monos.push((name.to_string(), subst, fv));
@@ -560,12 +580,19 @@ fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>,
                     continue;
                 }
                 let param_kinds: Vec<Kind> = f.params.iter().map(|p| kind_from_ast(&p.ty, &backend)).collect();
+                let param_muts: Vec<bool> = f.params.iter().map(|p| p.mutable).collect();
                 // `main` is the C entry point: the runtime calls it with no
                 // args and the linker/crt expects `int main()`, so it is
                 // declared returning i32 regardless of its declared
                 // `Result[Unit, Err]` return (gen_main emits `ret i32 0`).
                 if f.name == "main" {
-                    let _ = backend.declare_function(&f.name, &param_kinds, &None, Some(backend.context.i32_type().into()));
+                    let _ = backend.declare_function(
+                        &f.name,
+                        &param_kinds,
+                        &param_muts,
+                        &None,
+                        Some(backend.context.i32_type().into()),
+                    );
                     // A shared library has no entry point; keep `main` internal
                     // so it does not leak into the exported symbol table.
                     if shared {
@@ -575,7 +602,7 @@ fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>,
                     }
                 } else {
                     let ret = f.ret.as_ref().map(|t| kind_from_ast(t, &backend));
-                    let fv = backend.declare_function(&f.name, &param_kinds, &ret, None);
+                    let fv = backend.declare_function(&f.name, &param_kinds, &param_muts, &ret, None);
                     // Program functions are module-internal so the optimizer's
                     // global DCE can drop them when they become dead (e.g. after
                     // inlining). An `@export` function is the library's public
@@ -604,7 +631,8 @@ fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>,
                         params: param_tys,
                         ret: ret_ty,
                         xz_ret: ret,
-                        param_kinds,
+                        param_kinds: param_kinds.clone(),
+                        param_muts: vec![false; param_kinds.len()],
                     },
                 );
             }
@@ -618,7 +646,7 @@ fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>,
                 // A task lowers to a no-arg, void function. It is declared
                 // internal (a library does not export tasks); `main` takes its
                 // address for `xz_task_spawn`, so the optimizer keeps it.
-                let fv = backend.declare_function(&t.name, &[], &None, None);
+                let fv = backend.declare_function(&t.name, &[], &[], &None, None);
                 fv.set_linkage(Linkage::Internal);
                 backend.tasks.push(t.name.clone());
             }
@@ -685,6 +713,7 @@ fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>,
             ret: Some(backend.types.float.into()),
             xz_ret: Some(Kind::Float),
             param_kinds: vec![Kind::Float],
+            param_muts: vec![false],
         });
 
     // Pass 3: lower bodies.

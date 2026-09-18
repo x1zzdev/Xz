@@ -48,7 +48,16 @@ pub fn generate_c_header(program: &Program) -> String {
             let params: Vec<String> = f
                 .params
                 .iter()
-                .map(|p| format!("{} {}", c_type(&p.ty, &cstruct).unwrap_or_else(|| "void*".to_string()), p.name))
+                .map(|p| {
+                    let ct = c_type(&p.ty, &cstruct).unwrap_or_else(|| "void*".to_string());
+                    // A `mut` parameter is in/out: it crosses as a pointer to
+                    // the value type (docs/04-memory-model.md, docs/10).
+                    if p.mutable {
+                        format!("{}* {}", ct, p.name)
+                    } else {
+                        format!("{} {}", ct, p.name)
+                    }
+                })
                 .collect();
             let plist = if params.is_empty() { "void".to_string() } else { params.join(", ") };
             out.push_str(&format!("{} {}({});\n", ret, f.name, plist));

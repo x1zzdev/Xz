@@ -63,6 +63,11 @@ pub struct Codegen<'b, 'ctx> {
     /// concrete type-parameter substitution for a generic specialization
     /// (empty for ordinary functions); `kind_of` applies it to declared types.
     subst: HashMap<String, Kind>,
+    /// For each `mut` parameter: the callee's own binding alloca (the copy-in),
+    /// its value type, and the caller's out-pointer. The final value is copied
+    /// back through the pointer before the function returns
+    /// (copy-in/copy-out — docs/04-memory-model.md).
+    mut_outs: Vec<(PointerValue<'ctx>, BasicTypeEnum<'ctx>, PointerValue<'ctx>)>,
 }
 
 type GenResult<'ctx> = Result<BasicValueEnum<'ctx>, String>;
@@ -1573,6 +1578,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
 
     /// Emit a return for the enclosing function (used by `?`).
     fn early_return(&mut self) -> GenResult<'ctx> {
+        self.write_back_mut_params();
         match self.ret_llvm {
             Some(rt) => {
                 let zero = rt.const_zero();
@@ -1583,6 +1589,17 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             }
         }
         Ok(self.backend.types.unit.const_zero().into())
+    }
+
+    /// Copy each `mut` parameter's current binding value back through the
+    /// caller's out-pointer (copy-out). A no-op for functions without `mut`
+    /// parameters.
+    fn write_back_mut_params(&mut self) {
+        let outs = self.mut_outs.clone();
+        for (alloca, ty, out) in outs {
+            let v = self.build_load(ty, alloca, "mut.out");
+            self.backend.builder.build_store(out, v).unwrap();
+        }
     }
 
     fn cur_fn(&mut self) -> FunctionValue<'ctx> {
@@ -1824,6 +1841,27 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         }
     }
 
+    /// Produce the address the caller passes for a `mut` argument, plus the
+    /// pointed-to value type. A name or field lvalue yields the caller's own
+    /// storage; any other expression is materialized into a fresh temporary
+    /// (copy-in only — the callee's copy-out is discarded).
+    fn gen_mut_arg(&mut self, e: &Expr) -> Result<(PointerValue<'ctx>, BasicTypeEnum<'ctx>), String> {
+        match e {
+            Expr::Name(n) => match self.scope.get(n) {
+                Some((ptr, ty)) => Ok((*ptr, *ty)),
+                None => self.fail(&format!("unknown name '{}' in mut argument", n)),
+            },
+            Expr::Field(base, fname) => self.field_lvalue(base, fname),
+            _ => {
+                let v = self.gen_expr(e)?;
+                let ty = self.basic_type_of(v);
+                let alloca = self.backend.builder.build_alloca(ty, "mut.tmp").unwrap();
+                self.backend.builder.build_store(alloca, v).unwrap();
+                Ok((alloca, ty))
+            }
+        }
+    }
+
     fn gen_named_call(&mut self, name: &str, args: &[Expr]) -> GenResult<'ctx> {
         // record constructor
         if let Some(st) = self.backend.record_types.get(name).copied() {
@@ -1853,8 +1891,16 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         // regular function / extern
         if let Some(fv) = self.backend.functions.get(name).copied() {
             let param_kinds = self.backend.sigs.get(name).map(|s| s.param_kinds.clone()).unwrap_or_default();
+            let param_muts = self.backend.sigs.get(name).map(|s| s.param_muts.clone()).unwrap_or_default();
             let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> = Vec::new();
             for (i, a) in args.iter().enumerate() {
+                // A `mut` argument crosses as a pointer to the caller's storage
+                // (copy-in/copy-out — docs/04-memory-model.md).
+                if param_muts.get(i).copied().unwrap_or(false) {
+                    let (ptr, _ty) = self.gen_mut_arg(a)?;
+                    call_args.push(ptr.into());
+                    continue;
+                }
                 // Give the argument the callee's declared param type as a hint
                 // (so an empty `[]` argument can materialize its element type).
                 let hint = param_kinds.get(i).cloned();
@@ -1957,13 +2003,24 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             .cloned()
             .ok_or_else(|| format!("missing AST for generic function '{}'", name))?;
         let tparams = self.backend.generic_params.get(name).cloned().unwrap_or_default();
-        let mut vals: Vec<BasicValueEnum<'ctx>> = Vec::with_capacity(args.len());
-        for a in args {
-            vals.push(self.gen_expr(a)?);
+        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> = Vec::with_capacity(args.len());
+        let mut val_tys: Vec<BasicTypeEnum<'ctx>> = Vec::with_capacity(args.len());
+        for (i, a) in args.iter().enumerate() {
+            // A `mut` parameter is inferred from the pointed-to value type but
+            // passed as an address (copy-in/copy-out — docs/04-memory-model.md).
+            if f.params.get(i).map(|p| p.mutable).unwrap_or(false) {
+                let (ptr, vty) = self.gen_mut_arg(a)?;
+                call_args.push(ptr.into());
+                val_tys.push(vty);
+            } else {
+                let v = self.gen_expr(a)?;
+                val_tys.push(self.basic_type_of(v));
+                call_args.push(v.into());
+            }
         }
         let mut bound: Vec<Option<Kind>> = vec![None; tparams.len()];
         for (i, p) in f.params.iter().enumerate() {
-            if i >= vals.len() {
+            if i >= val_tys.len() {
                 break;
             }
             let bare = match &p.ty {
@@ -1973,7 +2030,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             };
             if let Some(n) = bare {
                 if let Some(idx) = tparams.iter().position(|t| *t == n) {
-                    bound[idx] = Some(kind_from_llvm(self.backend, self.basic_type_of(vals[i])));
+                    bound[idx] = Some(kind_from_llvm(self.backend, val_tys[i]));
                 }
             }
         }
@@ -1986,7 +2043,6 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         let type_args: Vec<Kind> = bound.into_iter().map(|b| b.unwrap()).collect();
         let mangled = self.backend.specialize(name, &type_args)?;
         let fv = self.backend.functions.get(&mangled).copied().ok_or("specialization not declared")?;
-        let call_args: Vec<inkwell::values::BasicMetadataValueEnum> = vals.into_iter().map(|v| v.into()).collect();
         let call = self.backend.builder.build_direct_call(fv, &call_args, "call").unwrap();
         match call.try_as_basic_value().basic() {
             Some(v) => Ok(v),
@@ -2747,6 +2803,7 @@ pub fn gen_function(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         loop_stack: Vec::new(),
         is_main: false,
         subst: HashMap::new(),
+        mut_outs: Vec::new(),
     };
     cg.gen_body_common(&f.name, fv, &f.params, &f.body);
 }
@@ -2780,6 +2837,7 @@ pub fn gen_specialized(
         loop_stack: Vec::new(),
         is_main: false,
         subst,
+        mut_outs: Vec::new(),
     };
     cg.gen_body_common(&f.name, fv, &f.params, &f.body);
 }
@@ -2808,6 +2866,7 @@ pub fn gen_task(backend: &mut LlvmBackend<'static>, t: &ast::TaskDecl) {
         loop_stack: Vec::new(),
         is_main: false,
         subst: HashMap::new(),
+        mut_outs: Vec::new(),
     };
     cg.gen_body_common(&t.name, fv, &[], &t.body);
 }
@@ -2840,6 +2899,7 @@ pub fn gen_main(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         loop_stack: Vec::new(),
         is_main: true,
         subst: HashMap::new(),
+        mut_outs: Vec::new(),
     };
     cg.gen_body_common(&f.name, fv, &f.params, &f.body);
 }
@@ -2876,9 +2936,25 @@ impl<'ctx> Codegen<'_, 'ctx> {
         for (i, p) in params.iter().enumerate() {
             let pv = fv.get_nth_param(i as u32);
             if let Some(pv) = pv {
-                let ty = self.basic_type_of(pv);
-                let alloca = self.backend.builder.build_alloca(ty, &p.name).unwrap();
-                self.backend.builder.build_store(alloca, pv).unwrap();
+                let ty;
+                let alloca;
+                if p.mutable {
+                    // A `mut` parameter arrives as a pointer to the caller's
+                    // storage. Copy the value in to a fresh alloca; the final
+                    // value is copied back through the pointer at return
+                    // (copy-in/copy-out — docs/04-memory-model.md).
+                    let vk = self.kind_of(&p.ty);
+                    ty = self.backend.kind_to_llvm(&vk);
+                    alloca = self.backend.builder.build_alloca(ty, &p.name).unwrap();
+                    let in_ptr = pv.into_pointer_value();
+                    let v = self.build_load(ty, in_ptr, &format!("{}.in", p.name));
+                    self.backend.builder.build_store(alloca, v).unwrap();
+                    self.mut_outs.push((alloca, ty, in_ptr));
+                } else {
+                    ty = self.basic_type_of(pv);
+                    alloca = self.backend.builder.build_alloca(ty, &p.name).unwrap();
+                    self.backend.builder.build_store(alloca, pv).unwrap();
+                }
                 self.scope.insert(p.name.clone(), (alloca, ty));
                 // Record a List parameter's element kind for iteration/indexing.
                 if let Kind::List(t) = self.kind_of(&p.ty) {
@@ -2902,6 +2978,11 @@ impl<'ctx> Codegen<'_, 'ctx> {
         // (unless the return type can escape Str storage, in which case the
         // return value may alias a binding and those stay live for the caller).
         self.free_owned_bindings();
+        // Copy each `mut` parameter's final value back to the caller before
+        // returning (copy-out). `early_return` already handled `?` paths.
+        if !self.block_terminated() {
+            self.write_back_mut_params();
+        }
         // `main` is the C entry point returning i32; discard the body value.
         if self.is_main {
             if !self.block_terminated() {
