@@ -271,7 +271,8 @@ channels or `await` is JIT-only for now.
   CLI emits IR, defines the native runtime, optimizes, compiles position-
   independent (`llc -relocation-model=pic`), links with `ld -shared` against
   libc, and writes `libXz.so` plus a generated `libXz.h` (C signatures for the
-  exported functions, per [10-ffi-interop.md](10-ffi-interop.md)). `main`, if
+  exported functions, per [10-ffi-interop.md](10-ffi-interop.md)). `--out <path>`
+  names the shared object instead and the header follows beside it. `main`, if
   present, stays internal in a shared build — a library has no entry point.
 
 ## Optimization pipeline

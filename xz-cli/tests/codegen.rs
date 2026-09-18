@@ -12,6 +12,7 @@ use xz_cli::backend::header::generate_c_header;
 use xz_cli::backend::python::generate_python_bindings;
 use xz_cli::backend::runtime::run;
 use xz_cli::backend::runtime::run_capturing;
+use xz_cli::backend::shared_output_paths;
 use xz_cli::intent::check_intent;
 use xz_cli::lexer::lex;
 use xz_cli::parser::parse;
@@ -663,6 +664,19 @@ fn shared_hides_str_eq_runtime_symbol() -> Result<(), String> {
         ir
     );
     Ok(())
+}
+
+#[test]
+fn shared_output_paths_honor_out_flag() {
+    // `xz build --shared` defaults to libXz.so/libXz.h; `--out <path>` names
+    // the shared object and the header follows beside it.
+    let (lib, header) = shared_output_paths(None);
+    assert_eq!(lib.to_str(), Some("libXz.so"));
+    assert_eq!(header.to_str(), Some("libXz.h"));
+
+    let (lib, header) = shared_output_paths(Some("dist/libfoo.so"));
+    assert_eq!(lib.to_str(), Some("dist/libfoo.so"));
+    assert_eq!(header.to_str(), Some("dist/libfoo.h"));
 }
 
 #[test]

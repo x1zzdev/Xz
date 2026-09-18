@@ -20,7 +20,7 @@ fn main() {
     }
     if argv.len() < 3 {
         println!(
-            "usage: xz <lex|parse|check|check-json|build|run|build-native|bind|fmt|lsp> [--strict] [--shared] [--lang python] <file.xz>"
+            "usage: xz <lex|parse|check|check-json|build|run|build-native|bind|fmt|lsp> [--strict] [--shared] [--out <path>] [--lang python] <file.xz>"
         );
         println!("       xz pkg gen --lang python [--lib <name>] <file.xzint>");
         println!("       xz pkg add <name> [--registry <base_url>]");
@@ -29,6 +29,7 @@ fn main() {
     let cmd = argv[1].clone();
     let mut strict = false;
     let mut shared = false;
+    let mut out: Option<String> = None;
     let mut lang: Option<String> = None;
     let mut path: String = "".to_string();
     let mut i = 2;
@@ -38,6 +39,11 @@ fn main() {
             strict = true;
         } else if a == "--shared" {
             shared = true;
+        } else if a == "--out" {
+            i += 1;
+            if i < argv.len() {
+                out = Some(argv[i].clone());
+            }
         } else if a == "--lang" {
             i += 1;
             if i < argv.len() {
@@ -50,7 +56,7 @@ fn main() {
     }
     if path == "" {
         println!(
-            "usage: xz <lex|parse|check|check-json|build|run|build-native|bind|fmt|lsp> [--strict] [--shared] [--lang python] <file.xz>"
+            "usage: xz <lex|parse|check|check-json|build|run|build-native|bind|fmt|lsp> [--strict] [--shared] [--out <path>] [--lang python] <file.xz>"
         );
         println!("       xz pkg gen --lang python [--lib <name>] <file.xzint>");
         println!("       xz pkg add <name> [--registry <base_url>]");
@@ -108,7 +114,7 @@ fn main() {
                         std::process::exit(run_check(tokens, strict, true));
                     } else if cmd == "build" {
                         if shared {
-                            std::process::exit(run_shared_build(tokens));
+                            std::process::exit(run_shared_build(tokens, out));
                         }
                         std::process::exit(run_backend(tokens, false));
                     } else if cmd == "run" {
@@ -337,9 +343,11 @@ fn run_native_build(tokens: Vec<Token>) -> i32 {
 }
 
 /// Phase 5 shared-library build: like `xz build-native`, but links with
-/// `ld -shared` into `libXz.so` and writes a generated `libXz.h`. Functions
-/// marked `@export` are the exported symbols; `main` is kept internal.
-fn run_shared_build(tokens: Vec<Token>) -> i32 {
+/// `ld -shared` into a shared object and writes a generated C header. Functions
+/// marked `@export` are the exported symbols; `main` is kept internal. The
+/// default output is `libXz.so`/`libXz.h`; `--out <path>` names the shared
+/// object and the header follows beside it with the same stem.
+fn run_shared_build(tokens: Vec<Token>, out: Option<String>) -> i32 {
     let parsed = parse(tokens);
     let program = match parsed {
         Err(e) => {
@@ -446,15 +454,26 @@ fn run_shared_build(tokens: Vec<Token>) -> i32 {
         _ => {}
     }
 
-    if let Err(e) = std::fs::copy(&so_path, "libXz.so") {
-        println!("error: cannot write ./libXz.so: {}", e);
+    let (lib_out, header_out) = xz_cli::backend::shared_output_paths(out.as_deref());
+    for path in [&lib_out, &header_out] {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    println!("error: cannot create {}: {}", parent.display(), e);
+                    return 1;
+                }
+            }
+        }
+    }
+    if let Err(e) = std::fs::copy(&so_path, &lib_out) {
+        println!("error: cannot write {}: {}", lib_out.display(), e);
         return 1;
     }
-    if let Err(e) = std::fs::write("libXz.h", header) {
-        println!("error: cannot write ./libXz.h: {}", e);
+    if let Err(e) = std::fs::write(&header_out, header) {
+        println!("error: cannot write {}: {}", header_out.display(), e);
         return 1;
     }
-    println!("ok: wrote ./libXz.so and ./libXz.h");
+    println!("ok: wrote {} and {}", lib_out.display(), header_out.display());
     0
 }
 

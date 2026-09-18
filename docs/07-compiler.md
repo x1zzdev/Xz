@@ -15,8 +15,9 @@ JIT backend (see [13-codegen.md](13-codegen.md) for the design contract and
 [14-codegen-notes.md](14-codegen-notes.md) for the hard problems). The backend
 runs on a root-free portable LLVM 17 (`xz-cli/.cargo/config.toml` + `scripts/setup-llvm.sh`).
 
-Shared-library output (`xz build --shared`) is implemented: it emits `libXz.so`
-+ a generated `libXz.h` for the `@export` functions; `xz bind --lang python`
+Shared-library output (`xz build --shared`) is implemented: by default it emits
+`libXz.so` + a generated `libXz.h` for the `@export` functions (`--out <path>`
+renames the shared object and the header follows beside it); `xz bind --lang python`
 and `xz pkg gen --lang python` generate Python wrappers from Xz sources and
 `.xzint` interface files respectively, and `xz pkg add` fetches and verifies an
 interface file from a registry (see
@@ -27,6 +28,7 @@ interface file from a registry (see
 ```
 xz build <file.xz>          # type check + contract check + codegen (Phase 4: emits LLVM IR)
 xz build --shared <file.xz> # emit libXz.so + libXz.h for the @export functions
+xz build --shared --out <path> <file.xz>  # same, but write <path> + a sibling .h
 xz build-native <file.xz>   # emit IR + native runtime, compile with llc, link with ld -> ./xz_program
 xz bind --lang python <file.xz>  # emit a ctypes wrapper (<stem>.py) for the @export functions
 xz pkg gen --lang python [--lib <name>] <file.xzint>  # emit a ctypes wrapper (<stem>.py) for an extern interface

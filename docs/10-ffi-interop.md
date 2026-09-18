@@ -125,8 +125,10 @@ whether it may be copied.
 ## Exporting an Xz library (`xz build --shared`)
 
 `xz build --shared <file.xz>` emits `libXz.so` and a matching `libXz.h` for C
-callers. Only functions marked `@export` become symbols; everything else keeps
-internal linkage and stays private:
+callers. `--out <path>` names the shared object instead, with the header written
+beside it under the same stem (e.g. `--out dist/libfoo.so` writes
+`dist/libfoo.so` and `dist/libfoo.h`). Only functions marked `@export` become
+symbols; everything else keeps internal linkage and stays private:
 
 ```
 @export func add(a: Int, b: Int) -> Int {
