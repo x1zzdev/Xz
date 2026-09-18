@@ -736,6 +736,84 @@ func main() {
 }
 
 #[test]
+fn python_bindings_marshal_str_and_bytes() -> Result<(), String> {
+    // `Str`/`Bytes` cross the C ABI as `XzStr`/`XzBytes`, but the generated
+    // wrapper presents Python `str`/`bytes` (docs/10-ffi-interop.md). A
+    // signature with only scalar types keeps the direct `_lib` alias, since
+    // `ctypes` already returns the proper Python scalar for those.
+    let src = r#"/// Echoes a name.
+/// @intent  Returns the name with a bang.
+/// @effects none
+@export func greet(name: Str) -> Str {
+    name + "!"
+}
+
+/// Returns the same bytes.
+/// @intent  Returns data unchanged.
+/// @effects none
+@export func echo(data: Bytes) -> Bytes {
+    data
+}
+
+/// Adds two numbers.
+/// @intent  Returns a + b.
+/// @effects none
+@export func add(a: Int, b: Int) -> Int {
+    a + b
+}"#;
+    let tokens = lex(src.to_string(), "shared.xz".to_string()).map_err(|e| e.message)?;
+    let program = parse(tokens).map_err(|e| e.message)?;
+    resolve(&program).map_err(|_| "resolve failed".to_string())?;
+    typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
+    check_intent(&program).map_err(|e| e[0].code.clone())?;
+
+    let bindings = generate_python_bindings(&program);
+    assert!(
+        bindings.contains("def greet(name):"),
+        "missing Str wrapper:\n{}",
+        bindings
+    );
+    assert!(
+        bindings.contains("_xz_name_data = name.encode(\"utf-8\")"),
+        "missing Str encode:\n{}",
+        bindings
+    );
+    assert!(
+        bindings.contains("XzStr(ctypes.cast(_xz_name_buf, ctypes.c_void_p), len(_xz_name_data))"),
+        "missing Str arg construction:\n{}",
+        bindings
+    );
+    assert!(
+        bindings.contains("return ctypes.string_at(_xz_ret.ptr, _xz_ret.len).decode(\"utf-8\")"),
+        "missing Str decode:\n{}",
+        bindings
+    );
+    assert!(
+        bindings.contains("def echo(data):"),
+        "missing Bytes wrapper:\n{}",
+        bindings
+    );
+    assert!(
+        bindings.contains(
+            "XzBytes(ctypes.cast(_xz_data_buf, ctypes.POINTER(ctypes.c_uint8)), len(_xz_data_data))"
+        ),
+        "missing Bytes arg construction:\n{}",
+        bindings
+    );
+    assert!(
+        bindings.contains("return ctypes.string_at(_xz_ret.ptr, _xz_ret.len)\n"),
+        "missing Bytes return:\n{}",
+        bindings
+    );
+    assert!(
+        bindings.contains("add = _lib.add"),
+        "a scalar-only signature must keep the direct alias:\n{}",
+        bindings
+    );
+    Ok(())
+}
+
+#[test]
 fn record_bool_fields_round_trip() {
     // A `Bool` record field is stored as one byte (`i8`), matching C's `bool`
     // (docs/13-codegen.md). Construction zero-extends the value `i1` and a

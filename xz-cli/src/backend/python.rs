@@ -95,7 +95,7 @@ fn emit_module(program: &Program, lib_expr: &str, header: &str, sigs: &[Signatur
     out.push_str("import ctypes\nimport os\n\n");
     out.push_str(&format!("_lib = ctypes.CDLL({})\n\n", lib_expr));
     out.push_str("class XzStr(ctypes.Structure):\n");
-    out.push_str("    _fields_ = [(\"ptr\", ctypes.c_char_p), (\"len\", ctypes.c_size_t)]\n\n");
+    out.push_str("    _fields_ = [(\"ptr\", ctypes.c_void_p), (\"len\", ctypes.c_size_t)]\n\n");
     out.push_str("class XzBytes(ctypes.Structure):\n");
     out.push_str("    _fields_ = [(\"ptr\", ctypes.POINTER(ctypes.c_uint8)), (\"len\", ctypes.c_size_t)]\n\n");
 
@@ -107,33 +107,182 @@ fn emit_module(program: &Program, lib_expr: &str, header: &str, sigs: &[Signatur
     }
 
     for (name, params, ret) in sigs {
-        let argtypes: Vec<String> = params
-            .iter()
-            .map(|p| {
-                let t = py_type(&p.ty, &cstruct).unwrap_or_else(|| "ctypes.c_void_p".to_string());
-                // A `mut` parameter is in/out: it crosses as a pointer to the
-                // value type (docs/04-memory-model.md, docs/10).
-                if p.mutable {
-                    format!("ctypes.POINTER({})", t)
-                } else {
-                    t
-                }
-            })
-            .collect();
-        let restype = match ret {
-            Some(t) => py_type(t, &cstruct).unwrap_or_else(|| "None".to_string()),
-            None => "None".to_string(),
-        };
-        out.push_str(&format!(
-            "_lib.{}.argtypes = [{}]\n",
-            name,
-            argtypes.join(", ")
-        ));
-        out.push_str(&format!("_lib.{}.restype = {}\n", name, restype));
-        out.push_str(&format!("{} = _lib.{}\n\n", name, name));
+        emit_signature(&mut out, name, params, ret, &cstruct);
     }
 
     out
+}
+
+/// Emit the `argtypes`/`restype` for one C symbol plus its Python-facing
+/// binding. A signature that mentions `Str`/`Bytes` gets a wrapper that
+/// marshals those two to Python `str`/`bytes`; every other signature keeps the
+/// direct `name = _lib.name` alias, because `ctypes` already hands back the
+/// proper Python scalar for the remaining C types (docs/10-ffi-interop.md).
+fn emit_signature(
+    out: &mut String,
+    name: &str,
+    params: &[Param],
+    ret: &Option<Type>,
+    cstruct: &HashSet<String>,
+) {
+    let argtypes: Vec<String> = params
+        .iter()
+        .map(|p| {
+            let t = py_type(&p.ty, cstruct).unwrap_or_else(|| "ctypes.c_void_p".to_string());
+            // A `mut` parameter is in/out: it crosses as a pointer to the
+            // value type (docs/04-memory-model.md, docs/10).
+            if p.mutable {
+                format!("ctypes.POINTER({})", t)
+            } else {
+                t
+            }
+        })
+        .collect();
+    let restype = match ret {
+        Some(t) => py_type(t, cstruct).unwrap_or_else(|| "None".to_string()),
+        None => "None".to_string(),
+    };
+    out.push_str(&format!(
+        "_lib.{}.argtypes = [{}]\n",
+        name,
+        argtypes.join(", ")
+    ));
+    out.push_str(&format!("_lib.{}.restype = {}\n", name, restype));
+
+    let wraps = params
+        .iter()
+        .any(|p| !p.mutable && str_or_bytes(&p.ty).is_some())
+        || ret.as_ref().is_some_and(|t| str_or_bytes(t).is_some());
+    if !wraps {
+        out.push_str(&format!("{} = _lib.{}\n\n", name, name));
+        return;
+    }
+
+    let py_params: Vec<String> = params.iter().map(|p| py_name(&p.name)).collect();
+    out.push_str(&format!("def {}({}):\n", name, py_params.join(", ")));
+    let mut call_args: Vec<String> = Vec::new();
+    for p in params {
+        let pn = py_name(&p.name);
+        if !p.mutable && str_or_bytes(&p.ty).is_some() {
+            emit_marshal_in(out, &pn, &p.ty);
+            call_args.push(format!("_xz_{}_arg", pn));
+        } else {
+            call_args.push(pn);
+        }
+    }
+    out.push_str(&format!(
+        "    _xz_ret = _lib.{}({})\n",
+        name,
+        call_args.join(", ")
+    ));
+    match ret.as_ref().and_then(str_or_bytes) {
+        Some("str") => out.push_str(
+            "    return ctypes.string_at(_xz_ret.ptr, _xz_ret.len).decode(\"utf-8\")\n\n",
+        ),
+        Some("bytes") => out.push_str("    return ctypes.string_at(_xz_ret.ptr, _xz_ret.len)\n\n"),
+        _ => out.push_str("    return _xz_ret\n\n"),
+    }
+}
+
+/// Emit the statements that build a `Str`/`Bytes` argument from the Python
+/// parameter `name`, keeping the backing buffer alive for the call.
+fn emit_marshal_in(out: &mut String, name: &str, ty: &Type) {
+    match str_or_bytes(ty) {
+        Some("str") => {
+            out.push_str(&format!(
+                "    _xz_{n}_data = {n}.encode(\"utf-8\")\n",
+                n = name
+            ));
+            out.push_str(&format!(
+                "    _xz_{n}_buf = ctypes.create_string_buffer(_xz_{n}_data)\n",
+                n = name
+            ));
+            out.push_str(&format!(
+                "    _xz_{n}_arg = XzStr(ctypes.cast(_xz_{n}_buf, ctypes.c_void_p), len(_xz_{n}_data))\n",
+                n = name
+            ));
+        }
+        Some("bytes") => {
+            out.push_str(&format!("    _xz_{n}_data = bytes({n})\n", n = name));
+            out.push_str(&format!(
+                "    _xz_{n}_buf = ctypes.create_string_buffer(_xz_{n}_data, max(len(_xz_{n}_data), 1))\n",
+                n = name
+            ));
+            out.push_str(&format!(
+                "    _xz_{n}_arg = XzBytes(ctypes.cast(_xz_{n}_buf, ctypes.POINTER(ctypes.c_uint8)), len(_xz_{n}_data))\n",
+                n = name
+            ));
+        }
+        _ => {}
+    }
+}
+
+/// `Some("str")`/`Some("bytes")` when `ty` is the `Str`/`Bytes` primitive, so
+/// the generated wrapper can marshal it to a Python value instead of exposing
+/// the raw `XzStr`/`XzBytes` struct (docs/10-ffi-interop.md).
+fn str_or_bytes(ty: &Type) -> Option<&'static str> {
+    let name = match ty {
+        Type::Named(n, args) if args.is_empty() => n,
+        Type::NamedPlain(n) => n,
+        _ => return None,
+    };
+    match name.as_str() {
+        "Str" => Some("str"),
+        "Bytes" => Some("bytes"),
+        _ => None,
+    }
+}
+
+/// A parameter name safe to use in a generated `def`. An Xz identifier may
+/// coincide with a Python keyword (`class`, `import`, ...), so those get a
+/// trailing underscore.
+fn py_name(name: &str) -> String {
+    if is_python_keyword(name) {
+        format!("{}_", name)
+    } else {
+        name.to_string()
+    }
+}
+
+fn is_python_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "False"
+            | "None"
+            | "True"
+            | "and"
+            | "as"
+            | "assert"
+            | "async"
+            | "await"
+            | "break"
+            | "class"
+            | "continue"
+            | "def"
+            | "del"
+            | "elif"
+            | "else"
+            | "except"
+            | "finally"
+            | "for"
+            | "from"
+            | "global"
+            | "if"
+            | "import"
+            | "in"
+            | "is"
+            | "lambda"
+            | "nonlocal"
+            | "not"
+            | "or"
+            | "pass"
+            | "raise"
+            | "return"
+            | "try"
+            | "while"
+            | "with"
+            | "yield"
+    )
 }
 
 fn emit_record(

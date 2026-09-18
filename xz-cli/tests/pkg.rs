@@ -71,6 +71,38 @@ extern func curl_easy_cleanup(handle: Ptr)
 }
 
 #[test]
+fn pkg_gen_marshals_str_params() {
+    // An `extern` that takes `Str` is wrapped to accept a Python `str` and
+    // build the `XzStr` ABI struct (docs/10-ffi-interop.md).
+    let src = r#"extern func puts(s: Str) -> Int
+extern func noop()
+"#;
+    let program = parse_interface(src);
+    let out = pkg::generate_python(&program, "libc.so").expect("generate");
+
+    assert!(
+        out.contains("def puts(s):"),
+        "missing Str wrapper:\n{}",
+        out
+    );
+    assert!(
+        out.contains("_xz_s_data = s.encode(\"utf-8\")"),
+        "missing Str encode:\n{}",
+        out
+    );
+    assert!(
+        out.contains("XzStr(ctypes.cast(_xz_s_buf, ctypes.c_void_p), len(_xz_s_data))"),
+        "missing Str arg construction:\n{}",
+        out
+    );
+    assert!(
+        out.contains("noop = _lib.noop"),
+        "a scalar-only extern must keep the direct alias:\n{}",
+        out
+    );
+}
+
+#[test]
 fn pkg_gen_escapes_library_name() {
     let program = parse_interface("extern func noop()\n");
     let out = pkg::generate_python(&program, "weird\"lib.so").expect("generate");
