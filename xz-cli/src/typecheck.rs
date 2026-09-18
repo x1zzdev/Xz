@@ -111,6 +111,7 @@ pub fn typecheck(program: &Program) -> Result<(), Vec<TypeError>> {
     tc.build_world(program);
     tc.check_cstructs(program);
     tc.check_exports(program);
+    tc.check_externs(program);
     tc.collect_sigs(program);
     tc.predeclare_stdlib();
     if tc.errors.len() > 0 {
@@ -265,6 +266,52 @@ impl TypeChecker {
                 if !is_unit_type(rt) {
                     if let Err(msg) = cstruct_field_ok(rt, &cstruct, &records, &enums, &mut visiting) {
                         self.error_at(format!("@export func '{}' return: {}", f.name, msg), f.span.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    /// An `extern` function is a raw C ABI declaration (docs/10), so its
+    /// signature crosses the FFI boundary and must be C-representable end to
+    /// end. `Unit` is the only exception: it is allowed as the return type but
+    /// not as a parameter. In particular a plain `record` is a language value
+    /// type whose layout C does not know, so only a `@cstruct` record may be
+    /// passed or returned by value.
+    fn check_externs(&mut self, program: &Program) {
+        let mut records: HashMap<String, &ast::RecordDecl> = HashMap::new();
+        let mut enums: HashSet<String> = HashSet::new();
+        let mut cstruct: HashSet<String> = HashSet::new();
+        for item in &program.items {
+            match item {
+                Item::Record(r) => {
+                    records.insert(r.name.clone(), r);
+                    if r.cstruct {
+                        cstruct.insert(r.name.clone());
+                    }
+                }
+                Item::Enum(e) => {
+                    enums.insert(e.name.clone());
+                }
+                _ => {}
+            }
+        }
+
+        for item in &program.items {
+            let e = match item {
+                Item::Extern(e) => e,
+                _ => continue,
+            };
+            let mut visiting: HashSet<String> = HashSet::new();
+            for p in &e.params {
+                if let Err(msg) = cstruct_field_ok(&p.ty, &cstruct, &records, &enums, &mut visiting) {
+                    self.error_at(format!("extern func '{}' parameter '{}': {}", e.name, p.name, msg), p.span.clone());
+                }
+            }
+            if let Some(rt) = &e.ret {
+                if !is_unit_type(rt) {
+                    if let Err(msg) = cstruct_field_ok(rt, &cstruct, &records, &enums, &mut visiting) {
+                        self.error_at(format!("extern func '{}' return: {}", e.name, msg), e.span.clone());
                     }
                 }
             }

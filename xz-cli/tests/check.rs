@@ -268,20 +268,60 @@ func main() -> Result[Int, Err] {
 }
 
 #[test]
-fn composite_builtin_types_resolve_in_fields_and_extern_sigs() {
+fn composite_builtin_types_resolve_in_record_fields() {
     let err = check_source(
         r#"record R {
     xs: List[Int]
     maybe: Option[Int]
 }
 
-extern func get() -> Result[Int, Err]
-
 func main() {
     print("hi")
 }"#,
     );
     assert!(err.is_none(), "composite builtin types rejected: {:?}", err);
+}
+
+#[test]
+fn extern_non_c_signature_rejected() {
+    // docs/10: an `extern` signature must be C-representable end to end, so a
+    // composite builtin like `Result` has no C declaration.
+    let err = check_source(r#"extern func get() -> Result[Int, Err]"#);
+    match err {
+        Some(_) => {}
+        None => panic!("Result return accepted in extern signature"),
+    }
+}
+
+#[test]
+fn extern_plain_record_by_value_rejected() {
+    // docs/10: only a `@cstruct` record may cross the FFI boundary by value;
+    // a plain record has a layout C does not know.
+    let err = check_source(
+        r#"record Point {
+    x: Int
+    y: Int
+}
+
+extern func use(p: Point) -> Int"#,
+    );
+    match err {
+        Some(_) => {}
+        None => panic!("plain record parameter accepted in extern signature"),
+    }
+}
+
+#[test]
+fn extern_cstruct_by_value_accepted() {
+    let err = check_source(
+        r#"@cstruct record Point {
+    x: Int
+    y: Int
+}
+
+extern func use(p: Point) -> Int"#,
+    );
+    assert!(err.is_none(), "@cstruct extern signature rejected: {:?}", err);
 }
 
 #[test]

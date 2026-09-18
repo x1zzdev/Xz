@@ -113,6 +113,11 @@ type parameter are rejected as `@cstruct` fields — each has a representation
 that C does not know. The compiler enforces this so a reviewer never has to
 audit a layout by hand.
 
+An `extern` function signature must likewise be C-representable end to end: the
+primitive types in the mapping table plus `@cstruct` records, with `Unit`
+allowed only as the return. A `Result`/`Option`/`List`/`Map`/`Set`/`Chan`, an
+`enum`, or a plain `record` has no C declaration, so the compiler rejects it.
+
 A `@cstruct` record with a `Ptr` field is still a handle type (see
 [03-type-system.md](03-type-system.md)): C layout governs how it is passed, not
 whether it may be copied.
