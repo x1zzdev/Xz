@@ -274,6 +274,8 @@ channels or `await` is JIT-only for now.
   exported functions, per [10-ffi-interop.md](10-ffi-interop.md)). `--out <path>`
   names the shared object instead and the header follows beside it. `main`, if
   present, stays internal in a shared build — a library has no entry point.
+  The `xz_*` runtime bodies are internalized by the same policy — a function is
+  public iff it is `@export` — so a newly added runtime function cannot leak.
 
 ## Optimization pipeline
 

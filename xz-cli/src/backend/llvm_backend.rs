@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -116,6 +116,10 @@ pub struct LlvmBackend<'ctx> {
     /// task declaration names, in source order; `main` spawns them in this order
     /// (docs/05-concurrency.md deterministic scheduling rule 1).
     pub tasks: Vec<String>,
+    /// names of functions marked `@export`: the only symbols a shared library
+    /// makes public (docs/10-ffi-interop.md). Used by [`hide_runtime_symbols`]
+    /// to internalize every other definition without a fixed `xz_*` list.
+    pub exports: HashSet<String>,
     /// number of synthetic completion channels handed out to `await` sites.
     /// Their ids start after the declared channels (see `next_channel_id`).
     pub await_chan_count: u64,
@@ -147,6 +151,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             channel_ids: HashMap::new(),
             channel_payloads: HashMap::new(),
             tasks: Vec::new(),
+            exports: HashSet::new(),
             await_chan_count: 0,
         }
     }
@@ -621,6 +626,7 @@ fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>,
                     // surface, so it keeps external linkage.
                     if f.exported {
                         fv.set_linkage(Linkage::External);
+                        backend.exports.insert(f.name.clone());
                     } else {
                         fv.set_linkage(Linkage::Internal);
                     }
@@ -804,29 +810,20 @@ pub fn optimize(module: &Module<'_>) -> Result<(), String> {
     Ok(())
 }
 
-/// Make the `xz_*` runtime definitions internal so a shared library does not
-/// export them. The JIT resolves them by name via `add_global_mapping`; only
-/// the `@export` functions are a library's public surface.
+/// Enforce the shared library's visibility policy: a function is public iff it
+/// is marked `@export`, so every other definition (`xz_*` runtime bodies,
+/// private helpers, `main`) is internalized. Deriving the set from the module
+/// and `backend.exports` instead of a fixed `xz_*` list means a newly added
+/// runtime function cannot be forgotten. The JIT resolves all of them by name
+/// via `add_global_mapping`; only the `@export` functions are a library's
+/// public surface.
 pub fn hide_runtime_symbols(backend: &LlvmBackend<'static>) {
-    for name in [
-        "xz_print",
-        "xz_str_free",
-        "xz_concat",
-        "xz_i64_to_str",
-        "xz_f64_to_str",
-        "xz_bool_to_str",
-        "xz_char_to_str",
-        "xz_str_to_upper",
-        "xz_str_to_lower",
-        "xz_str_eq",
-        "xz_read_file",
-        "xz_time_now",
-        "xz_time_monotonic",
-    ] {
-        if let Some(f) = backend.module.get_function(name) {
-            if f.get_first_basic_block().is_some() {
-                f.set_linkage(Linkage::Internal);
-            }
+    for f in backend.module.get_functions() {
+        if f.get_first_basic_block().is_none() {
+            continue;
+        }
+        if !backend.exports.contains(f.get_name().to_str().unwrap_or("")) {
+            f.set_linkage(Linkage::Internal);
         }
     }
 }
