@@ -1005,7 +1005,6 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     }
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => Kind::Bool,
                     BinOp::IsOk | BinOp::IsErr | BinOp::IsNone | BinOp::IsSome => Kind::Bool,
-                    BinOp::IsOk | BinOp::IsErr | BinOp::IsNone | BinOp::IsSome => Kind::Bool,
                 }
             }
             Expr::Cast(a, ty) => {
