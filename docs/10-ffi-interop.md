@@ -184,6 +184,13 @@ loads the sibling `libXz.so`. The wrapper deliberately does not reuse the
 `libXz` name: a `.py` module named `libXz` would be shadowed by `libXz.so`,
 which Python treats as an extension module.
 
+The generated bindings expose Python types, not raw C structs. A signature
+whose parameters or return mention `Str` or `Bytes` gets a Python wrapper that
+encodes/decodes them to `str`/`bytes`; the remaining types already cross as
+their Python scalars (`Int` -> `int`, `Bool` -> `bool`, and so on). A `mut`
+parameter stays a raw pointer — it is the C in/out convention, so the caller
+passes the address of the value it wants updated.
+
 ### Interface files (`.xzint`)
 
 A `.xzint` interface file is a declaration-only Xz source: `extern func`
@@ -202,9 +209,10 @@ xz pkg gen --lang python libcurl.xzint --lib libcurl.so.4
 interface file (`libcurl.xzint` -> `libcurl.py`). The module declares each
 `@cstruct` as a `ctypes.Structure` and types every `extern` function, then loads
 the C library named by `--lib`; the default is the interface file's stem plus
-`.so` (`libcurl.xzint` -> `libcurl.so`). Unlike `xz bind`, which loads the
-`libXz.so` produced by `xz build --shared`, the wrapper binds the third-party C
-library directly.
+`.so` (`libcurl.xzint` -> `libcurl.so`). `Str`/`Bytes` marshal to `str`/`bytes`
+the same way `xz bind` does. Unlike `xz bind`, which loads the `libXz.so`
+produced by `xz build --shared`, the wrapper binds the third-party C library
+directly.
 
 ### Fetching interfaces (`xz pkg add`)
 
