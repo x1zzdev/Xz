@@ -60,6 +60,12 @@ let body = await fetch(url)?   // suspension is visible at the call site
 
 `await` and channel operations are the only suspension points and are always visible in the syntax.
 
+`await e` is legal only in a body that can suspend — an `async func`, `main`,
+or a `task` — and `e` must be a call to a named `async` function. A `func` that
+is neither `async` nor `main` runs to completion inside its caller's turn, so
+it never suspends and may not `await`; a synchronous call site therefore never
+hides a suspension.
+
 ## Deterministic scheduling
 
 The scheduler is **cooperative and run-to-blocking** with a **single logical

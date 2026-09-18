@@ -228,7 +228,7 @@ Phase 6 lowers structured concurrency to the JIT host scheduler
 - `async func` lowers like an ordinary function: it has no separate frame type,
   because `recv` and `await` are the only suspension points and each blocks the
   running task at the point it is called.
-- `await f(args)` — where `f` is a named, non-generic function — spawns `f` as a
+- `await f(args)` — where `f` is a named, non-generic `async` function — spawns `f` as a
   child coroutine and suspends the caller (docs/05-concurrency.md rule 6). The
   caller evaluates the arguments into a stack struct, spawns an internal
   trampoline `@__await_N(ptr)` with `xz_task_spawn_arg(@__await_N, env)`, then

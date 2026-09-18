@@ -213,6 +213,9 @@ The grammar alone is not the whole contract. The compiler also enforces:
   type must be a primitive (`Bool`/`Int`/`usize`/`Float`/`Char`/`Str`/
   `Bytes`/`Ptr`), a `@cstruct record`, or `Unit` (return only). `main` may not
   be exported.
+- **Await context** — `await e` is legal only in a body that can suspend: an
+  `async func`, `main`, or a `task`. `e` must be a call to a named `async`
+  function ([05-concurrency.md](05-concurrency.md), [13-codegen.md](13-codegen.md)).
 - **Effect honesty** — the derived effect profile must equal `@effects`
   ([09-intent-verification.md](09-intent-verification.md)).
 - **Claim pairing** — `@requires`/`@ensures` pair (in order) with `pre`/`post`.
