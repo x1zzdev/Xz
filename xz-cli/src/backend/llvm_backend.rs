@@ -806,6 +806,7 @@ pub fn hide_runtime_symbols(backend: &LlvmBackend<'static>) {
         "xz_char_to_str",
         "xz_str_to_upper",
         "xz_str_to_lower",
+        "xz_str_eq",
         "xz_read_file",
         "xz_time_now",
         "xz_time_monotonic",

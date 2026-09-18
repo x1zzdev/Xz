@@ -6,6 +6,8 @@
 
 use xz_cli::backend::llvm_backend::compile;
 use xz_cli::backend::llvm_backend::compile_shared;
+use xz_cli::backend::llvm_backend::emit_native_runtime;
+use xz_cli::backend::llvm_backend::hide_runtime_symbols;
 use xz_cli::backend::header::generate_c_header;
 use xz_cli::backend::python::generate_python_bindings;
 use xz_cli::backend::runtime::run;
@@ -627,6 +629,39 @@ func main() {
     let inner_pos = header.find("typedef struct Inner").ok_or("Inner record missing")?;
     let outer_pos = header.find("typedef struct Outer").ok_or("Outer record missing")?;
     assert!(inner_pos < outer_pos, "nested record must be declared before its user:\n{}", header);
+    Ok(())
+}
+
+#[test]
+fn shared_hides_str_eq_runtime_symbol() -> Result<(), String> {
+    // A shared library must not export the `xz_*` runtime. `xz_str_eq` backs
+    // `Map[Str, _]`/`Set[Str]` key equality, so it must be internalized along
+    // with the other runtime definitions.
+    let src = r#"func has_key(m: Map[Str, Int], k: Str) -> Bool {
+    let found = m.get(k)
+    if found is some {
+        true
+    } else {
+        false
+    }
+}
+
+@export func add(a: Int, b: Int) -> Int {
+    a + b
+}"#;
+    let tokens = lex(src.to_string(), "shared.xz".to_string()).map_err(|e| e.message)?;
+    let program = parse(tokens).map_err(|e| e.message)?;
+    resolve(&program).map_err(|_| "resolve failed".to_string())?;
+    typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
+    let mut backend = compile_shared(&program)?;
+    emit_native_runtime(&mut backend)?;
+    hide_runtime_symbols(&backend);
+    let ir = backend.module.print_to_string().to_string();
+    assert!(
+        ir.contains("define internal i1 @xz_str_eq"),
+        "xz_str_eq must be internal in a shared build:\n{}",
+        ir
+    );
     Ok(())
 }
 
