@@ -75,7 +75,7 @@ release_buffer(transfer(a))   // ERROR: a was already transferred
 
 | Xz | C |
 |---|---|
-| `Bool` | `bool` (i8) |
+| `Bool` | `bool` — one byte (`i8`) in memory, `i1` in the register ABI ([13-codegen.md](13-codegen.md)) |
 | `Int` | `int64_t` |
 | `Float` | `double` |
 | `Char` | `char` |

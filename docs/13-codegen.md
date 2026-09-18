@@ -39,7 +39,7 @@ what `xz build` (native output, Phase 5) will reuse.
 
 | Xz | LLVM |
 |---|---|
-| `Bool` | `i1` |
+| `Bool` | `i1` in the register ABI; `i8` in memory (record/`@cstruct` fields) — C `bool` |
 | `Int` | `i64` (signed) |
 | `usize` | `i64` |
 | `Float` | `double` |
@@ -58,6 +58,11 @@ what `xz build` (native output, Phase 5) will reuse.
 | `Set[T]` | `struct { T*, i64 }` — pointer to an element buffer + element count, the same shape as `List[T]`; elements are immutable, so the buffer is shared by copies |
 | `Chan[T]` | `i64` — the compiler-assigned channel id; only `send`/`recv` consume it (§ Concurrency) |
 | `task` | an internal `void ()` function spawned by `main`; `async` functions are ordinary functions, and `await` spawns the callee as a child coroutine (§ Concurrency) |
+
+`Bool` follows C's `bool`: `i1` in the register ABI (a parameter or return,
+zero-extended), `i8` when stored in memory — a record/`@cstruct` field or an
+`alloca`. The FFI table lists the C-level `bool`
+([10-ffi-interop.md](10-ffi-interop.md)).
 
 ### Function ABI
 
