@@ -66,6 +66,29 @@ fn typecheck_error(src: &str) -> Option<String> {
     }
 }
 
+/// First resolve error message, bypassing later phases.
+fn resolve_error(src: &str) -> Option<String> {
+    let ts = lex(src.to_string(), "test.xz".to_string()).ok()?;
+    let p = parse(ts).ok()?;
+    match resolve(&p) {
+        Err(errors) => Some(errors[0].message.clone()),
+        Ok(_) => None,
+    }
+}
+
+/// True when the program passes name resolution.
+fn resolves(src: &str) -> bool {
+    let ts = match lex(src.to_string(), "test.xz".to_string()) {
+        Ok(ts) => ts,
+        Err(_) => return false,
+    };
+    let p = match parse(ts) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    resolve(&p).is_ok()
+}
+
 fn expect_intent_code(src: &str, code: &str, label: &str) {
     let err = check_source(src);
     match err {
@@ -319,6 +342,46 @@ func main() {
         }
         None => println!("FAIL generic_mismatch: id(1) accepted as Str"),
     }
+}
+
+#[test]
+fn unknown_param_type_is_rejected() {
+    let err = resolve_error("func f(x: Intt) -> Int { x }");
+    match err {
+        Some(e) if e.contains("unknown type 'Intt'") => {}
+        other => println!("FAIL unknown_param_type: expected unknown type 'Intt', got {:?}", other),
+    }
+}
+
+#[test]
+fn unknown_return_type_is_rejected() {
+    let err = resolve_error("func f(x: Int) -> Intt { x }");
+    match err {
+        Some(e) if e.contains("unknown type 'Intt'") => {}
+        other => println!("FAIL unknown_return_type: expected unknown type 'Intt', got {:?}", other),
+    }
+}
+
+#[test]
+fn unknown_nested_signature_type_is_rejected() {
+    let err = resolve_error("func f(x: List[Intt]) -> Int { 0 }");
+    match err {
+        Some(e) if e.contains("unknown type 'Intt'") => {}
+        other => println!("FAIL unknown_nested_signature_type: expected unknown type 'Intt', got {:?}", other),
+    }
+}
+
+#[test]
+fn generic_signature_type_params_resolve() {
+    // Type parameters are in scope in the signature, including nested uses.
+    assert!(
+        resolves("func id[T](x: T) -> T { x }"),
+        "bare type parameter in a signature must resolve"
+    );
+    assert!(
+        resolves("func wrap[K, V](k: K, v: V) -> List[K] { [k] }"),
+        "nested type parameter in a signature must resolve"
+    );
 }
 
 #[test]

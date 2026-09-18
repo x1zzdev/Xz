@@ -106,6 +106,16 @@ impl Resolver {
         for item in &program.items {
             match item {
                 Item::Func(f) => {
+                    // Validate the declared signature types before the body.
+                    // Type parameters (`T` in `func id[T](x: T) -> T`) are in
+                    // scope for the parameter and return types.
+                    let tparams: HashSet<&str> = f.type_params.iter().map(|tp| tp.name.as_str()).collect();
+                    for p in &f.params {
+                        self.resolve_type_in(&p.ty, &tparams);
+                    }
+                    if let Some(t) = &f.ret {
+                        self.resolve_type_in(t, &tparams);
+                    }
                     let mut scope = Scope::new();
                     for p in &f.params {
                         scope.insert(p.name.clone());
@@ -182,22 +192,29 @@ impl Resolver {
     }
 
     fn resolve_type(&mut self, ty: &Type) {
+        let no_params: HashSet<&str> = HashSet::new();
+        self.resolve_type_in(ty, &no_params);
+    }
+
+    /// Resolve a type reference, treating the names in `tparams` as in-scope
+    /// type parameters. Nested uses (`List[T]`) recurse with the same scope.
+    fn resolve_type_in(&mut self, ty: &Type, tparams: &HashSet<&str>) {
         match ty {
             Type::Named(name, args) => {
-                if !is_builtin_type(name) && !self.types.contains(name) {
+                if !is_builtin_type(name) && !self.types.contains(name) && !tparams.contains(name.as_str()) {
                     self.error(format!("unknown type '{}'", name), Span { file: "".to_string(), start: (0, 0), end: (0, 0) });
                 }
                 for a in args {
-                    self.resolve_type(a);
+                    self.resolve_type_in(a, tparams);
                 }
             }
             Type::Union(members) => {
                 for m in members {
-                    self.resolve_type(m);
+                    self.resolve_type_in(m, tparams);
                 }
             }
             Type::NamedPlain(name) => {
-                if !is_builtin_type(name) && !self.types.contains(name) {
+                if !is_builtin_type(name) && !self.types.contains(name) && !tparams.contains(name.as_str()) {
                     self.error(format!("unknown type '{}'", name), Span { file: "".to_string(), start: (0, 0), end: (0, 0) });
                 }
             }
