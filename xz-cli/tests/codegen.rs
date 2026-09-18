@@ -9,6 +9,7 @@ use xz_cli::backend::llvm_backend::compile_shared;
 use xz_cli::backend::header::generate_c_header;
 use xz_cli::backend::python::generate_python_bindings;
 use xz_cli::backend::runtime::run;
+use xz_cli::backend::runtime::run_capturing;
 use xz_cli::intent::check_intent;
 use xz_cli::lexer::lex;
 use xz_cli::parser::parse;
@@ -30,6 +31,28 @@ fn exec(src: &str) -> Result<(), String> {
 fn expect_exec(src: &str, label: &str) {
     match exec(src) {
         Ok(()) => {}
+        Err(e) => println!("FAIL {}: {}", label, e),
+    }
+}
+
+/// Compile and execute a whole program, returning its captured stdout.
+fn exec_capture(src: &str) -> Result<String, String> {
+    let tokens = lex(src.to_string(), "test.xz".to_string()).map_err(|e| e.message)?;
+    let program = parse(tokens).map_err(|e| e.message)?;
+    resolve(&program).map_err(|_| "resolve failed".to_string())?;
+    typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
+    check_intent(&program).map_err(|e| e[0].code.clone())?;
+    let backend = compile(&program)?;
+    let (_code, out) = run_capturing(backend.module)?;
+    Ok(out)
+}
+
+/// Assert the program's stdout byte-for-byte. This is what pins down the
+/// deterministic output order of channels, Map, and Set (docs/05, 12).
+fn expect_output(src: &str, expected: &str, label: &str) {
+    match exec_capture(src) {
+        Ok(out) if out == expected => {}
+        Ok(out) => println!("FAIL {}: expected {:?}, got {:?}", label, expected, out),
         Err(e) => println!("FAIL {}: {}", label, e),
     }
 }
@@ -397,7 +420,7 @@ fn list_literal_index_and_iteration_run() {
 fn map_literal_get_insert_and_iteration_run() {
     // Map[K, V]: literal construction, Option lookup, non-mutating insert
     // (replace preserves position), len/is_empty, and insertion-order keys/values.
-    expect_exec(
+    expect_output(
         r#"func main() -> Result[Unit, Err] {
     let counts: Map[Str, Int] = {"a": 1, "b": 2, "a": 3}
     print(counts.len().to_str())
@@ -427,6 +450,7 @@ fn map_literal_get_insert_and_iteration_run() {
     print("\n")
     ok()
 }"#,
+        "2 3 absent abc 324\n",
         "map literal, get, insert, iteration",
     );
 }
@@ -776,7 +800,8 @@ func main() -> Result[Unit, Err] {
     assert!(ir.contains("define internal void @__await_"), "await needs a trampoline:\n{}", ir);
     assert!(ir.contains("@xz_chan_send"), "the child must send its result:\n{}", ir);
     assert!(ir.contains("@xz_chan_recv"), "the caller must block on the result:\n{}", ir);
-    run(backend.module)?;
+    let (_code, out) = run_capturing(backend.module)?;
+    assert_eq!(out, "worker:1\nmain:22\n6\n", "await interleaving must be deterministic");
     Ok(())
 }
 
@@ -824,7 +849,8 @@ func main() -> Result[Unit, Err] {
     assert!(ir.contains("call void @xz_task_spawn"), "main must spawn tasks:\n{}", ir);
     assert!(ir.contains("@xz_chan_send"), "send must call the runtime:\n{}", ir);
     assert!(ir.contains("@xz_chan_recv"), "recv must call the runtime:\n{}", ir);
-    run(backend.module)?;
+    let (_code, out) = run_capturing(backend.module)?;
+    assert_eq!(out, "42\n", "channel output order/value must be deterministic");
     Ok(())
 }
 
@@ -833,7 +859,7 @@ fn set_literal_insert_contains_and_iteration_run() {
     // Set[T]: literal dedup (first position kept), non-mutating insert
     // (a present element is a no-op), contains hit/miss, len/is_empty, and
     // insertion-order iteration over elements and an empty set.
-    expect_exec(
+    expect_output(
         r#"func main() -> Result[Unit, Err] {
     let tags: Set[Str] = {"a", "b", "a"}
     print(tags.len().to_str())
@@ -868,6 +894,7 @@ fn set_literal_insert_contains_and_iteration_run() {
     print("\n")
     ok()
 }"#,
+        "2 3 3 has-b missing-z abc 0 true\n",
         "set literal, insert, contains, iteration",
     );
 }
@@ -907,9 +934,9 @@ fn read_file_reads_and_missing_is_err() -> Result<(), String> {
 fn time_now_and_monotonic_run() {
     // Both clock host functions lower to `xz_time_now` / `xz_time_monotonic`
     // returning f64. The values are non-deterministic, so this asserts the
-    // module verifies and runs (and that a monotonic pair does not go
-    // backwards, observable only through the branch, not stdout).
-    expect_exec(
+    // monotonic pair does not go backwards (the captured branch) and that
+    // `now()` renders as a parseable float.
+    let out = match exec_capture(
         r#"func main() {
     let before = monotonic()
     let wall = now()
@@ -922,6 +949,36 @@ fn time_now_and_monotonic_run() {
     print(wall.to_str())
     print("\n")
 }"#,
-        "time now/monotonic",
-    );
+    ) {
+        Ok(out) => out,
+        Err(e) => {
+            println!("FAIL time now/monotonic: {}", e);
+            return;
+        }
+    };
+    let wall = match out.strip_prefix("ok ") {
+        Some(rest) => rest.trim_end_matches('\n'),
+        None => {
+            println!("FAIL time now/monotonic: monotonic went backwards: {:?}", out);
+            return;
+        }
+    };
+    assert!(wall.parse::<f64>().is_ok(), "now() must render as a float, got {:?}", wall);
+}
+
+#[test]
+fn time_example_elapsed_is_a_float() -> Result<(), String> {
+    // examples/time.xz: `sum` is deterministic and now asserted exactly; the
+    // elapsed/now readings are wall-clock dependent, so only their float shape
+    // is asserted. Uses the capture sink so the run leaves no stray stdout.
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/time.xz"))
+        .map_err(|e| e.to_string())?;
+    let out = exec_capture(&src)?;
+    let mut lines = out.lines();
+    assert_eq!(lines.next(), Some("sum: 499999500000"));
+    let elapsed = lines.next().and_then(|l| l.strip_prefix("elapsed: ")).ok_or("missing elapsed line")?;
+    elapsed.parse::<f64>().map_err(|_| format!("elapsed not a float: {elapsed:?}"))?;
+    let now = lines.next().and_then(|l| l.strip_prefix("now: ")).ok_or("missing now line")?;
+    now.parse::<f64>().map_err(|_| format!("now not a float: {now:?}"))?;
+    Ok(())
 }

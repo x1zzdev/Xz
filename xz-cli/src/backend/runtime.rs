@@ -1,6 +1,8 @@
+use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Condvar, LazyLock, Mutex};
 use std::thread;
+use std::thread::ThreadId;
 use std::time::Instant;
 
 use inkwell::module::Module;
@@ -23,6 +25,22 @@ pub struct XzStr {
 /// conservative ownership rules (docs/13-codegen.md).
 static LIVE_STR: LazyLock<Mutex<HashMap<usize, usize>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Stdout capture sinks for `run_capturing`, keyed by the thread that started
+/// the run. `spawn_task` makes each task thread inherit its spawner's key, so a
+/// task's `print` lands in the same sink as the `main` that spawned it. Keying
+/// by thread lets concurrent capturing runs in one process stay isolated.
+static CAPTURE: LazyLock<Mutex<HashMap<ThreadId, Vec<u8>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+thread_local! {
+    /// The capture sink this thread belongs to; `None` means the thread owns
+    /// its own id. Set on task threads by `spawn_task`.
+    static CAPTURE_OWNER: Cell<Option<ThreadId>> = const { Cell::new(None) };
+}
+
+fn capture_owner() -> ThreadId {
+    CAPTURE_OWNER.with(|c| c.get()).unwrap_or_else(|| thread::current().id())
+}
+
 fn copy_to_leaked(src: &[u8]) -> usize {
     let len = src.len().max(1);
     let layout = std::alloc::Layout::array::<u8>(len).unwrap();
@@ -42,6 +60,13 @@ fn write_stdout(ptr: usize, len: usize) {
         let b = unsafe { *((ptr + i) as *mut u8) };
         buf.push(b);
     }
+    let owner = capture_owner();
+    let mut capture = CAPTURE.lock().unwrap();
+    if let Some(sink) = capture.get_mut(&owner) {
+        sink.extend_from_slice(&buf);
+        return;
+    }
+    drop(capture);
     print!("{}", unsafe { String::from_utf8_unchecked(buf) });
 }
 
@@ -254,6 +279,7 @@ extern "C" fn xz_sched_init() {
 /// thread. The thread waits for the token, so tasks run only when the scheduler
 /// grants it. The token passes to the next ready task when the body returns.
 fn spawn_task<F: FnOnce() + Send + 'static>(body: F) {
+    let owner = capture_owner();
     let id;
     {
         let mut s = sched_lock();
@@ -263,6 +289,7 @@ fn spawn_task<F: FnOnce() + Send + 'static>(body: F) {
     }
     thread::spawn(move || {
         TASK_ID.with(|t| t.set(id));
+        CAPTURE_OWNER.with(|c| c.set(Some(owner)));
         {
             let (lock, cv) = &*SCHED;
             let mut s = lock.lock().unwrap();
@@ -402,6 +429,19 @@ pub fn run(module: Module) -> Result<i32, String> {
     let main = ee.get_function_value("main").map_err(|_| "no 'main' function".to_string())?;
     let _ = unsafe { ee.run_function(main, &[]) };
     Ok(0)
+}
+
+/// Like `run`, but collect everything the program prints to stdout instead of
+/// writing it to the process stdout, and return it with the exit code. Capture
+/// is keyed by the calling thread and inherited by spawned tasks, so tests that
+/// run programs concurrently in one process do not see each other's output.
+pub fn run_capturing(module: Module) -> Result<(i32, String), String> {
+    let owner = thread::current().id();
+    CAPTURE.lock().unwrap().insert(owner, Vec::new());
+    let result = run(module);
+    let bytes = CAPTURE.lock().unwrap().remove(&owner).unwrap_or_default();
+    let out = String::from_utf8_lossy(&bytes).into_owned();
+    result.map(|code| (code, out))
 }
 
 fn bind<'ctx>(
