@@ -122,7 +122,8 @@ runtime and libc. `print`/`to_str`/`concat`/`str_free` therefore stay one C-ABI
 call each; `xz_str_eq` is a byte-compare loop; `xz_read_file` copies the path
 into a NUL-terminated buffer and reads the file via libc `fopen`/`fread`;
 `xz_time_now` calls libc `gettimeofday` and `xz_time_monotonic` calls
-`clock_gettime(CLOCK_MONOTONIC)`; `abs`/`sqrt` remain native
+`clock_gettime(CLOCK_MONOTONIC)` (the clock id is selected for the host libc);
+`abs`/`sqrt` remain native
 intrinsics. The JIT path is unaffected — `add_global_mapping` overrides these
 definitions when running in-process.
 

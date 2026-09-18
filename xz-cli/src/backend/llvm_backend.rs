@@ -1258,6 +1258,7 @@ pub fn emit_native_runtime(backend: &mut LlvmBackend<'static>) -> Result<(), Str
     // clock via gettimeofday; `monotonic` reads CLOCK_MONOTONIC via
     // clock_gettime. Both libc calls fill a {sec, subsec} struct (timeval on
     // Linux is {i64, i64}, timespec likewise), which is scaled to f64 seconds.
+    // The clock id is a libc macro, so `monotonic_clock_id` selects it per host.
     emit_time_body(backend, "xz_time_now", false);
     emit_time_body(backend, "xz_time_monotonic", true);
 
@@ -1300,7 +1301,7 @@ fn emit_time_body(backend: &mut LlvmBackend<'static>, fname: &str, monotonic: bo
     backend.builder.position_at_end(entry);
     let tv = backend.builder.build_alloca(tv_ty, "tv").unwrap();
     if args_clock {
-        let clk = i32_ty.const_int(1, false);
+        let clk = i32_ty.const_int(monotonic_clock_id(), false);
         backend.builder.build_direct_call(host, &[clk.into(), tv.into()], "clock").unwrap();
     } else {
         backend
@@ -1318,4 +1319,24 @@ fn emit_time_body(backend: &mut LlvmBackend<'static>, fname: &str, monotonic: bo
     let frac_s = backend.builder.build_float_mul(frac_f, scale, "frac.s").unwrap();
     let total = backend.builder.build_float_add(sec_f, frac_s, "time").unwrap();
     backend.builder.build_return(Some(&total)).unwrap();
+}
+
+/// The host libc's `CLOCK_MONOTONIC` id for `clock_gettime`. The id is a libc
+/// macro, not a shared ABI constant, so it is selected per target OS; the
+/// native runtime is linked against the host libc (docs/13-codegen.md).
+fn monotonic_clock_id() -> u64 {
+    if cfg!(any(target_os = "macos", target_os = "ios")) {
+        6
+    } else if cfg!(any(
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "solaris",
+        target_os = "illumos"
+    )) {
+        4
+    } else if cfg!(any(target_os = "netbsd", target_os = "openbsd")) {
+        3
+    } else {
+        1
+    }
 }
