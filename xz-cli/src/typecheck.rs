@@ -77,6 +77,11 @@ pub struct TypeChecker {
     enum_variants: HashMap<String, Vec<String>>,
     /// function signatures: name -> (params, ret, type-parameter list)
     funcs: HashMap<String, (Vec<Kind>, Option<Kind>, Vec<Kind>)>,
+    /// names of `async` functions: only these may be `await`ed (docs/05, 11)
+    async_funcs: HashSet<String>,
+    /// true while checking a body that can suspend — an `async func`, `main`,
+    /// or a `task` (docs/05); `await` is illegal elsewhere
+    cur_scheduled: bool,
     /// record constructor -> field types in order
     record_ctors: HashMap<String, Vec<Kind>>,
     /// channels: name -> payload type
@@ -100,6 +105,8 @@ pub fn typecheck(program: &Program) -> Result<(), Vec<TypeError>> {
         variants: HashMap::new(),
         enum_variants: HashMap::new(),
         funcs: HashMap::new(),
+        async_funcs: HashSet::new(),
+        cur_scheduled: false,
         record_ctors: HashMap::new(),
         chans: HashMap::new(),
         cur_tparams: vec![],
@@ -323,6 +330,9 @@ impl TypeChecker {
             match item {
                 Item::Func(f) => {
                     self.cur_span = f.span.clone();
+                    if f.is_async {
+                        self.async_funcs.insert(f.name.clone());
+                    }
                     self.cur_tparams = f.type_params.iter().map(|tp| tp.name.clone()).collect();
                     self.cur_constraints = f.type_params.iter().map(|tp| tp.constraint.clone()).collect();
                     let param_tys: Vec<Kind> = f.params.iter().map(|p| self.from_ast(&p.ty)).collect();
@@ -443,6 +453,7 @@ impl TypeChecker {
             match item {
 Item::Func(f) => {
                     self.cur_span = f.span.clone();
+                    self.cur_scheduled = f.is_async || f.name == "main";
                     self.cur_tparams = f.type_params.iter().map(|tp| tp.name.clone()).collect();
                     self.cur_constraints = f.type_params.iter().map(|tp| tp.constraint.clone()).collect();
                     let ret_ty: Option<Kind> = match &f.ret { Some(t) => Some(self.from_ast(t)), None => None };
@@ -462,6 +473,7 @@ Item::Func(f) => {
                 }
                 Item::Task(t) => {
                     self.cur_span = t.span.clone();
+                    self.cur_scheduled = true;
                     let mut env: Env = Env::default();
                     self.seed_env(&mut env);
                     self.check_block(&t.body, &mut env);
@@ -1160,7 +1172,28 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                 self.check_block(b, env);
                 Kind::Never
             }
-            Expr::Await(a) => self.check_expr(a, env),
+            Expr::Await(a) => {
+                // `await` is a suspension point, so it is legal only where the
+                // current body can suspend (docs/05), and only on a call to a
+                // named `async` function (docs/05 rule 6, docs/11, docs/13).
+                if !self.cur_scheduled {
+                    self.error(String::from(
+                        "await is only allowed in an async function, main, or a task",
+                    ));
+                }
+                match &**a {
+                    Expr::Call(callee, _) => match &**callee {
+                        Expr::Name(n) => {
+                            if !self.async_funcs.contains(n) {
+                                self.error(format!("await target '{}' is not an async function", n));
+                            }
+                        }
+                        _ => self.error(String::from("await target must be a named async function")),
+                    },
+                    _ => self.error(String::from("await applies to a call to an async function")),
+                }
+                self.check_expr(a, env)
+            }
             Expr::Send(ch, value) => {
                 let _ = self.check_expr(ch, env); // channel type env
                 let vt = self.check_expr(value, env);

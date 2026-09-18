@@ -66,6 +66,22 @@ fn typecheck_error(src: &str) -> Option<String> {
     }
 }
 
+/// True when the program passes lex/parse/resolve/typecheck (no intent phase).
+fn typechecks(src: &str) -> bool {
+    let ts = match lex(src.to_string(), "test.xz".to_string()) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let p = match parse(ts) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    if resolve(&p).is_err() {
+        return false;
+    }
+    typecheck(&p).is_ok()
+}
+
 /// First resolve error message, bypassing later phases.
 fn resolve_error(src: &str) -> Option<String> {
     let ts = lex(src.to_string(), "test.xz".to_string()).ok()?;
@@ -898,6 +914,93 @@ fn export_async_rejected() {
         Some(e) => assert!(e.contains("cannot be async"), "unexpected error: {}", e),
         None => panic!("async @export accepted"),
     }
+}
+
+#[test]
+fn await_target_must_be_async() {
+    let err = typecheck_error(
+        r#"func plain(x: Int) -> Int {
+    x + 1
+}
+
+func main() {
+    let r = await plain(1)
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("is not an async function"), "unexpected error: {}", e),
+        None => panic!("await of a non-async function accepted"),
+    }
+}
+
+#[test]
+fn await_target_must_be_a_call() {
+    let err = typecheck_error(
+        r#"async func inc(x: Int) -> Int {
+    x + 1
+}
+
+func main() {
+    let r = await inc
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("await applies to a call"), "unexpected error: {}", e),
+        None => panic!("await of a non-call accepted"),
+    }
+}
+
+#[test]
+fn await_outside_scheduled_context_rejected() {
+    let err = typecheck_error(
+        r#"async func inc(x: Int) -> Int {
+    x + 1
+}
+
+func helper() -> Int {
+    let r = await inc(1)
+    r
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("only allowed in an async function"), "unexpected error: {}", e),
+        None => panic!("await in a plain func accepted"),
+    }
+}
+
+#[test]
+fn await_in_async_and_main_accepted() {
+    assert!(typechecks(
+        r#"async func inc(x: Int) -> Int {
+    x + 1
+}
+
+async func pair(x: Int) -> Int {
+    let a = await inc(x)
+    let b = await inc(x)
+    a + b
+}
+
+func main() {
+    let r = await pair(1)
+}"#
+    ));
+}
+
+#[test]
+fn await_in_task_accepted() {
+    assert!(typechecks(
+        r#"async func inc(x: Int) -> Int {
+    x + 1
+}
+
+task worker {
+    let r = await inc(1)
+}
+
+func main() {
+}"#
+    ));
 }
 
 #[test]
