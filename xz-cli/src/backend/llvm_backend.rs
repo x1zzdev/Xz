@@ -7,7 +7,7 @@ use inkwell::module::Module;
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetData, TargetMachine};
 use inkwell::types::{BasicType, BasicTypeEnum, StructType};
-use inkwell::values::FunctionValue;
+use inkwell::values::{BasicValue, FunctionValue};
 use inkwell::{AddressSpace, OptimizationLevel};
 
 use crate::ast::{self, Item, Program, Type};
@@ -828,6 +828,48 @@ pub fn hide_runtime_symbols(backend: &LlvmBackend<'static>) {
     }
 }
 
+/// The host functions that only the JIT runtime provides (runtime.rs). A
+/// native or shared build emits no scheduler, so a program that calls any of
+/// these cannot link (docs/13-codegen.md § Concurrency).
+const SCHEDULER_HOST_FUNCTIONS: [&str; 5] = [
+    "xz_sched_init",
+    "xz_task_spawn",
+    "xz_task_spawn_arg",
+    "xz_chan_send",
+    "xz_chan_recv",
+];
+
+/// The scheduler host functions the module actually calls, in table order.
+/// Unused declarations are ignored, so a declared-but-unused `chan` does not
+/// block a native build.
+fn referenced_scheduler_functions(backend: &LlvmBackend<'static>) -> Vec<&'static str> {
+    SCHEDULER_HOST_FUNCTIONS
+        .iter()
+        .copied()
+        .filter(|name| {
+            backend
+                .module
+                .get_function(name)
+                .map(|f| f.as_global_value().as_pointer_value().get_first_use().is_some())
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// A clear diagnostic when a program needs the JIT-only scheduler, so
+/// `xz build-native`/`xz build --shared` reject it instead of failing at link
+/// time. `None` means the native runtime can cover the program.
+pub fn native_scheduler_unsupported(backend: &LlvmBackend<'static>) -> Option<String> {
+    let used = referenced_scheduler_functions(backend);
+    if used.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "channels, tasks, and await are JIT-only; the native runtime does not provide {} (docs/13-codegen.md)",
+        used.join(", ")
+    ))
+}
+
 /// Emit the native runtime: define the `xz_*` host functions (currently only
 /// declared as externs for the JIT) as real IR bodies that call libc. This is
 /// what makes `xz build` output linkable into a standalone executable with
@@ -835,6 +877,10 @@ pub fn hide_runtime_symbols(backend: &LlvmBackend<'static>) {
 /// still binds the Rust host functions via `add_global_mapping`, which
 /// overrides these definitions.
 pub fn emit_native_runtime(backend: &mut LlvmBackend<'static>) -> Result<(), String> {
+    if let Some(reason) = native_scheduler_unsupported(backend) {
+        return Err(reason);
+    }
+
     let i8 = backend.types.char;
     let i32 = backend.context.i32_type();
     let i64 = backend.types.int;

@@ -254,8 +254,10 @@ Host ABI (JIT only):
 
 The host serializes the task threads with a single token so exactly one task
 runs at a time and the schedule is deterministic. `xz build-native` and
-`xz build --shared` do not yet emit these host functions, so a program that uses
-channels or `await` is JIT-only for now.
+`xz build --shared` do not emit these host functions, so a program that uses
+channels or `await` is JIT-only for now: the native/shared build detects the
+scheduler calls and rejects the program with a clear error instead of failing
+at link time.
 
 ## `xz build` vs `xz run`
 

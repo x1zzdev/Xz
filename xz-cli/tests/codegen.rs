@@ -61,6 +61,17 @@ fn expect_output(src: &str, expected: &str, label: &str) {
     }
 }
 
+/// Parse, resolve, typecheck, and intent-check a program, for backend tests
+/// that inspect or emit a module without executing it.
+fn checked_program(src: &str) -> Result<xz_cli::ast::Program, String> {
+    let tokens = lex(src.to_string(), "test.xz".to_string()).map_err(|e| e.message)?;
+    let program = parse(tokens).map_err(|e| e.message)?;
+    resolve(&program).map_err(|_| "resolve failed".to_string())?;
+    typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
+    check_intent(&program).map_err(|e| e[0].code.clone())?;
+    Ok(program)
+}
+
 #[test]
 fn hello_prints_and_returns() {
     expect_exec(
@@ -1189,6 +1200,58 @@ func main() -> Result[Unit, Err] {
     assert!(ir.contains("@xz_chan_recv"), "recv must call the runtime:\n{}", ir);
     let (_code, out) = run_capturing(backend.module)?;
     assert_eq!(out, "42\n", "channel output order/value must be deterministic");
+    Ok(())
+}
+
+#[test]
+fn native_build_rejects_scheduler_programs() -> Result<(), String> {
+    // `xz build-native`/`xz build --shared` emit no scheduler host functions
+    // (docs/13-codegen.md § Concurrency), so a program that calls them must be
+    // rejected with a clear diagnostic instead of failing at link time. Unused
+    // declarations are ignored, so a declared-but-unused channel still builds.
+    let task_src = r#"chan c: Chan[Int]
+
+/// Receives one value.
+/// @intent  Prints the received value.
+/// @effects io, chan
+task worker {
+    let v <- recv(c)
+    print(v.to_str())
+}
+
+func main() {
+    send(c, 1)
+}"#;
+    let mut backend = compile(&checked_program(task_src)?)?;
+    let err = emit_native_runtime(&mut backend).expect_err("scheduler calls must be rejected");
+    assert!(err.contains("JIT-only"), "{}", err);
+    assert!(err.contains("xz_sched_init"), "{}", err);
+    assert!(err.contains("xz_task_spawn"), "{}", err);
+    assert!(err.contains("xz_chan_send"), "{}", err);
+    assert!(err.contains("xz_chan_recv"), "{}", err);
+
+    let await_src = r#"/// Adds one.
+/// @intent  Returns x + 1.
+/// @effects none
+async func inc(x: Int) -> Int {
+    x + 1
+}
+
+func main() {
+    let r = await inc(1)
+    print(r.to_str())
+}"#;
+    let mut backend = compile(&checked_program(await_src)?)?;
+    let err = emit_native_runtime(&mut backend).expect_err("await must be rejected");
+    assert!(err.contains("xz_task_spawn_arg"), "{}", err);
+
+    let unused_src = r#"chan c: Chan[Int]
+
+func main() {
+    print("ok")
+}"#;
+    let mut backend = compile(&checked_program(unused_src)?)?;
+    emit_native_runtime(&mut backend).expect("an unused channel must not block a native build");
     Ok(())
 }
 

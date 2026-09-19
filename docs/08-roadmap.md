@@ -4,7 +4,8 @@ Status: Phases 1–4 (front end + LLVM JIT backend) are implemented; `xz check`
 and `xz run` work on the example programs. Phase 5 (FFI) is underway — the
 C ABI bridge, shared-library output, and `xz bind --lang python` work.
 Phase 6 has typed channels, a deterministic task scheduler, and `async`/`await`
-lowering on the JIT path; the native runtime does not yet emit the scheduler.
+lowering on the JIT path; the native runtime does not yet emit the scheduler, so
+native/shared builds reject programs that use it.
 Phase 7 has begun (`List`/`Map`/`Set` first slices, `read_file`, and clock
 reads); Phase 8 has begun with the LSP diagnostics server and now includes the
 `xz fmt` formatter, the `xz pkg gen --lang python` binding generator for

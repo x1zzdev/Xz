@@ -267,6 +267,10 @@ fn run_native_build(tokens: Vec<Token>) -> i32 {
             return 1;
         }
     };
+    if let Some(reason) = xz_cli::backend::llvm_backend::native_scheduler_unsupported(&backend) {
+        println!("error: {}", reason);
+        return 1;
+    }
     if let Err(e) = xz_cli::backend::llvm_backend::emit_native_runtime(&mut backend) {
         println!("error: native runtime emission failed: {}", e);
         return 1;
@@ -414,6 +418,10 @@ fn run_shared_build(
             return 1;
         }
     };
+    if let Some(reason) = xz_cli::backend::llvm_backend::native_scheduler_unsupported(&backend) {
+        println!("error: {}", reason);
+        return 1;
+    }
     if let Err(e) = xz_cli::backend::llvm_backend::emit_native_runtime(&mut backend) {
         println!("error: native runtime emission failed: {}", e);
         return 1;
