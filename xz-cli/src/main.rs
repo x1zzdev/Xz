@@ -20,7 +20,7 @@ fn main() {
     }
     if argv.len() < 3 {
         println!(
-            "usage: xz <lex|parse|check|check-json|build|run|build-native|bind|fmt|lsp> [--strict] [--shared] [--out <path>] [--lang python] [--lib <name>] <file.xz>"
+            "usage: xz <lex|parse|check|check-json|build|run|build-native|bind|fmt|lsp> [--strict] [--shared] [--bind python] [--out <path>] [--lang python] [--lib <name>] <file.xz>"
         );
         println!("       xz pkg gen --lang python [--lib <name>] <file.xzint>");
         println!("       xz pkg add <name> [--registry <base_url>]");
@@ -29,6 +29,7 @@ fn main() {
     let cmd = argv[1].clone();
     let mut strict = false;
     let mut shared = false;
+    let mut bind: Option<String> = None;
     let mut out: Option<String> = None;
     let mut lang: Option<String> = None;
     let mut lib: Option<String> = None;
@@ -40,6 +41,11 @@ fn main() {
             strict = true;
         } else if a == "--shared" {
             shared = true;
+        } else if a == "--bind" {
+            i += 1;
+            if i < argv.len() {
+                bind = Some(argv[i].clone());
+            }
         } else if a == "--out" {
             i += 1;
             if i < argv.len() {
@@ -62,7 +68,7 @@ fn main() {
     }
     if path == "" {
         println!(
-            "usage: xz <lex|parse|check|check-json|build|run|build-native|bind|fmt|lsp> [--strict] [--shared] [--out <path>] [--lang python] [--lib <name>] <file.xz>"
+            "usage: xz <lex|parse|check|check-json|build|run|build-native|bind|fmt|lsp> [--strict] [--shared] [--bind python] [--out <path>] [--lang python] [--lib <name>] <file.xz>"
         );
         println!("       xz pkg gen --lang python [--lib <name>] <file.xzint>");
         println!("       xz pkg add <name> [--registry <base_url>]");
@@ -119,8 +125,12 @@ fn main() {
                     } else if cmd == "check-json" {
                         std::process::exit(run_check(tokens, strict, true));
                     } else if cmd == "build" {
+                        if bind.is_some() && !shared {
+                            println!("error: xz build --bind requires --shared");
+                            std::process::exit(1);
+                        }
                         if shared {
-                            std::process::exit(run_shared_build(tokens, out));
+                            std::process::exit(run_shared_build(tokens, out, bind, path.clone()));
                         }
                         std::process::exit(run_backend(tokens, false));
                     } else if cmd == "run" {
@@ -352,8 +362,21 @@ fn run_native_build(tokens: Vec<Token>) -> i32 {
 /// `ld -shared` into a shared object and writes a generated C header. Functions
 /// marked `@export` are the exported symbols; `main` is kept internal. The
 /// default output is `libXz.so`/`libXz.h`; `--out <path>` names the shared
-/// object and the header follows beside it with the same stem.
-fn run_shared_build(tokens: Vec<Token>, out: Option<String>) -> i32 {
+/// object and the header follows beside it with the same stem. `--bind python`
+/// additionally emits the same ctypes wrapper as `xz bind --lang python`,
+/// loading the shared object just built (docs/10-ffi-interop.md).
+fn run_shared_build(
+    tokens: Vec<Token>,
+    out: Option<String>,
+    bind: Option<String>,
+    source: String,
+) -> i32 {
+    if let Some(lang) = bind.as_deref()
+        && lang != "python"
+    {
+        println!("error: unsupported bind language '{}' (only python)", lang);
+        return 1;
+    }
     let parsed = parse(tokens);
     let program = match parsed {
         Err(e) => {
@@ -479,7 +502,27 @@ fn run_shared_build(tokens: Vec<Token>, out: Option<String>) -> i32 {
         println!("error: cannot write {}: {}", header_out.display(), e);
         return 1;
     }
-    println!("ok: wrote {} and {}", lib_out.display(), header_out.display());
+    if bind.is_some() {
+        let wrapper = xz_cli::backend::python_wrapper_path(&source);
+        let load = out.as_deref().unwrap_or("libXz.so");
+        let bindings = xz_cli::backend::python::generate_python_bindings(&program, load);
+        if let Err(e) = std::fs::write(&wrapper, bindings) {
+            println!("error: cannot write ./{}: {}", wrapper.display(), e);
+            return 1;
+        }
+        println!(
+            "ok: wrote {} and {} and ./{}",
+            lib_out.display(),
+            header_out.display(),
+            wrapper.display()
+        );
+    } else {
+        println!(
+            "ok: wrote {} and {}",
+            lib_out.display(),
+            header_out.display()
+        );
+    }
     0
 }
 
@@ -530,18 +573,14 @@ fn run_bind(tokens: Vec<Token>, lang: Option<String>, lib: Option<String>, path:
         return 1;
     }
 
-    let stem = std::path::Path::new(&path)
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "xz_bindings".to_string());
-    let out_name = format!("{}.py", stem);
+    let out_name = xz_cli::backend::python_wrapper_path(&path);
     let lib = lib.unwrap_or_else(|| "libXz.so".to_string());
     let bindings = xz_cli::backend::python::generate_python_bindings(&program, &lib);
     if let Err(e) = std::fs::write(&out_name, bindings) {
-        println!("error: cannot write ./{}: {}", out_name, e);
+        println!("error: cannot write ./{}: {}", out_name.display(), e);
         return 1;
     }
-    println!("ok: wrote ./{}", out_name);
+    println!("ok: wrote ./{}", out_name.display());
     0
 }
 

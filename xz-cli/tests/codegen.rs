@@ -10,6 +10,7 @@ use xz_cli::backend::llvm_backend::emit_native_runtime;
 use xz_cli::backend::llvm_backend::hide_runtime_symbols;
 use xz_cli::backend::header::generate_c_header;
 use xz_cli::backend::python::generate_python_bindings;
+use xz_cli::backend::python_wrapper_path;
 use xz_cli::backend::runtime::run;
 use xz_cli::backend::runtime::run_capturing;
 use xz_cli::backend::shared_output_paths;
@@ -677,6 +678,16 @@ fn shared_output_paths_honor_out_flag() {
     let (lib, header) = shared_output_paths(Some("dist/libfoo.so"));
     assert_eq!(lib.to_str(), Some("dist/libfoo.so"));
     assert_eq!(header.to_str(), Some("dist/libfoo.h"));
+}
+
+#[test]
+fn python_wrapper_path_matches_source_stem() {
+    // `xz bind --lang python` and `xz build --shared --bind python` name the
+    // wrapper after the source file's stem, in the current directory, so it
+    // does not shadow the shared object as an extension module.
+    assert_eq!(python_wrapper_path("foo.xz").to_str(), Some("foo.py"));
+    assert_eq!(python_wrapper_path("dist/foo.xz").to_str(), Some("foo.py"));
+    assert_eq!(python_wrapper_path("noext").to_str(), Some("noext.py"));
 }
 
 #[test]

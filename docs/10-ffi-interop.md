@@ -186,6 +186,11 @@ The wrapper deliberately does not reuse the `libXz` name: a `.py` module named
 `libXz` would be shadowed by `libXz.so`, which Python treats as an extension
 module.
 
+`xz build --shared --bind python <file.xz>` performs the build and the binding
+in one invocation: it writes the shared object and header, then the wrapper,
+which loads the object named by `--out` (default `libXz.so`). The wrapper is
+identical to the one `xz bind` produces.
+
 The generated bindings expose Python types, not raw C structs. A signature
 whose parameters or return mention `Str` or `Bytes` gets a Python wrapper that
 encodes/decodes them to `str`/`bytes`; the remaining types already cross as
@@ -247,7 +252,7 @@ signature is future work.
 
 ## Python bridge (first-class)
 
-- `xz build --shared --bind python` produces a `.so` plus a `.py` wrapper module with proper types (Xz `Int` → Python `int`, `Result` → exceptions or `None`/tuples).
+- `xz build --shared --bind python` produces a `.so` plus a `.py` wrapper module with proper types (Xz `Int` → Python `int`, `Str`/`Bytes` → `str`/`bytes`). Mapping `Result` to Python exceptions belongs to the CPython shim below, not the C-ABI wrapper — an exported signature is C-representable only.
 - Xz code can call Python libraries through a generated CPython shim, mapping Xz `Result` to Python exceptions.
 
 ## Priority

@@ -20,3 +20,17 @@ pub fn shared_output_paths(out: Option<&str>) -> (PathBuf, PathBuf) {
         None => (PathBuf::from("libXz.so"), PathBuf::from("libXz.h")),
     }
 }
+
+/// Resolve the Python wrapper path for `xz build --shared --bind python` and
+/// `xz bind --lang python`. The wrapper is named after the source file's stem
+/// (`foo.xz` -> `foo.py`) and written in the current directory. It must not
+/// reuse the shared object's name: a `.py` module named `libXz` would be
+/// shadowed by `libXz.so`, which Python treats as an extension module
+/// (docs/10-ffi-interop.md).
+pub fn python_wrapper_path(source: &str) -> PathBuf {
+    let stem = std::path::Path::new(source)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "xz_bindings".to_string());
+    PathBuf::from(format!("{stem}.py"))
+}
