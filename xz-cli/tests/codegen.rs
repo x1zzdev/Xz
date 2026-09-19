@@ -718,7 +718,7 @@ func main() {
     typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
     check_intent(&program).map_err(|e| e[0].code.clone())?;
 
-    let bindings = generate_python_bindings(&program);
+    let bindings = generate_python_bindings(&program, "libXz.so");
     assert!(
         bindings.contains("_lib.add.argtypes = [ctypes.c_int64, ctypes.c_int64]"),
         "missing add argtypes:\n{}",
@@ -732,6 +732,39 @@ func main() {
     let inner_pos = bindings.find("class Inner(ctypes.Structure):").ok_or("Inner class missing")?;
     let outer_pos = bindings.find("class Outer(ctypes.Structure):").ok_or("Outer class missing")?;
     assert!(inner_pos < outer_pos, "nested record must be defined before its user:\n{}", bindings);
+    Ok(())
+}
+
+#[test]
+fn python_bindings_load_named_library() -> Result<(), String> {
+    // `xz bind --lang python --lib <name>` loads that sibling shared object
+    // instead of the default `libXz.so`, so the wrapper can follow the name
+    // given to `xz build --shared --out` (docs/10-ffi-interop.md).
+    let src = r#"/// Adds two numbers.
+/// @intent  Returns a + b.
+/// @effects none
+@export func add(a: Int, b: Int) -> Int {
+    a + b
+}"#;
+    let tokens = lex(src.to_string(), "shared.xz".to_string()).map_err(|e| e.message)?;
+    let program = parse(tokens).map_err(|e| e.message)?;
+    resolve(&program).map_err(|_| "resolve failed".to_string())?;
+    typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
+    check_intent(&program).map_err(|e| e[0].code.clone())?;
+
+    let bindings = generate_python_bindings(&program, "libfoo.so");
+    assert!(
+        bindings.contains(
+            "_lib = ctypes.CDLL(os.path.join(os.path.dirname(os.path.abspath(__file__)), \"libfoo.so\"))"
+        ),
+        "wrapper must load the named sibling library:\n{}",
+        bindings
+    );
+    assert!(
+        !bindings.contains("libXz.so"),
+        "the default library name must not leak when overridden:\n{}",
+        bindings
+    );
     Ok(())
 }
 
@@ -767,7 +800,7 @@ fn python_bindings_marshal_str_and_bytes() -> Result<(), String> {
     typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
     check_intent(&program).map_err(|e| e[0].code.clone())?;
 
-    let bindings = generate_python_bindings(&program);
+    let bindings = generate_python_bindings(&program, "libXz.so");
     assert!(
         bindings.contains("def greet(name):"),
         "missing Str wrapper:\n{}",
@@ -940,7 +973,7 @@ func main() {
 
     let header = generate_c_header(&program);
     assert!(header.contains("void inc(int64_t* x);"), "mut param must map to a pointer:\n{}", header);
-    let bindings = generate_python_bindings(&program);
+    let bindings = generate_python_bindings(&program, "libXz.so");
     assert!(
         bindings.contains("_lib.inc.argtypes = [ctypes.POINTER(ctypes.c_int64)]"),
         "mut param must map to a pointer:\n{}",

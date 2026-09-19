@@ -30,7 +30,7 @@ xz build <file.xz>          # type check + contract check + codegen (Phase 4: em
 xz build --shared <file.xz> # emit libXz.so + libXz.h for the @export functions
 xz build --shared --out <path> <file.xz>  # same, but write <path> + a sibling .h
 xz build-native <file.xz>   # emit IR + native runtime, compile with llc, link with ld -> ./xz_program
-xz bind --lang python <file.xz>  # emit a ctypes wrapper (<stem>.py) for the @export functions
+xz bind --lang python [--lib <name>] <file.xz>  # emit a ctypes wrapper (<stem>.py) for the @export functions
 xz pkg gen --lang python [--lib <name>] <file.xzint>  # emit a ctypes wrapper (<stem>.py) for an extern interface
 xz pkg add <name> [--registry <base_url>]            # fetch + verify <name>.xzint from a registry
 xz check <file.xz>          # type/contract check only, no codegen

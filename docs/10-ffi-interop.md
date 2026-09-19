@@ -180,9 +180,11 @@ runtime as `xz build-native` and has no Rust dependency.
 `@cstruct` records as `xz build --shared` and writes a `ctypes` module named
 after the source file (`foo.xz` -> `foo.py`). The module declares each
 `@cstruct` as a `ctypes.Structure` and types every exported function, then
-loads the sibling `libXz.so`. The wrapper deliberately does not reuse the
-`libXz` name: a `.py` module named `libXz` would be shadowed by `libXz.so`,
-which Python treats as an extension module.
+loads the sibling shared object: `libXz.so` by default, or the name given to
+`--lib <name>`, which should match the `--out` passed to `xz build --shared`.
+The wrapper deliberately does not reuse the `libXz` name: a `.py` module named
+`libXz` would be shadowed by `libXz.so`, which Python treats as an extension
+module.
 
 The generated bindings expose Python types, not raw C structs. A signature
 whose parameters or return mention `Str` or `Bytes` gets a Python wrapper that
