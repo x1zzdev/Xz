@@ -1,3 +1,4 @@
+use xz_cli::ast::{Expr, Item, StmtKind};
 use xz_cli::lexer::lex;
 use xz_cli::parser::parse;
 use xz_cli::resolve::resolve;
@@ -1194,4 +1195,58 @@ fn time_now_rejects_arguments() {
         Some(e) => assert!(e.contains("now") && e.contains("0 args"), "unexpected error: {}", e),
         None => panic!("now(1) must be rejected"),
     }
+}
+
+#[test]
+fn await_call_then_propagate_binds_question_outside_await() {
+    // docs/11-grammar.md precedence: `await f()?` parses as `(await f())?` —
+    // the `?` applies to the await expression, not inside its operand.
+    let src = r#"async func fetch(x: Int) -> Result[Int, Err] {
+    ok(x)
+}
+
+func main() {
+    let v = await fetch(1)?
+}"#;
+    let ts = lex(src.to_string(), "test.xz".to_string()).ok().expect("lex");
+    let program = parse(ts).expect("parse");
+    let main = program
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Func(f) if f.name == "main" => Some(f),
+            _ => None,
+        })
+        .expect("main decl");
+    let init = match &main.body.stmts[0].kind {
+        StmtKind::Decl(d) => d.init.as_ref().expect("let initializer"),
+        _ => panic!("first statement of main should be a let declaration"),
+    };
+    match init.as_ref() {
+        Expr::Prop(inner, _) => match inner.as_ref() {
+            Expr::Await(operand) => match operand.as_ref() {
+                Expr::Call(..) => {}
+                _ => panic!("await operand should be the call, not the `?` expression"),
+            },
+            _ => panic!("`?` should wrap the await expression, not stay inside it"),
+        },
+        _ => panic!("expected `let v = (await fetch(1))?`"),
+    }
+}
+
+#[test]
+fn await_result_with_question_mark_typechecks() {
+    // `await` of a `Result`-returning async call, then `?`, must unwrap to the
+    // payload type: this only typechecks when `?` binds outside `await`.
+    assert!(typechecks(
+        r#"async func fetch(x: Int) -> Result[Int, Err] {
+    ok(x)
+}
+
+func main() -> Result[Unit, Err] {
+    let v: Int = await fetch(1)?
+    print(v.to_str())
+    ok()
+}"#
+    ));
 }
