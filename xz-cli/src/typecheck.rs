@@ -140,6 +140,13 @@ impl TypeChecker {
         self.errors.push(TypeError { message: message, span: span });
     }
 
+    /// True when `name` is a declared function with type parameters — its
+    /// signature carries `TypeVar` slots, so it must be monomorphized before
+    /// it can be called (docs/13).
+    fn is_generic(&self, name: &str) -> bool {
+        self.funcs.get(name).is_some_and(|(_, _, tvs)| !tvs.is_empty())
+    }
+
     fn build_world(&mut self, program: &Program) {
         for item in &program.items {
             match item {
@@ -1186,6 +1193,12 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         Expr::Name(n) => {
                             if !self.async_funcs.contains(n) {
                                 self.error(format!("await target '{}' is not an async function", n));
+                            } else if self.is_generic(n) {
+                                // The backend cannot yet spawn a generic async
+                                // callee (it needs monomorphization before the
+                                // trampoline is built — docs/13 Scope), so
+                                // reject it here instead of failing in codegen.
+                                self.error(format!("await of a generic function '{}' is not supported yet", n));
                             }
                         }
                         _ => self.error(String::from("await target must be a named async function")),

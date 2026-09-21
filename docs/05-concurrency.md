@@ -99,11 +99,13 @@ Rules:
 5. **Wakeups are FIFO.** A task made runnable (by spawn, a `send` handoff, or a
    completed `await`) is appended to the **tail** of the ready queue.
 6. **`await` suspends the current task.** An `async` function runs as a
-   scheduled coroutine. `await e`, where `e` calls an `async` function, runs it
-   as a child: the parent blocks until the child completes, then the parent is
-   enqueued with the child's result. If the child itself blocks on `recv`, the
-   scheduler runs other ready tasks meanwhile. `await` follows the same
-   ready-queue policy as `recv`.
+   scheduled coroutine. `await e`, where `e` calls a named, non-generic `async`
+   function, runs it as a child: the parent blocks until the child completes,
+   then the parent is enqueued with the child's result. If the child itself
+   blocks on `recv`, the scheduler runs other ready tasks meanwhile. `await`
+   follows the same ready-queue policy as `recv`. A generic `async` callee is
+   not supported: it would have to be monomorphized before the child coroutine
+   is spawned, so `xz check` rejects the `await` up front (docs/13-codegen.md).
 7. **Termination.** When `main` finishes, the schedule ends and every remaining
    task is torn down without draining its channels. The scheduler never runs a
    task after `main` returns.
