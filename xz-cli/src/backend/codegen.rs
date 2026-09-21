@@ -306,20 +306,21 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         Ok(call.try_as_basic_value().basic().unwrap().into_pointer_value())
     }
 
-    /// The element kind of a list-typed expression, determinable without a
-    /// full type pass: a list binding's recorded element kind, a literal's
-    /// first element, or an `append` receiver. Used by `for x in xs` and
-    /// `xs[i]`, which must load the element's LLVM type.
+    /// The element kind of a list/set-typed expression, determinable without
+    /// a full type pass: a binding's recorded element kind, a literal's first
+    /// element, a `List[T]`/`Set[T]`-returning call, or such a record field.
+    /// Used by `for x in xs`, `xs[i]`, and `s.contains`.
     fn list_elem_kind(&self, e: &Expr) -> Option<Kind> {
         match e {
             Expr::Name(n) => self.list_elems.get(n).cloned().or_else(|| self.set_elems.get(n).cloned()),
             Expr::ListLit(elems) => elems.first().and_then(|x| self.scalar_kind(x)),
             Expr::SetLit(elems) => elems.first().and_then(|x| self.scalar_kind(x)),
-            Expr::Call(callee, _) => match &**callee {
-                Expr::Field(recv, m) if m == "append" => self.list_elem_kind(recv),
-                Expr::Field(recv, m) if m == "insert" => self.set_elem_kind(recv),
-                Expr::Field(recv, m) if m == "keys" => self.map_kv_kind(recv).map(|(k, _)| k),
-                Expr::Field(recv, m) if m == "values" => self.map_kv_kind(recv).map(|(_, v)| v),
+            Expr::Call(callee, args) => match self.call_ret_kind(callee, args) {
+                Some(Kind::List(t)) | Some(Kind::Set(t)) => Some(*t),
+                _ => None,
+            },
+            Expr::Field(base, fname) => match self.record_field_kind(base, fname) {
+                Some(Kind::List(t)) | Some(Kind::Set(t)) => Some(*t),
                 _ => None,
             },
             _ => None,
@@ -340,16 +341,21 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     }
 
     /// The (key, value) kinds of a map-typed expression, determinable without
-    /// a full type pass: a map binding's recorded kinds, a literal's first
-    /// entry, or an `insert` receiver. Used by `m.get`/`insert`/`keys`/`values`.
+    /// a full type pass: a binding's recorded kinds, a literal's first entry,
+    /// a `Map[K, V]`-returning call, or such a record field. Used by
+    /// `m.get`/`insert`/`keys`/`values`.
     fn map_kv_kind(&self, e: &Expr) -> Option<(Kind, Kind)> {
         match e {
             Expr::Name(n) => self.map_kvs.get(n).cloned(),
             Expr::MapLit(entries) => entries
                 .first()
                 .and_then(|(k, v)| Some((self.scalar_kind(k)?, self.scalar_kind(v)?))),
-            Expr::Call(callee, _) => match &**callee {
-                Expr::Field(recv, m) if m == "insert" => self.map_kv_kind(recv),
+            Expr::Call(callee, args) => match self.call_ret_kind(callee, args) {
+                Some(Kind::Map(k, v)) => Some((*k, *v)),
+                _ => None,
+            },
+            Expr::Field(base, fname) => match self.record_field_kind(base, fname) {
+                Some(Kind::Map(k, v)) => Some((*k, *v)),
                 _ => None,
             },
             _ => None,
@@ -358,14 +364,69 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
 
     /// The element kind of a set-typed expression, determinable without a full
     /// type pass: a set binding's recorded element kind, a literal's first
-    /// element, or an `insert` receiver. Used by `s.contains`/`insert` and
-    /// `for e in s`.
+    /// element, a `Set[T]`-returning call, or a `Set[T]` record field.
     fn set_elem_kind(&self, e: &Expr) -> Option<Kind> {
         match e {
             Expr::Name(n) => self.set_elems.get(n).cloned(),
             Expr::SetLit(elems) => elems.first().and_then(|x| self.scalar_kind(x)),
-            Expr::Call(callee, _) => match &**callee {
-                Expr::Field(recv, m) if m == "insert" => self.set_elem_kind(recv),
+            Expr::Call(callee, args) => match self.call_ret_kind(callee, args) {
+                Some(Kind::Set(t)) => Some(*t),
+                _ => None,
+            },
+            Expr::Field(base, fname) => match self.record_field_kind(base, fname) {
+                Some(Kind::Set(t)) => Some(*t),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The `Kind` of a call expression, without lowering. A named function
+    /// reads its declared return kind; a collection method rebuilds one from
+    /// the receiver's tracked kinds. Generic calls are left unresolved here
+    /// because their declared return kind may mention a type parameter (the
+    /// monomorphization path handles those at the call site).
+    fn call_ret_kind(&self, callee: &Expr, args: &[Expr]) -> Option<Kind> {
+        match callee {
+            Expr::Name(f) => {
+                if self.backend.generic_params.contains_key(f) {
+                    return None;
+                }
+                self.backend.sigs.get(f).and_then(|s| s.xz_ret.clone())
+            }
+            Expr::Field(recv, m) => match m.as_str() {
+                "append" => self.list_elem_kind(recv).map(|t| Kind::List(Box::new(t))),
+                "keys" => self.map_kv_kind(recv).map(|(k, _)| Kind::List(Box::new(k))),
+                "values" => self.map_kv_kind(recv).map(|(_, v)| Kind::List(Box::new(v))),
+                "insert" if args.len() == 1 => self.set_elem_kind(recv).map(|t| Kind::Set(Box::new(t))),
+                "insert" => self.map_kv_kind(recv).map(|(k, v)| Kind::Map(Box::new(k), Box::new(v))),
+                "to_str" => Some(Kind::Str),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The declared `Kind` of a record field, when `base` resolves to a named
+    /// record (a binding or a nested record field). Lets a field-typed
+    /// collection receiver, e.g. `config.entries.get(k)`, know its element
+    /// kinds without a full type pass.
+    fn record_field_kind(&self, base: &Expr, fname: &str) -> Option<Kind> {
+        let rec = self.record_kind_of(base)?;
+        let idx = *self.backend.record_field_names.get(&rec)?.get(fname)? as usize;
+        self.backend.record_fields.get(&rec)?.get(idx).cloned()
+    }
+
+    /// The record type name behind an expression, when it is a binding whose
+    /// LLVM type is a named record struct or a nested record field.
+    fn record_kind_of(&self, e: &Expr) -> Option<String> {
+        match e {
+            Expr::Name(n) => match self.scope.get(n) {
+                Some((_, BasicTypeEnum::StructType(st))) => st.get_name().map(|s| s.to_str().unwrap().to_string()),
+                _ => None,
+            },
+            Expr::Field(base, fname) => match self.record_field_kind(base, fname) {
+                Some(Kind::Record(name)) => Some(name),
                 _ => None,
             },
             _ => None,

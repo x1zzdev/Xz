@@ -1383,3 +1383,82 @@ fn time_example_elapsed_is_a_float() -> Result<(), String> {
     now.parse::<f64>().map_err(|_| format!("now not a float: {now:?}"))?;
     Ok(())
 }
+
+#[test]
+fn collection_receiver_kinds_from_calls_and_fields() -> Result<(), String> {
+    // Codegen carries collection element kinds out of band (the lowered
+    // `{ ptr, i64 }`/`{ ptr, ptr, i64 }` shapes erase them), so a receiver
+    // that is a call or a record field must still resolve them. Covers
+    // `make_map().get/insert/keys/values`, `make_set().contains/insert/for`,
+    // and `bag.items`/`bag.tags` field receivers.
+    let src = r#"record Bag {
+    items: Map[Str, Int]
+    tags: Set[Str]
+}
+
+/// Returns a fixed two-entry map.
+/// @intent  Returns {a: 1, b: 2}.
+/// @effects none
+func make_map() -> Map[Str, Int] {
+    {"a": 1, "b": 2}
+}
+
+/// Returns a fixed two-element set.
+/// @intent  Returns {x, y}.
+/// @effects none
+func make_set() -> Set[Str] {
+    {"x", "y"}
+}
+
+func main() -> Result[Unit, Err] {
+    let o = make_map().get("a")
+    if o is some {
+        print(o.to_str())
+    } else {
+        print("none")
+    }
+    print(" ")
+    let grown = make_map().insert("c", 3)
+    print(grown.len().to_str())
+    print(" ")
+    for k in make_map().keys() {
+        print(k)
+    }
+    print(" ")
+    for v in make_map().values() {
+        print(v.to_str())
+    }
+    print(" ")
+    if make_set().contains("x") {
+        print("has-x")
+    } else {
+        print("missing-x")
+    }
+    print(" ")
+    let bigger = make_set().insert("z")
+    print(bigger.len().to_str())
+    print(" ")
+    for t in make_set() {
+        print(t)
+    }
+    print(" ")
+    let bag = Bag({"k": 9}, {"t"})
+    let got = bag.items.get("k")
+    if got is some {
+        print(got.to_str())
+    } else {
+        print("none")
+    }
+    print(" ")
+    if bag.tags.contains("t") {
+        print("tag")
+    } else {
+        print("no-tag")
+    }
+    print("\n")
+    ok()
+}"#;
+    let out = exec_capture(src)?;
+    assert_eq!(out, "1 3 ab 12 has-x 3 xy 9 tag\n");
+    Ok(())
+}
