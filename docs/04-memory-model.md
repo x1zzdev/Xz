@@ -50,7 +50,9 @@ A `mut` parameter is **copy-in / copy-out**: the argument's value is copied in,
 mutated as the function's own binding, and copied back when the function
 returns. This is the one sanctioned way for a function to change caller state,
 and it is fully visible — there is no hidden aliasing and therefore nothing a
-`mut` parameter can do behind a reviewer's back.
+`mut` parameter can do behind a reviewer's back. Because the copy-out must have
+a destination, a `mut` argument must be a mutable binding or a field reached
+through one: `add_to(acc, 5)` is legal, `add_to(acc + 1, 5)` is rejected.
 
 ## Why not GC / ownership?
 

@@ -198,6 +198,10 @@ The grammar alone is not the whole contract. The compiler also enforces:
   channel accepts the callee's ([06-error-handling.md](06-error-handling.md)).
 - **Match exhaustiveness** — every `match` must cover all variants; no
   fall-through, no default (add `_` to ignore).
+- **`mut` argument lvalue** — an argument passed to a `mut` parameter must be a
+  mutable binding or a field reached through one; a temporary (e.g.
+  `f(x + 1)`) is rejected because the callee's copy-out would have nowhere to
+  go ([04-memory-model.md](04-memory-model.md)).
 - **Handle affinity** — `Ptr`-bearing records are never copied; handoff is
   `transfer(x)` only ([10-ffi-interop.md](10-ffi-interop.md)).
 - **C layout (`@cstruct`)** — a `@cstruct record` is guaranteed the C ABI

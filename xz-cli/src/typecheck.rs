@@ -77,6 +77,9 @@ pub struct TypeChecker {
     enum_variants: HashMap<String, Vec<String>>,
     /// function signatures: name -> (params, ret, type-parameter list)
     funcs: HashMap<String, (Vec<Kind>, Option<Kind>, Vec<Kind>)>,
+    /// per-function parameter mutability (name -> flags, aligned with `funcs`
+    /// params): a `mut` argument must be a mutable lvalue (docs/04).
+    func_mut_params: HashMap<String, Vec<bool>>,
     /// names of `async` functions: only these may be `await`ed (docs/05, 11)
     async_funcs: HashSet<String>,
     /// true while checking a body that can suspend — an `async func`, `main`,
@@ -105,6 +108,7 @@ pub fn typecheck(program: &Program) -> Result<(), Vec<TypeError>> {
         variants: HashMap::new(),
         enum_variants: HashMap::new(),
         funcs: HashMap::new(),
+        func_mut_params: HashMap::new(),
         async_funcs: HashSet::new(),
         cur_scheduled: false,
         record_ctors: HashMap::new(),
@@ -346,6 +350,7 @@ impl TypeChecker {
                     let ret_ty: Option<Kind> = match &f.ret { Some(t) => Some(self.from_ast(t)), None => None };
                     let tvs: Vec<Kind> = f.type_params.iter().enumerate().map(|(i, _)| Kind::TypeVar(i)).collect();
                     self.funcs.insert(f.name.clone(), (param_tys, ret_ty, tvs));
+                    self.func_mut_params.insert(f.name.clone(), f.params.iter().map(|p| p.mutable).collect());
                 }
                 Item::Extern(e) => {
                     self.cur_span = e.span.clone();
@@ -355,6 +360,7 @@ impl TypeChecker {
                     let ret_ty: Option<Kind> = match &e.ret { Some(t) => Some(self.from_ast(t)), None => None };
                     let tvs: Vec<Kind> = e.type_params.iter().enumerate().map(|(i, _)| Kind::TypeVar(i)).collect();
                     self.funcs.insert(e.name.clone(), (param_tys, ret_ty, tvs));
+                    self.func_mut_params.insert(e.name.clone(), e.params.iter().map(|p| p.mutable).collect());
                 }
                 Item::Chan(c) => {
                     self.cur_span = c.span.clone();
@@ -778,7 +784,11 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                                 // infer type arguments from the argument list:
                                 // wherever a parameter is TypeVar(i), bind it to the arg's type
                                 let mut bindings: Vec<Option<Kind>> = vec![];
+                                let mut_params = self.func_mut_params.get(n).cloned().unwrap_or_default();
                                 for (i, a) in args.iter().enumerate() {
+                                    if mut_params.get(i).copied().unwrap_or(false) && !is_mut_lvalue(a, env) {
+                                        self.error(format!("argument {} to '{}' is passed to a `mut` parameter, so it must be a mutable binding or field (declare it with `mut`)", i, n));
+                                    }
                                     let at = self.check_expr(a, env);
                                     if i < params.len() {
                                         if let Kind::TypeVar(ti) = &params[i] {
@@ -1549,6 +1559,17 @@ fn root_name(e: &Expr) -> Option<String> {
         Expr::Name(n) => Some(n.clone()),
         Expr::Field(base, _) => root_name(base),
         _ => None,
+    }
+}
+
+/// A `mut` argument must be storage the caller can write back to: a name bound
+/// with `mut`, or a field reached through one (docs/04). Anything else is a
+/// temporary, so the callee's copy-out would be silently discarded.
+fn is_mut_lvalue(e: &Expr, env: &Env) -> bool {
+    match e {
+        Expr::Name(n) => env.get(n).is_some() && env.is_mut(n),
+        Expr::Field(_, _) => root_name(e).is_some_and(|root| env.get(&root).is_some() && env.is_mut(&root)),
+        _ => false,
     }
 }
 

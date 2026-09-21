@@ -681,6 +681,63 @@ func main() {
 }
 
 #[test]
+fn mut_argument_expression_rejected() {
+    let err = typecheck_error(
+        r#"func bump(mut n: Int) {
+    n = n + 1
+}
+
+func main() {
+    mut x: Int = 1
+    bump(x + 1)
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("`mut` parameter"), "unexpected error: {}", e),
+        None => panic!("non-lvalue argument to a mut parameter was allowed"),
+    }
+}
+
+#[test]
+fn mut_argument_immutable_binding_rejected() {
+    let err = typecheck_error(
+        r#"func bump(mut n: Int) {
+    n = n + 1
+}
+
+func main() {
+    let x: Int = 1
+    bump(x)
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("`mut` parameter"), "unexpected error: {}", e),
+        None => panic!("immutable binding passed to a mut parameter was allowed"),
+    }
+}
+
+#[test]
+fn mut_argument_mut_field_accepted() {
+    let err = typecheck_error(
+        r#"record Point {
+    x: Int
+    y: Int
+}
+
+func bump(mut n: Int) {
+    n = n + 1
+}
+
+func main() {
+    mut p = Point(1, 2)
+    bump(p.x)
+    print(p.x.to_str())
+}"#,
+    );
+    assert!(err.is_none(), "mutable field passed to a mut parameter rejected: {:?}", err);
+}
+
+#[test]
 fn immutable_param_assignment_rejected() {
     let err = typecheck_error(
         r#"func bump(n: Int) {
