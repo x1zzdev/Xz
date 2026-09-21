@@ -1366,8 +1366,9 @@ fn emit_time_body(backend: &mut LlvmBackend<'static>, fname: &str, monotonic: bo
 
 /// The host libc's `CLOCK_MONOTONIC` id for `clock_gettime`. The id is a libc
 /// macro, not a shared ABI constant, so it is selected per target OS; the
-/// native runtime is linked against the host libc (docs/13-codegen.md).
-fn monotonic_clock_id() -> u64 {
+/// native runtime is linked against the host libc (docs/13-codegen.md). The JIT
+/// host half (`runtime.rs`) reads the same clock id.
+pub(crate) fn monotonic_clock_id() -> u64 {
     if cfg!(any(target_os = "macos", target_os = "ios")) {
         6
     } else if cfg!(any(

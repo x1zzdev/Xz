@@ -3,7 +3,6 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Condvar, LazyLock, Mutex};
 use std::thread;
 use std::thread::ThreadId;
-use std::time::Instant;
 
 use inkwell::module::Module;
 use inkwell::OptimizationLevel;
@@ -191,12 +190,26 @@ extern "C" fn xz_time_now() -> f64 {
 }
 
 /// `monotonic()`: non-decreasing seconds from a fixed, unspecified origin as
-/// f64. The origin is the process's first call, so only differences are
-/// meaningful. The JIT host half of `monotonic()` (docs/12-stdlib.md).
+/// f64, read from the host's `CLOCK_MONOTONIC`. The origin is the system boot,
+/// matching the native runtime (`emit_native_runtime`). The JIT host half of
+/// `monotonic()` (docs/12-stdlib.md).
+#[repr(C)]
+struct Timespec {
+    tv_sec: i64,
+    tv_nsec: i64,
+}
+
+unsafe extern "C" {
+    #[link_name = "clock_gettime"]
+    fn libc_clock_gettime(clockid: i32, tp: *mut Timespec) -> i32;
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn xz_time_monotonic() -> f64 {
-    static START: LazyLock<Instant> = LazyLock::new(Instant::now);
-    START.elapsed().as_secs_f64()
+    let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
+    let clock = crate::backend::llvm_backend::monotonic_clock_id() as i32;
+    unsafe { libc_clock_gettime(clock, &mut ts) };
+    ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
 }
 
 /// Free a heap-allocated Str buffer. No-op unless the pointer is still live in

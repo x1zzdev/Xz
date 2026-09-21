@@ -101,7 +101,7 @@ system linker.
 | `xz_bool_to_str` | `fn(i1) -> XzStr` | `Bool.to_str()` |
 | `xz_str_eq` | `fn(i8*, i64, i8*, i64) -> i1` | `Map` key equality for `Str` keys |
 | `xz_read_file` | `fn(i8*, i64, ptr) -> i1` | `read_file(path: Str)` — reads the file at the byte path and writes a fresh `{ptr, len}` payload through `out`, returning 1; 0 on any failure |
-| `xz_time_now` / `xz_time_monotonic` | `fn() -> f64` | `now()` / `monotonic()` — wall-clock seconds since the Unix epoch / non-decreasing seconds from a fixed origin |
+| `xz_time_now` / `xz_time_monotonic` | `fn() -> f64` | `now()` / `monotonic()` — wall-clock seconds since the Unix epoch / non-decreasing seconds from the host monotonic clock (`CLOCK_MONOTONIC`, system boot) |
 | `xz_str_free` | `fn(i8*, i64) -> ()` | frees a heap Str buffer (registry-guarded) |
 
 `abs()` and `approx_sqrt()` are **not** host functions — they lower to LLVM
@@ -125,7 +125,8 @@ into a NUL-terminated buffer and reads the file via libc `fopen`/`fread`;
 `clock_gettime(CLOCK_MONOTONIC)` (the clock id is selected for the host libc);
 `abs`/`sqrt` remain native
 intrinsics. The JIT path is unaffected — `add_global_mapping` overrides these
-definitions when running in-process.
+definitions when running in-process; its `xz_time_monotonic` host also reads
+`clock_gettime(CLOCK_MONOTONIC)`, so the JIT and native origins match.
 
 `xz build-native <file.xz>` emits IR, runs `llc -filetype=obj`, links with
 `ld` (crt1.o/crti.o/crtn.o + `-lc -lm`), and writes `./xz_program`.

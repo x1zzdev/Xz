@@ -167,7 +167,7 @@ the host clock, so a function that calls them declares `io`. There is no
 | Signature | Notes |
 |---|---|
 | `now() -> Float` | wall-clock time as seconds since the Unix epoch (UTC), fractional. May jump forwards or backwards (NTP, manual clock changes); use it for timestamps, not for measuring durations |
-| `monotonic() -> Float` | seconds from a fixed, unspecified origin that never decreases; use it for measuring elapsed time. Only differences are meaningful, never the absolute value |
+| `monotonic() -> Float` | seconds from the host's monotonic clock (`CLOCK_MONOTONIC`, system boot) that never decreases; use it for measuring elapsed time. Only differences are meaningful, never the absolute value. The JIT and native paths read the same clock, so the origin does not depend on the process |
 
 ## Out of scope (Phase 7)
 
