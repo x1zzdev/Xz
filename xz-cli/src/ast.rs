@@ -78,6 +78,7 @@ pub struct EnumDecl {
 #[derive(Clone)]
 pub struct Param {
     pub mutable: bool,
+    pub transfer: bool,
     pub name: String,
     pub ty: Type,
     pub span: Span,

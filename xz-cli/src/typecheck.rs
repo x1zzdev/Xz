@@ -322,6 +322,9 @@ impl TypeChecker {
             };
             let mut visiting: HashSet<String> = HashSet::new();
             for p in &e.params {
+                if p.transfer && !pointer_carrying(&p.ty, &cstruct, &records) {
+                    self.error_at(format!("extern func '{}' parameter '{}': 'transfer' requires a pointer-carrying type (Str, Bytes, Ptr, or a @cstruct record containing one)", e.name, p.name), p.span.clone());
+                }
                 if let Err(msg) = cstruct_field_ok(&p.ty, &cstruct, &records, &enums, &mut visiting) {
                     self.error_at(format!("extern func '{}' parameter '{}': {}", e.name, p.name, msg), p.span.clone());
                 }
@@ -341,6 +344,11 @@ impl TypeChecker {
             match item {
                 Item::Func(f) => {
                     self.cur_span = f.span.clone();
+                    for p in &f.params {
+                        if p.transfer {
+                            self.error_at(format!("func '{}' parameter '{}': 'transfer' is a C ABI declaration; use it on an 'extern func'", f.name, p.name), p.span.clone());
+                        }
+                    }
                     if f.is_async {
                         self.async_funcs.insert(f.name.clone());
                     }
@@ -1338,6 +1346,39 @@ fn is_unit_type(ty: &ast::Type) -> bool {
         ast::Type::NamedPlain(name) => name == "Unit",
         ast::Type::Union(_) => false,
     }
+}
+
+/// Whether a type carries a pointer across the ABI: `Str`/`Bytes`/`Ptr`, or a
+/// `@cstruct` record that transitively contains one. A `transfer` parameter
+/// modifier is meaningful only for such a type (docs/10).
+fn pointer_carrying(
+    ty: &ast::Type,
+    cstruct: &HashSet<String>,
+    records: &HashMap<String, &ast::RecordDecl>,
+) -> bool {
+    match ty {
+        ast::Type::Named(name, args) => {
+            args.is_empty() && pointer_carrying_named(name, cstruct, records)
+        }
+        ast::Type::NamedPlain(name) => pointer_carrying_named(name, cstruct, records),
+        ast::Type::Union(_) => false,
+    }
+}
+
+fn pointer_carrying_named(
+    name: &str,
+    cstruct: &HashSet<String>,
+    records: &HashMap<String, &ast::RecordDecl>,
+) -> bool {
+    if ["Str", "Bytes", "Ptr"].contains(&name) {
+        return true;
+    }
+    if cstruct.contains(name)
+        && let Some(rec) = records.get(name)
+    {
+        return rec.fields.iter().any(|f| pointer_carrying(&f.ty, cstruct, records));
+    }
+    false
 }
 
 fn cstruct_named_ok(

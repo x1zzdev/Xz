@@ -33,6 +33,21 @@ pub fn validate_interface(program: &Program) -> Result<(), String> {
 /// to the C library `lib` (docs/10-ffi-interop.md).
 pub fn generate_python(program: &Program, lib: &str) -> Result<String, String> {
     validate_interface(program)?;
+    // The ctypes wrapper copies `Str`/`Bytes` into Python values, so it cannot
+    // honor a `transfer` parameter; reject rather than degrade silently
+    // (docs/10-ffi-interop.md).
+    for item in &program.items {
+        if let Item::Extern(e) = item {
+            for p in &e.params {
+                if p.transfer {
+                    return Err(format!(
+                        "extern func '{}' parameter '{}': 'transfer' is not supported by the generated Python wrapper; it copies the buffer and cannot hand off ownership",
+                        e.name, p.name
+                    ));
+                }
+            }
+        }
+    }
     Ok(crate::backend::python::generate_python_interface_bindings(
         program, lib,
     ))

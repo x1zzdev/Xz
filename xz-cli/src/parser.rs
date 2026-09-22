@@ -318,10 +318,18 @@ let mut trusted = false;
         }
         loop {
             let mutable = self.eat(TokKind::Mut).is_some();
+            let transfer = self.eat(TokKind::Transfer).is_some();
+            if mutable && transfer {
+                let cur = self.tokens[self.i].clone();
+                return Err(ParseError {
+                    message: String::from("a parameter cannot be both 'mut' and 'transfer'"),
+                    span: cur.span,
+                });
+            }
             let name_tok = self.expect_ident()?;
             self.expect(TokKind::Colon, String::from("':'"))?;
             let ty = self.ty()?;
-            out.push(Param { mutable: mutable, name: name_tok.text.clone(), ty: ty, span: name_tok.span });
+            out.push(Param { mutable: mutable, transfer: transfer, name: name_tok.text.clone(), ty: ty, span: name_tok.span });
             if !self.eat(TokKind::Comma).is_some() {
                 break;
             }

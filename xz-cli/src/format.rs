@@ -508,7 +508,13 @@ impl Printer {
         let items: Vec<String> = params
             .iter()
             .map(|p| {
-                let m = if p.mutable { "mut " } else { "" };
+                let m = if p.mutable {
+                    "mut "
+                } else if p.transfer {
+                    "transfer "
+                } else {
+                    ""
+                };
                 format!("{}{}: {}", m, p.name, self.type_str(&p.ty))
             })
             .collect();

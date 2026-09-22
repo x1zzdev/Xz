@@ -342,6 +342,67 @@ extern func use(p: Point) -> Int"#,
 }
 
 #[test]
+fn transfer_pointer_param_accepted() {
+    // docs/10: a `transfer` parameter moves buffer ownership to the callee;
+    // it is valid on an `extern func` parameter whose type carries a pointer.
+    let err = typecheck_error(r#"extern func write(transfer frame: Bytes) -> Int"#);
+    assert!(err.is_none(), "transfer on extern Bytes rejected: {:?}", err);
+}
+
+#[test]
+fn transfer_cstruct_with_ptr_accepted() {
+    let err = typecheck_error(
+        r#"@cstruct record Buffer {
+    ptr: Ptr
+    len: Int
+}
+
+extern func release(transfer buf: Buffer)"#,
+    );
+    assert!(err.is_none(), "transfer on Ptr-bearing cstruct rejected: {:?}", err);
+}
+
+#[test]
+fn transfer_scalar_param_rejected() {
+    // A scalar has no pointer to transfer ownership of.
+    let err = typecheck_error(r#"extern func bump(transfer n: Int) -> Int"#);
+    match err {
+        Some(e) => assert!(e.contains("pointer-carrying"), "unexpected error: {}", e),
+        None => panic!("transfer on a scalar parameter was accepted"),
+    }
+}
+
+#[test]
+fn transfer_on_non_extern_param_rejected() {
+    // Ownership transfer is a C ABI declaration, not a language value rule.
+    let err = typecheck_error(r#"func consume(transfer data: Bytes) {}"#);
+    match err {
+        Some(e) => assert!(e.contains("'transfer' is a C ABI declaration"), "unexpected error: {}", e),
+        None => panic!("transfer on a func parameter was accepted"),
+    }
+}
+
+#[test]
+fn mut_and_transfer_param_rejected_at_parse() {
+    let ts = match lex(
+        "extern func f(mut transfer x: Bytes)".to_string(),
+        "test.xz".to_string(),
+    ) {
+        Ok(t) => t,
+        Err(e) => panic!("lex error: {}", e.message),
+    };
+    let err = match parse(ts) {
+        Err(e) => e,
+        Ok(_) => panic!("mut transfer must be a parse error"),
+    };
+    assert!(
+        err.message.contains("both 'mut' and 'transfer'"),
+        "unexpected parse error: {}",
+        err.message
+    );
+}
+
+#[test]
 fn generic_call_infers_type_argument() {
     expect_ok(
         r#"/// Returns the larger.

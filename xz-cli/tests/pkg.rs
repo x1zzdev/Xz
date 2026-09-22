@@ -139,6 +139,17 @@ fn pkg_gen_rejects_plain_record() {
 }
 
 #[test]
+fn pkg_gen_rejects_transfer_param() {
+    // The ctypes wrapper copies Str/Bytes into Python values, so it cannot
+    // honor a `transfer` parameter; it must reject rather than degrade it
+    // silently (docs/10-ffi-interop.md).
+    let program = parse_interface("extern func write(transfer frame: Bytes) -> Int\n");
+    let err = pkg::generate_python(&program, "libx.so").unwrap_err();
+    assert!(err.contains("'transfer'"), "unexpected error: {}", err);
+    assert!(err.contains("frame"), "error should name the parameter: {}", err);
+}
+
+#[test]
 fn pkg_add_builds_registry_url() {
     assert_eq!(
         pkg::interface_url("https://xz.example/interfaces/", "libcurl"),

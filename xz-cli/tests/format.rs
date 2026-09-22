@@ -95,6 +95,13 @@ fn block_comments_are_preserved() {
 }
 
 #[test]
+fn transfer_param_modifier_is_preserved() {
+    let src = "extern func write(transfer frame: Bytes, count: Int) -> Int\n";
+    let expected = "extern func write(transfer frame: Bytes, count: Int) -> Int\n";
+    assert_eq!(fmt(src), expected);
+}
+
+#[test]
 fn parse_error_is_reported() {
     let err = format_source("func main( {\n", "test.xz").unwrap_err();
     assert!(err.contains("test.xz"), "error should carry the file: {}", err);
