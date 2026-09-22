@@ -122,6 +122,28 @@ A `@cstruct` record with a `Ptr` field is still a handle type (see
 [03-type-system.md](03-type-system.md)): C layout governs how it is passed, not
 whether it may be copied.
 
+### Pointer ownership
+
+A pointer that crosses the ABI (`Str`, `Bytes`, `Ptr`, or a `@cstruct record`
+with a `Ptr` field) has an owner. By default a parameter is **borrowed**: the
+callee may read the buffer during the call but must not retain the pointer
+afterward. A `transfer` modifier moves ownership to the callee, which may
+retain it past the call:
+
+```
+extern func hash(data: Bytes) -> Int        // borrowed: valid only for the call
+extern func write(transfer frame: Bytes)    // callee owns the buffer afterward
+```
+
+`transfer` is legal only on an `extern func` parameter, is mutually exclusive
+with `mut` (the C in/out convention), and requires a pointer-carrying type — a
+`transfer` of a scalar has no meaning and is a compile error. The modifier is
+an ABI fact about the C function, so it belongs on the declaration, not on the
+Xz wrapper's contract: a caller must not hand a borrowed pointer to a callee
+that retains it. The generated Python wrapper copies `Str`/`Bytes` into Python
+values, so it cannot honor a transfer and rejects the modifier rather than
+degrading it silently.
+
 ## Exporting an Xz library (`xz build --shared`)
 
 `xz build --shared <file.xz>` emits `libXz.so` and a matching `libXz.h` for C

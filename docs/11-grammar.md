@@ -109,7 +109,7 @@ type_params     := "[" type_param ("," type_param)* "]"
 type_param      := IDENT (":" IDENT)?            // T or T: Ordered
 
 params          := param ("," param)*
-param           := ("mut")? IDENT ":" type
+param           := ("mut" | "transfer")? IDENT ":" type
 field           := IDENT ":" type
 variant         := IDENT "(" (field ("," field)*)? ")"
 
@@ -204,6 +204,13 @@ The grammar alone is not the whole contract. The compiler also enforces:
   go ([04-memory-model.md](04-memory-model.md)).
 - **Handle affinity** — `Ptr`-bearing records are never copied; handoff is
   `transfer(x)` only ([10-ffi-interop.md](10-ffi-interop.md)).
+- **Parameter ownership** — a `transfer` parameter modifier is legal only on an
+  `extern func` parameter, is mutually exclusive with `mut`, and requires a
+  pointer-carrying type (`Str`, `Bytes`, `Ptr`, or a `@cstruct record` that
+  contains one). It declares that ownership of the pointed-to buffer moves to
+  the callee, which may retain it past the call; without it a pointer parameter
+  is borrowed for the duration of the call only
+  ([10-ffi-interop.md](10-ffi-interop.md)).
 - **C layout (`@cstruct`)** — a `@cstruct record` is guaranteed the C ABI
   struct layout (fields in declaration order, C alignment and padding), so it
   may cross the FFI boundary by value. Its fields must therefore be
