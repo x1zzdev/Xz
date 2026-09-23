@@ -315,11 +315,16 @@ impl TypeChecker {
             }
         }
 
-        for item in &program.items {
-            let e = match item {
-                Item::Extern(e) => e,
-                _ => continue,
-            };
+        let externs: Vec<&ast::ExternDecl> = program
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Extern(e) => Some(e),
+                _ => None,
+            })
+            .collect();
+
+        for e in &externs {
             let mut visiting: HashSet<String> = HashSet::new();
             for p in &e.params {
                 if p.transfer && !pointer_carrying(&p.ty, &cstruct, &records) {
@@ -339,6 +344,51 @@ impl TypeChecker {
                     }
                 }
             }
+            // A plain `.xz` program declares its externs directly, so the
+            // `transfer` return's release contract is enforced here. A `.xzint`
+            // interface file is validated by `pkg::validate_interface`, which
+            // also knows the interface kind.
+            if program.interface_kind.is_none() {
+                self.check_transfer_release(e, e.ret.as_ref(), &externs, &cstruct);
+            }
+        }
+    }
+
+    /// Enforce the release contract of a `transfer` return (docs/10): ownership
+    /// of the returned buffer moves to the Xz caller, which releases it through
+    /// the deallocator named by `release <symbol>`. That symbol is an `extern
+    /// func` in the same program taking one borrowed `Ptr` and returning `Unit`.
+    /// Only the pointer primitives `Str`/`Bytes`/`Ptr` have a release channel; a
+    /// `@cstruct` handle has no unambiguous pointer to hand to a `(Ptr) -> Unit`
+    /// symbol, so it is rejected here (a definition gap, not a silent leak).
+    fn check_transfer_release(
+        &mut self,
+        e: &ast::ExternDecl,
+        ret: Option<&ast::Type>,
+        externs: &[&ast::ExternDecl],
+        cstruct: &HashSet<String>,
+    ) {
+        match (&e.release, e.transfer_ret) {
+            (Some(_), false) => {
+                self.error_at(format!("extern func '{}' return: 'release' names a deallocator for a 'transfer' return, but this return is not 'transfer'", e.name), e.span.clone());
+            }
+            (None, true) => {
+                self.error_at(format!("extern func '{}' return: a 'transfer' return must declare its deallocator with 'release <symbol>'", e.name), e.span.clone());
+            }
+            (Some(sym), true) => {
+                if ret.is_some_and(|rt| is_named_cstruct(rt, cstruct)) {
+                    self.error_at(format!("extern func '{}' return: a '@cstruct' handle cannot be released through a '(Ptr) -> Unit' symbol; 'transfer' is supported for Str, Bytes, and Ptr returns only", e.name), e.span.clone());
+                } else if sym == &e.name {
+                    self.error_at(format!("extern func '{}' return: a function cannot release its own returned buffer", e.name), e.span.clone());
+                } else if let Some(release) = externs.iter().find(|f| &f.name == sym) {
+                    if !is_ptr_to_unit_extern(release) {
+                        self.error_at(format!("extern func '{}' return: release symbol '{}' must be declared as 'extern func(ptr: Ptr) -> Unit' with one borrowed pointer parameter", e.name, sym), e.span.clone());
+                    }
+                } else {
+                    self.error_at(format!("extern func '{}' return: 'release' names '{}', which is not an 'extern func' declared in this program", e.name, sym), e.span.clone());
+                }
+            }
+            (None, false) => {}
         }
     }
 
@@ -1348,6 +1398,45 @@ fn is_unit_type(ty: &ast::Type) -> bool {
         ast::Type::Named(name, args) => name == "Unit" && args.is_empty(),
         ast::Type::NamedPlain(name) => name == "Unit",
         ast::Type::Union(_) => false,
+    }
+}
+
+/// Whether a type is the primitive `Ptr`.
+fn is_ptr_type(ty: &ast::Type) -> bool {
+    match ty {
+        ast::Type::Named(name, args) => name == "Ptr" && args.is_empty(),
+        ast::Type::NamedPlain(name) => name == "Ptr",
+        ast::Type::Union(_) => false,
+    }
+}
+
+/// Whether a type names a `@cstruct` record (a handle, when it carries a Ptr).
+fn is_named_cstruct(ty: &ast::Type, cstruct: &HashSet<String>) -> bool {
+    let name = match ty {
+        ast::Type::Named(name, args) => {
+            if !args.is_empty() {
+                return false;
+            }
+            name
+        }
+        ast::Type::NamedPlain(name) => name,
+        ast::Type::Union(_) => return false,
+    };
+    cstruct.contains(name)
+}
+
+/// A release symbol takes one borrowed `Ptr` and returns `Unit` (docs/10).
+fn is_ptr_to_unit_extern(func: &ast::ExternDecl) -> bool {
+    if func.params.len() != 1 || func.transfer_ret {
+        return false;
+    }
+    let p = &func.params[0];
+    if p.mutable || p.transfer || !is_ptr_type(&p.ty) {
+        return false;
+    }
+    match &func.ret {
+        None => true,
+        Some(ty) => is_unit_type(ty),
     }
 }
 

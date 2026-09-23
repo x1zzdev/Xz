@@ -383,24 +383,87 @@ fn transfer_on_non_extern_param_rejected() {
 }
 
 #[test]
-fn transfer_pointer_return_accepted() {
-    // docs/10: a `transfer` return moves buffer ownership to the caller; it is
-    // valid on an `extern func` return whose type carries a pointer.
-    let err = typecheck_error(r#"extern func read(path: Str) -> transfer Str"#);
+fn transfer_pointer_return_with_release_accepted() {
+    // docs/10: a `transfer` return moves buffer ownership to the caller, which
+    // releases it through the named symbol. It is valid on an `extern func`
+    // return whose type carries a pointer, once a `release` deallocator is named.
+    let err = typecheck_error(
+        r#"extern func free(ptr: Ptr) -> Unit
+extern func read(path: Str) -> transfer Str release free"#,
+    );
     assert!(err.is_none(), "transfer return on extern Str rejected: {:?}", err);
 }
 
 #[test]
-fn transfer_cstruct_return_accepted() {
+fn transfer_return_without_release_rejected() {
+    // The caller cannot release an owned buffer without a library deallocator,
+    // so the obligation must be declared (docs/10, no silent degradation).
+    let err = typecheck_error(r#"extern func read(path: Str) -> transfer Str"#);
+    match err {
+        Some(e) => assert!(e.contains("must declare its deallocator"), "unexpected error: {}", e),
+        None => panic!("transfer return without release was accepted"),
+    }
+}
+
+#[test]
+fn release_on_non_transfer_return_rejected() {
+    let err = typecheck_error(
+        r#"extern func free(ptr: Ptr) -> Unit
+extern func read(path: Str) -> Str release free"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("not 'transfer'"), "unexpected error: {}", e),
+        None => panic!("release on a non-transfer return was accepted"),
+    }
+}
+
+#[test]
+fn release_symbol_not_declared_rejected() {
+    let err = typecheck_error(r#"extern func read(path: Str) -> transfer Str release missing"#);
+    match err {
+        Some(e) => assert!(e.contains("not an 'extern func' declared"), "unexpected error: {}", e),
+        None => panic!("undeclared release symbol was accepted"),
+    }
+}
+
+#[test]
+fn release_symbol_not_ptr_to_unit_rejected() {
+    let err = typecheck_error(
+        r#"extern func free(ptr: Str) -> Unit
+extern func read(path: Str) -> transfer Str release free"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("'extern func(ptr: Ptr) -> Unit'"), "unexpected error: {}", e),
+        None => panic!("wrong release signature was accepted"),
+    }
+}
+
+#[test]
+fn self_release_rejected() {
+    let err = typecheck_error(r#"extern func echo(s: Str) -> transfer Str release echo"#);
+    match err {
+        Some(e) => assert!(e.contains("cannot release its own"), "unexpected error: {}", e),
+        None => panic!("self release was accepted"),
+    }
+}
+
+#[test]
+fn transfer_cstruct_return_rejected() {
+    // A `@cstruct` handle has no unambiguous pointer to hand to a
+    // `(Ptr) -> Unit` release symbol, so it has no release channel yet.
     let err = typecheck_error(
         r#"@cstruct record Buffer {
     ptr: Ptr
     len: Int
 }
 
-extern func make_buffer() -> transfer Buffer"#,
+extern func free(ptr: Ptr) -> Unit
+extern func make_buffer() -> transfer Buffer release free"#,
     );
-    assert!(err.is_none(), "transfer return on Ptr-bearing cstruct rejected: {:?}", err);
+    match err {
+        Some(e) => assert!(e.contains("'@cstruct' handle cannot be released"), "unexpected error: {}", e),
+        None => panic!("transfer return on Ptr-bearing cstruct was accepted"),
+    }
 }
 
 #[test]

@@ -151,30 +151,33 @@ moves ownership to the caller, which becomes responsible for releasing the
 pointer through the library's documented deallocator:
 
 ```
-extern func getenv(name: Str) -> Str            // borrowed: callee retains it
-extern func strdup(s: Str) -> transfer Str      // caller owns the new buffer
+extern func getenv(name: Str) -> Str                              // borrowed: callee retains it
+extern func free(ptr: Ptr) -> Unit
+extern func strdup(s: Str) -> transfer Str release free           // caller owns the new buffer
 ```
 
 The return modifier is the mirror of a `transfer` parameter: legal only on an
 `extern func` return and requiring a pointer-carrying type. Because the
 deallocator is library-specific, `transfer` marks the obligation rather than
-choosing how to release it; an Xz wrapper hands the pointer to the library's
-release function. A `.xzint` interface names that function on the symbol with a
-`release <symbol>` clause, so a consumer of the declaration knows which symbol
-frees the returned buffer:
+choosing how to release it. Every `transfer` return names that deallocator with
+a `release <symbol>` clause; the symbol is an `extern func` in the same program
+or interface taking one borrowed `Ptr` and returning `Unit`. A `transfer`
+return without a `release` clause is a definition error, and a `release` clause
+on a return that is not `transfer` is a definition error: a buffer is never
+silently leaked or freed twice.
 
-```
-extern func free(ptr: Ptr) -> Unit
-extern func strdup(s: Str) -> transfer Str release free
-```
+The compiler lowers a call to an extern with a `transfer` return so that the
+owning Xz binding releases the buffer through the named symbol when the binding
+is overwritten or its scope exits. Ownership the compiler cannot track uniquely
+— a copied or embedded value, an aggregate, or a value escaping through a
+return — is conservatively leaked rather than freed twice, matching the `Str`
+reclamation rule. Only a `Str`/`Bytes`/`Ptr` return has this release channel: a
+`@cstruct` handle transfer return is rejected, because a `(Ptr) -> Unit` symbol
+does not name which pointer of the handle to release.
 
-The release symbol is declared in the same interface as an `extern func` taking
-one borrowed `Ptr` and returning `Unit`. A `transfer` return without a `release`
-clause is a definition error, and a `release` clause on a return that is not
-`transfer` is a definition error: a buffer is never silently leaked or freed
-twice. The generated Python wrapper copies a returned `Str`/`Bytes` into a
-Python value and cannot take ownership, so it rejects a `transfer` return rather
-than leak the buffer.
+The generated Python wrapper copies a returned `Str`/`Bytes` into a Python
+value and cannot take ownership, so it rejects a `transfer` return rather than
+leak the buffer.
 
 ## Exporting an Xz library (`xz build --shared`)
 

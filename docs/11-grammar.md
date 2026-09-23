@@ -221,10 +221,12 @@ The grammar alone is not the whole contract. The compiler also enforces:
   only on an `extern func` return and requires a pointer-carrying type. It
   declares that ownership of the returned buffer moves to the caller, which is
   then responsible for releasing it through the library's deallocator; without
-  it the callee retains ownership and the caller must not free the pointer. A
-  `.xzint` return names the deallocator with a `release <symbol>` clause, where
-  the symbol is an `extern func` in the same interface taking one borrowed
-  `Ptr` and returning `Unit`
+  it the callee retains ownership and the caller must not free the pointer. The
+  deallocator is named on the return with a `release <symbol>` clause, where the
+  symbol is an `extern func` in the same program taking one borrowed `Ptr` and
+  returning `Unit`. A `transfer` return without `release`, a `release` on a
+  non-`transfer` return, and a `@cstruct` handle `transfer` return (whose
+  pointer the `(Ptr) -> Unit` symbol cannot name) are definition errors
   ([10-ffi-interop.md](10-ffi-interop.md)).
 - **C layout (`@cstruct`)** — a `@cstruct record` is guaranteed the C ABI
   struct layout (fields in declaration order, C alignment and padding), so it
