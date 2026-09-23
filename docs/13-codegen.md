@@ -159,6 +159,17 @@ through an `if`/`match` phi. This is conservative: shared buffers leak rather
 than risking a use-after-free. Fresh temps passed directly into `print` are
 freed right after the call. See also docs/14-codegen-notes.md § Str memory.
 
+An `extern func` return marked `transfer` produces a buffer the *caller* owns
+([10-ffi-interop.md](10-ffi-interop.md)). It is tracked like a fresh runtime
+buffer, but released through the `release <symbol>` named on the declaration
+instead of the runtime registry — the library allocation is not in `LIVE_STR`,
+so `xz_str_free` cannot see it. The binding is released at the same points
+(overwrite, function exit / `?` early return, and a temp passed to `print`), and
+downgraded to a leak under the same copy/embed/escape rules: a copied transfer
+return shares one library allocation, and the library deallocator is not
+registry-guarded, so freeing one alias would be a use-after-free. Only a
+`Str`/`Bytes`/`Ptr` return has this channel.
+
 ## Codegen rules (Expr → IR)
 
 | Expr | Lowering |

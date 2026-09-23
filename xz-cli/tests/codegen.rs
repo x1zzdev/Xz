@@ -397,6 +397,70 @@ func main() -> Result[Unit, Err] {
 }
 
 #[test]
+fn transfer_return_is_released_through_its_symbol() -> Result<(), String> {
+    // docs/10: an extern `transfer` return moves buffer ownership to the Xz
+    // caller, which releases it through the named `release` symbol when the
+    // owning binding dies. It is released on overwrite and at scope exit, and a
+    // transfer return passed straight to `print` is released after the call.
+    let src = r#"extern func my_free(ptr: Ptr) -> Unit
+extern func strdup(s: Str) -> transfer Str release my_free
+
+func main() {
+    mut s = strdup("a")
+    s = strdup("b")
+    print(s)
+    print(strdup("c"))
+}"#;
+    let program = checked_program(src)?;
+    let backend = compile(&program)?;
+    let ir = backend.module.print_to_string().to_string();
+    assert!(ir.contains("declare void @my_free"), "release symbol must be declared:\n{}", ir);
+    let calls = ir.matches("call void @my_free").count();
+    assert_eq!(calls, 3, "overwrite, scope exit, and print temp must each release:\n{}", ir);
+    Ok(())
+}
+
+#[test]
+fn copied_transfer_return_is_not_released() -> Result<(), String> {
+    // A `transfer` return is released only while the compiler can prove the
+    // binding is the unique owner. Copying it makes both bindings share the
+    // library allocation, so neither is released (leak) rather than risk a
+    // double free the runtime registry cannot guard.
+    let src = r#"extern func my_free(ptr: Ptr) -> Unit
+extern func strdup(s: Str) -> transfer Str release my_free
+
+func main() {
+    let a = strdup("x")
+    let b = a
+    print(b)
+}"#;
+    let program = checked_program(src)?;
+    let backend = compile(&program)?;
+    let ir = backend.module.print_to_string().to_string();
+    let calls = ir.matches("call void @my_free").count();
+    assert_eq!(calls, 0, "a copied transfer return must not be released:\n{}", ir);
+    Ok(())
+}
+
+#[test]
+fn transfer_return_release_runs_in_the_jit() -> Result<(), String> {
+    // `malloc` is declared with a `transfer` return and `release free`: the
+    // binding owns the allocation and the JIT calls libc `free` at scope exit.
+    // A `run` returning Ok proves the emitted release call is well-formed and
+    // resolves (module verification and the JIT both get a chance to fail).
+    let src = r#"extern func malloc(size: usize) -> transfer Ptr release free
+extern func free(ptr: Ptr) -> Unit
+
+func main() {
+    let p = malloc(16 as usize)
+}"#;
+    let program = checked_program(src)?;
+    let backend = compile(&program)?;
+    run(backend.module)?;
+    Ok(())
+}
+
+#[test]
 fn list_literal_index_and_iteration_run() {
     // List[T]: literal construction, bounds-checked indexing returning
     // Result[T, IndexError], non-mutating append, len/is_empty, and

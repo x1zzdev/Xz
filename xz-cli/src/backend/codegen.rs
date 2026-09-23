@@ -43,17 +43,18 @@ pub struct Codegen<'b, 'ctx> {
     /// map-typed binding name -> (key kind, value kind), so `m.get`/`insert`/
     /// `keys`/`values` can load the right key/value types.
     map_kvs: HashMap<String, (Kind, Kind)>,
-    /// name -> owns a heap-allocated Str buffer, meaning this binding is the
-    /// only reference to it (safe to free on overwrite / scope exit). A value
-    /// is recorded here only when it was produced by concat/to_str in this
-    /// function and has not been copied since. Absence means "static or
-    /// shared — never free" (see docs/13-codegen.md § Str memory).
-    owns: HashMap<String, bool>,
-    /// true when the enclosing function can escape Str storage through its
-    /// return value (return type is or contains Str). Under that rule the
-    /// function's Str bindings are never released at exit — conservative leak
+    /// name -> owns a heap-allocated buffer, meaning this binding is the only
+    /// reference to it (safe to release on overwrite / scope exit). A value is
+    /// recorded here only when it was produced by concat/to_str in this function
+    /// or returned by an extern `transfer` (with a `release` symbol), and has not
+    /// been copied since. Absence means "static or shared — never free" (see
+    /// docs/13-codegen.md § Str memory).
+    owns: HashMap<String, FreeHow>,
+    /// true when the enclosing function can escape an owned buffer through its
+    /// return value (return type is or contains a pointer). Under that rule the
+    /// function's owned bindings are never released at exit — conservative leak
     /// that keeps every returned buffer alive for the caller.
-    leak_strs: bool,
+    leak_owned: bool,
     /// the innermost enclosing loop's continue-target and break-target blocks,
     /// for `break`/`continue` statements (nested loops push/pop).
     loop_stack: Vec<(BasicBlock<'ctx>, BasicBlock<'ctx>)>,
@@ -72,27 +73,39 @@ pub struct Codegen<'b, 'ctx> {
 
 type GenResult<'ctx> = Result<BasicValueEnum<'ctx>, String>;
 
-/// `true` when `k` is or transitively contains a `Str`/`Bytes`. A function
-/// whose return type is, or contains, Str can escape an owned buffer through
-/// its return value, so its Str bindings are never freed at exit (the caller
-/// owns them — conservative leak that keeps the contract sound).
-fn kind_contains_str(k: &Kind, backend: &LlvmBackend<'_>) -> bool {
+/// How an owned buffer is released when its binding dies.
+#[derive(Clone)]
+enum FreeHow {
+    /// A fresh `Str` buffer from `concat`/`to_str`: released through the
+    /// runtime registry (`xz_str_free`), which no-ops on literals and
+    /// already-freed buffers.
+    Registry,
+    /// A `transfer` return owned by the Xz caller: released through the named
+    /// extern deallocator (`release <symbol>`, docs/10-ffi-interop.md).
+    Symbol(String),
+}
+
+/// `true` when `k` is or transitively contains a `Str`/`Bytes`/`Ptr`. A function
+/// whose return type is, or contains, a pointer can escape an owned buffer
+/// through its return value, so its owned bindings are never released at exit
+/// (the caller owns them — conservative leak that keeps the contract sound).
+fn kind_carries_pointer(k: &Kind, backend: &LlvmBackend<'_>) -> bool {
     match k {
-        Kind::Str | Kind::Bytes => true,
-        Kind::Option(t) | Kind::Result(t, _) => kind_contains_str(t, backend),
-        Kind::List(t) => kind_contains_str(t, backend),
-        Kind::Map(k, v) => kind_contains_str(k, backend) || kind_contains_str(v, backend),
-        Kind::Set(t) => kind_contains_str(t, backend),
+        Kind::Str | Kind::Bytes | Kind::Ptr => true,
+        Kind::Option(t) | Kind::Result(t, _) => kind_carries_pointer(t, backend),
+        Kind::List(t) => kind_carries_pointer(t, backend),
+        Kind::Map(k, v) => kind_carries_pointer(k, backend) || kind_carries_pointer(v, backend),
+        Kind::Set(t) => kind_carries_pointer(t, backend),
         Kind::Record(name) => backend
             .record_fields
             .get(name)
-            .map(|fs| fs.iter().any(|f| kind_contains_str(f, backend)))
+            .map(|fs| fs.iter().any(|f| kind_carries_pointer(f, backend)))
             .unwrap_or(false),
         Kind::Enum(name) => backend
             .variants
             .values()
-            .any(|(en, _, fields)| en == name && fields.iter().any(|f| kind_contains_str(f, backend))),
-        Kind::ErrUnion(members) => members.iter().any(|m| kind_contains_str(m, backend)),
+            .any(|(en, _, fields)| en == name && fields.iter().any(|f| kind_carries_pointer(f, backend))),
+        Kind::ErrUnion(members) => members.iter().any(|m| kind_carries_pointer(m, backend)),
         _ => false,
     }
 }
@@ -126,6 +139,12 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     fn is_str(&self, v: BasicValueEnum<'ctx>) -> bool {
         match v.get_type() {
             inkwell::types::BasicTypeEnum::StructType(st) => st == self.backend.types.xz_str,
+            _ => false,
+        }
+    }
+    fn is_bytes(&self, v: BasicValueEnum<'ctx>) -> bool {
+        match v.get_type() {
+            inkwell::types::BasicTypeEnum::StructType(st) => st == self.backend.types.xz_bytes,
             _ => false,
         }
     }
@@ -941,18 +960,67 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         }
     }
 
-    /// After binding `name` to `v` (a Str), record whether it is a unique
-    /// heap-owning binding, and mark any existing binding it copied as no
-    /// longer (the buffer is now shared → never free).
+    /// After binding `name` to `v`, record whether it is a unique owned binding,
+    /// and mark any existing binding it copied as no longer (the buffer is now
+    /// shared → never released).
     fn adopt_ownership(&mut self, name: &str, init: &Expr) {
         if let Some(base) = self.alias_source(init) {
             self.owns.remove(&base);
         }
-        if self.is_fresh_temp(init) {
-            self.owns.insert(name.to_string(), true);
-        } else {
-            self.owns.remove(name);
+        match self.fresh_free(init) {
+            Some(how) => {
+                self.owns.insert(name.to_string(), how);
+            }
+            None => {
+                self.owns.remove(name);
+            }
         }
+    }
+
+    /// The release strategy for an expression that produces a buffer this
+    /// function would own, or `None` when the value is borrowed, static, or
+    /// aliased. An extern call with a `transfer` return owns its buffer and
+    /// releases it through the declaration's `release` symbol; a
+    /// `concat`/`to_str` result is a fresh runtime allocation.
+    fn fresh_free(&self, e: &Expr) -> Option<FreeHow> {
+        if let Expr::Call(callee, _) = e
+            && let Expr::Name(n) = &**callee
+            && let Some(sym) = self.backend.release_syms.get(n)
+        {
+            return Some(FreeHow::Symbol(sym.clone()));
+        }
+        if self.is_fresh_temp(e) {
+            Some(FreeHow::Registry)
+        } else {
+            None
+        }
+    }
+
+    /// Release an owned buffer whose binding is dying: a runtime allocation
+    /// through the registry, or a `transfer` return through its named symbol.
+    fn release_value(&mut self, how: &FreeHow, v: BasicValueEnum<'ctx>) {
+        match how {
+            FreeHow::Registry => self.emit_str_free(v),
+            FreeHow::Symbol(sym) => self.emit_symbol_release(sym, v),
+        }
+    }
+
+    /// Call a `release` deallocator on the pointer an owned value carries:
+    /// the `ptr` field of a `Str`/`Bytes`, or the value itself for `Ptr`.
+    fn emit_symbol_release(&mut self, sym: &str, v: BasicValueEnum<'ctx>) {
+        let fv = match self.backend.functions.get(sym) {
+            Some(fv) => *fv,
+            None => return,
+        };
+        let ptr = if self.is_str(v) || self.is_bytes(v) {
+            self.backend
+                .builder
+                .build_extract_value(v.into_struct_value(), 0, "rel.ptr")
+                .unwrap()
+        } else {
+            v
+        };
+        let _ = self.backend.builder.build_direct_call(fv, &[ptr.into()], "release").unwrap();
     }
 
     /// Mark every owned binding reachable through `e` (a Name, or nested in a
@@ -1037,20 +1105,29 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         }
     }
 
-    /// Free every Str binding this function frame uniquely owns (fresh heap
-    /// buffers that were never copied). Called just before each return path.
-    /// Bindings whose shared buffers were copied or that came from aliased
-    /// sources are deliberately left to leak (never freed).
+    /// Release every buffer this function frame uniquely owns: fresh runtime
+    /// allocations that were never copied, and `transfer` returns released
+    /// through their declared symbol. Called just before each return path.
+    /// Bindings whose buffers were copied, or that came from aliased sources,
+    /// are deliberately left to leak (never released).
     fn free_owned_bindings(&mut self) {
-        if self.leak_strs {
+        if self.leak_owned {
             return;
         }
-        let owned: Vec<String> = self.owns.keys().cloned().collect();
-        for n in owned {
+        let owned: Vec<(String, FreeHow)> = self.owns.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for (n, how) in owned {
             if let Some((ptr, ty)) = self.scope.get(&n).map(|(p, t)| (*p, *t)) {
-                if matches!(ty, BasicTypeEnum::StructType(st) if st == self.backend.types.xz_str) {
-                    let v = self.build_load(ty, ptr, &n);
-                    self.emit_str_free(v);
+                match &how {
+                    FreeHow::Registry => {
+                        if matches!(ty, BasicTypeEnum::StructType(st) if st == self.backend.types.xz_str) {
+                            let v = self.build_load(ty, ptr, &n);
+                            self.emit_str_free(v);
+                        }
+                    }
+                    FreeHow::Symbol(_) => {
+                        let v = self.build_load(ty, ptr, &n);
+                        self.release_value(&how, v);
+                    }
                 }
             }
         }
@@ -1208,14 +1285,18 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                         Some((ptr, ty)) => {
                             let ptr = *ptr;
                             let ty = *ty;
-                            // Overwriting a binding that uniquely owns a heap
-                            // buffer with a *fresh* Str: free the old buffer.
-                            // If the new value is an alias (name/identity), the
-                            // binding is being shared, so keep the old one
-                            // alive (leak) rather than free underneath.
-                            if self.owns.contains_key(n) && self.is_fresh_temp(&a.value) {
-                                let old = self.build_load(ty, ptr, "old");
-                                self.emit_str_free(old);
+                            // Overwriting a binding that uniquely owns a buffer
+                            // with another *fresh* value: release the old
+                            // buffer through its own channel. If the new value
+                            // is an alias (name/identity), the binding is being
+                            // shared, so keep the old one alive (leak) rather
+                            // than release underneath.
+                            let old_how = self.owns.get(n).cloned();
+                            if let Some(old_how) = old_how {
+                                if self.fresh_free(&a.value).is_some() {
+                                    let old = self.build_load(ty, ptr, "old");
+                                    self.release_value(&old_how, old);
+                                }
                             }
                             let _ = self.apply_assign_op(&a.op, ty, ptr, v);
                             self.adopt_ownership(n, &a.value);
@@ -2018,11 +2099,12 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 .builder
                 .build_direct_call(f, &[ptr.into(), len.into()], "print")
                 .unwrap();
-            // A fresh heap temp (concat/to_str result) passed directly to
-            // print is consumed here: free it right after the call. A name or
-            // literal is not a temp — the binding handles its own release.
-            if self.is_fresh_temp(&args[0]) {
-                self.emit_str_free(v);
+            // A fresh owned temp (a concat/to_str result, or a `transfer` return)
+            // passed directly to print is consumed here: release it through its
+            // own channel right after the call. A name or literal is not a temp
+            // — the binding handles its own release.
+            if let Some(how) = self.fresh_free(&args[0]) {
+                self.release_value(&how, v);
             }
             return Ok(self.backend.types.unit.const_zero().into());
         }
@@ -2881,7 +2963,7 @@ pub fn gen_function(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
     };
     let ret_kind = backend.sigs.get(&f.name).and_then(|s| s.xz_ret.clone());
     let ret_llvm = backend.sigs.get(&f.name).and_then(|s| s.ret);
-    let leak_strs = ret_kind.as_ref().map(|k| kind_contains_str(k, backend)).unwrap_or(false);
+    let leak_owned = ret_kind.as_ref().map(|k| kind_carries_pointer(k, backend)).unwrap_or(false);
 
     let mut cg = Codegen {
         backend,
@@ -2896,7 +2978,7 @@ pub fn gen_function(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         set_elems: HashMap::new(),
         map_kvs: HashMap::new(),
         owns: HashMap::new(),
-        leak_strs,
+        leak_owned,
         loop_stack: Vec::new(),
         is_main: false,
         subst: HashMap::new(),
@@ -2916,7 +2998,7 @@ pub fn gen_specialized(
 ) {
     let ret_kind = f.ret.as_ref().map(|t| kind_from_ast_subst(t, backend, &subst));
     let ret_llvm = fv.get_type().get_return_type();
-    let leak_strs = ret_kind.as_ref().map(|k| kind_contains_str(k, backend)).unwrap_or(false);
+    let leak_owned = ret_kind.as_ref().map(|k| kind_carries_pointer(k, backend)).unwrap_or(false);
     let mut cg = Codegen {
         backend,
         scope: HashMap::new(),
@@ -2930,7 +3012,7 @@ pub fn gen_specialized(
         set_elems: HashMap::new(),
         map_kvs: HashMap::new(),
         owns: HashMap::new(),
-        leak_strs,
+        leak_owned,
         loop_stack: Vec::new(),
         is_main: false,
         subst,
@@ -2959,7 +3041,7 @@ pub fn gen_task(backend: &mut LlvmBackend<'static>, t: &ast::TaskDecl) {
         set_elems: HashMap::new(),
         map_kvs: HashMap::new(),
         owns: HashMap::new(),
-        leak_strs: false,
+        leak_owned: false,
         loop_stack: Vec::new(),
         is_main: false,
         subst: HashMap::new(),
@@ -2977,7 +3059,7 @@ pub fn gen_main(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         None => return,
     };
     let ret_kind = f.ret.as_ref().map(|t| kind_from_ast(t, backend));
-    let leak_strs = ret_kind.as_ref().map(|k| kind_contains_str(k, backend)).unwrap_or(false);
+    let leak_owned = ret_kind.as_ref().map(|k| kind_carries_pointer(k, backend)).unwrap_or(false);
     let main_ret: BasicTypeEnum<'static> = backend.context.i32_type().into();
     let mut cg = Codegen {
         backend,
@@ -2992,7 +3074,7 @@ pub fn gen_main(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         set_elems: HashMap::new(),
         map_kvs: HashMap::new(),
         owns: HashMap::new(),
-        leak_strs,
+        leak_owned,
         loop_stack: Vec::new(),
         is_main: true,
         subst: HashMap::new(),

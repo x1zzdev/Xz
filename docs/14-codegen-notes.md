@@ -73,6 +73,10 @@ Memory is reclaimed **conservatively but soundly**:
 - A function whose return type **is or contains `Str`** never frees at exit
   (the return value may alias a local buffer that must outlive the call).
 - Fresh temps passed directly into `print` are freed right after the call.
+- A `transfer` return from an `extern` is owned by the caller but is *not* in
+  `LIVE_STR`, so it is released through the `release` symbol the declaration
+  names (docs/10-ffi-interop.md), at the same points and under the same
+  downgrade-to-leak rules as a fresh runtime buffer.
 
 `wasm`/native phases can take the next step: a per-frame arena (free the whole
 frame at exit) or real reference counting, once `Str` mutation/loops exist.

@@ -92,6 +92,10 @@ pub struct LlvmBackend<'ctx> {
     pub functions: HashMap<String, FunctionValue<'ctx>>,
     /// function name -> signature (params + ret), used by call sites
     pub sigs: HashMap<String, LlvmSig<'ctx>>,
+    /// extern symbol name -> the deallocator named by its `release` clause. A
+    /// `transfer` return moves ownership to the Xz caller, which releases the
+    /// buffer through this symbol (docs/10-ffi-interop.md).
+    pub release_syms: HashMap<String, String>,
     /// a shared runtime error string for codegen (not front-end diagnostics)
     pub error: Option<String>,
     /// host target data, used to compute aggregate sizes (enum box allocation)
@@ -142,6 +146,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             variants: HashMap::new(),
             functions: HashMap::new(),
             sigs: HashMap::new(),
+            release_syms: HashMap::new(),
             error: None,
             target_data: None,
             generic_params: HashMap::new(),
@@ -653,6 +658,9 @@ fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>,
                         param_muts: vec![false; param_kinds.len()],
                     },
                 );
+                if let Some(sym) = &e.release {
+                    backend.release_syms.insert(e.name.clone(), sym.clone());
+                }
             }
             Item::Chan(c) => {
                 let id = backend.channel_ids.len() as u64;
