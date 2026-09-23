@@ -101,7 +101,7 @@ top_level       := func_decl | task_decl | chan_decl | extern_decl
 func_decl       := "@export"? "async"? "func" IDENT type_params? "(" params ")" ("->" type)? contract* block
 task_decl       := "task" IDENT block
 chan_decl       := "chan" IDENT ":" "Chan[" type "]"
-extern_decl     := "extern" "func" IDENT type_params? "(" params ")" ("->" type)?
+extern_decl     := "extern" "func" IDENT type_params? "(" params ")" ("->" "transfer"? type)?
 record_decl     := "@cstruct"? "record" IDENT "{" field* "}"
 enum_decl       := "enum" IDENT "{" variant+ "}"
 
@@ -210,6 +210,12 @@ The grammar alone is not the whole contract. The compiler also enforces:
   contains one). It declares that ownership of the pointed-to buffer moves to
   the callee, which may retain it past the call; without it a pointer parameter
   is borrowed for the duration of the call only
+  ([10-ffi-interop.md](10-ffi-interop.md)).
+- **Return ownership** — a `transfer` return modifier (`-> transfer T`) is legal
+  only on an `extern func` return and requires a pointer-carrying type. It
+  declares that ownership of the returned buffer moves to the caller, which is
+  then responsible for releasing it through the library's deallocator; without
+  it the callee retains ownership and the caller must not free the pointer
   ([10-ffi-interop.md](10-ffi-interop.md)).
 - **C layout (`@cstruct`)** — a `@cstruct record` is guaranteed the C ABI
   struct layout (fields in declaration order, C alignment and padding), so it

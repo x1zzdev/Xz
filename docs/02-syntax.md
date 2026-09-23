@@ -269,6 +269,6 @@ For every intent there is exactly one idiomatic expression:
 - Communication → `send` / `recv` on a `Chan[T]`
 - Suspension → `await` on an `async` call
 - Handing off a handle (`Ptr`-bearing record) → `transfer(x)`; handles are never copied (see [10-ffi-interop.md](10-ffi-interop.md))
-- Handing buffer ownership across the FFI boundary → `transfer` on the `extern func` parameter; without it the pointer is borrowed for the call only (see [10-ffi-interop.md](10-ffi-interop.md))
+- Handing buffer ownership across the FFI boundary → `transfer` on the `extern func` parameter or return; without it the pointer is borrowed for the call only (parameter) or retained by the callee (return) (see [10-ffi-interop.md](10-ffi-interop.md))
 
 No two ways to express the same thing. This is what makes AI-generated code predictable to review.

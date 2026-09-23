@@ -144,6 +144,25 @@ that retains it. The generated Python wrapper copies `Str`/`Bytes` into Python
 values, so it cannot honor a transfer and rejects the modifier rather than
 degrading it silently.
 
+A returned pointer has an owner too. By default the **callee retains
+ownership**: the caller borrows the returned pointer and must not free it (a
+static buffer or a library-owned allocation). A `transfer` return modifier
+moves ownership to the caller, which becomes responsible for releasing the
+pointer through the library's documented deallocator:
+
+```
+extern func getenv(name: Str) -> Str            // borrowed: callee retains it
+extern func strdup(s: Str) -> transfer Str      // caller owns the new buffer
+```
+
+The return modifier is the mirror of a `transfer` parameter: legal only on an
+`extern func` return and requiring a pointer-carrying type. Because the
+deallocator is library-specific, `transfer` marks the obligation rather than
+choosing how to release it; an Xz wrapper hands the pointer to the library's
+release function. The generated Python wrapper copies a returned `Str`/`Bytes`
+into a Python value and cannot take ownership, so it rejects a `transfer`
+return rather than leak the buffer.
+
 ## Exporting an Xz library (`xz build --shared`)
 
 `xz build --shared <file.xz>` emits `libXz.so` and a matching `libXz.h` for C
