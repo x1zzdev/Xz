@@ -421,6 +421,9 @@ fn render_extern(e: &ast::ExternDecl) -> String {
     sig.push(')');
     if let Some(ret) = &e.ret {
         sig.push_str(" -> ");
+        if e.transfer_ret {
+            sig.push_str("transfer ");
+        }
         sig.push_str(&render_type(ret));
     }
     sig

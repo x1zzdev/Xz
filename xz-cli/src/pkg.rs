@@ -46,6 +46,12 @@ pub fn generate_python(program: &Program, lib: &str) -> Result<String, String> {
                     ));
                 }
             }
+            if e.transfer_ret {
+                return Err(format!(
+                    "extern func '{}' return: 'transfer' is not supported by the generated Python wrapper; it copies the returned buffer and cannot take ownership",
+                    e.name
+                ));
+            }
         }
     }
     Ok(crate::backend::python::generate_python_interface_bindings(

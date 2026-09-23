@@ -330,6 +330,9 @@ impl TypeChecker {
                 }
             }
             if let Some(rt) = &e.ret {
+                if e.transfer_ret && !pointer_carrying(rt, &cstruct, &records) {
+                    self.error_at(format!("extern func '{}' return: 'transfer' requires a pointer-carrying type (Str, Bytes, Ptr, or a @cstruct record containing one)", e.name), e.span.clone());
+                }
                 if !is_unit_type(rt) {
                     if let Err(msg) = cstruct_field_ok(rt, &cstruct, &records, &enums, &mut visiting) {
                         self.error_at(format!("extern func '{}' return: {}", e.name, msg), e.span.clone());

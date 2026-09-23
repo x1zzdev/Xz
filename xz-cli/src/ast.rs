@@ -57,6 +57,7 @@ pub struct ExternDecl {
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub ret: Option<Type>,
+    pub transfer_ret: bool,
     pub span: Span,
 }
 

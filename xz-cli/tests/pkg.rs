@@ -150,6 +150,17 @@ fn pkg_gen_rejects_transfer_param() {
 }
 
 #[test]
+fn pkg_gen_rejects_transfer_return() {
+    // The ctypes wrapper copies the returned buffer into a Python value and
+    // cannot take ownership of it, so a `transfer` return must be rejected
+    // rather than leak the buffer (docs/10-ffi-interop.md).
+    let program = parse_interface("extern func read(path: Str) -> transfer Str\n");
+    let err = pkg::generate_python(&program, "libx.so").unwrap_err();
+    assert!(err.contains("'transfer'"), "unexpected error: {}", err);
+    assert!(err.contains("return"), "error should name the return: {}", err);
+}
+
+#[test]
 fn pkg_add_builds_registry_url() {
     assert_eq!(
         pkg::interface_url("https://xz.example/interfaces/", "libcurl"),

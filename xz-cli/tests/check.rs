@@ -383,6 +383,47 @@ fn transfer_on_non_extern_param_rejected() {
 }
 
 #[test]
+fn transfer_pointer_return_accepted() {
+    // docs/10: a `transfer` return moves buffer ownership to the caller; it is
+    // valid on an `extern func` return whose type carries a pointer.
+    let err = typecheck_error(r#"extern func read(path: Str) -> transfer Str"#);
+    assert!(err.is_none(), "transfer return on extern Str rejected: {:?}", err);
+}
+
+#[test]
+fn transfer_cstruct_return_accepted() {
+    let err = typecheck_error(
+        r#"@cstruct record Buffer {
+    ptr: Ptr
+    len: Int
+}
+
+extern func make_buffer() -> transfer Buffer"#,
+    );
+    assert!(err.is_none(), "transfer return on Ptr-bearing cstruct rejected: {:?}", err);
+}
+
+#[test]
+fn transfer_scalar_return_rejected() {
+    // A scalar has no pointer to transfer ownership of.
+    let err = typecheck_error(r#"extern func count() -> transfer Int"#);
+    match err {
+        Some(e) => assert!(e.contains("pointer-carrying"), "unexpected error: {}", e),
+        None => panic!("transfer on a scalar return was accepted"),
+    }
+}
+
+#[test]
+fn transfer_unit_return_rejected() {
+    // `Unit` is allowed only as a return, but it carries no pointer to own.
+    let err = typecheck_error(r#"extern func reset() -> transfer Unit"#);
+    match err {
+        Some(e) => assert!(e.contains("pointer-carrying"), "unexpected error: {}", e),
+        None => panic!("transfer on a Unit return was accepted"),
+    }
+}
+
+#[test]
 fn mut_and_transfer_param_rejected_at_parse() {
     let ts = match lex(
         "extern func f(mut transfer x: Bytes)".to_string(),

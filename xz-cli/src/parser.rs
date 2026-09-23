@@ -259,13 +259,15 @@ let mut trusted = false;
         self.expect(TokKind::LParen, String::from("'('"))?;
         let params = self.params()?;
         self.expect(TokKind::RParen, String::from("')'"))?;
+        let mut transfer_ret = false;
         let ret = if self.at(TokKind::Arrow) {
             self.eat(TokKind::Arrow);
+            transfer_ret = self.eat(TokKind::Transfer).is_some();
             Some(self.ty()?)
         } else {
             None
         };
-        Ok(ExternDecl { name: name_tok.text.clone(), type_params: type_params, params: params, ret: ret, span: start })
+        Ok(ExternDecl { name: name_tok.text.clone(), type_params: type_params, params: params, ret: ret, transfer_ret: transfer_ret, span: start })
     }
 
     fn record_decl(&mut self) -> Result<RecordDecl, ParseError> {

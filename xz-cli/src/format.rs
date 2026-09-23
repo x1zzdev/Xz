@@ -140,6 +140,9 @@ impl Printer {
                 s.push_str(&self.params_str(&e.params));
                 if let Some(ret) = &e.ret {
                     s.push_str(" -> ");
+                    if e.transfer_ret {
+                        s.push_str("transfer ");
+                    }
                     s.push_str(&self.type_str(ret));
                 }
                 self.out.push_str(&s);
