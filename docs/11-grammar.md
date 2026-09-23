@@ -102,7 +102,7 @@ top_level       := func_decl | task_decl | chan_decl | extern_decl
 func_decl       := "@export"? "async"? "func" IDENT type_params? "(" params ")" ("->" type)? contract* block
 task_decl       := "task" IDENT block
 chan_decl       := "chan" IDENT ":" "Chan[" type "]"
-extern_decl     := "extern" "func" IDENT type_params? "(" params ")" ("->" "transfer"? type)?
+extern_decl     := "extern" "func" IDENT type_params? "(" params ")" ("->" "transfer"? type ("release" IDENT)?)?
 record_decl     := "@cstruct"? "record" IDENT "{" field* "}"
 enum_decl       := "enum" IDENT "{" variant+ "}"
 
@@ -221,7 +221,10 @@ The grammar alone is not the whole contract. The compiler also enforces:
   only on an `extern func` return and requires a pointer-carrying type. It
   declares that ownership of the returned buffer moves to the caller, which is
   then responsible for releasing it through the library's deallocator; without
-  it the callee retains ownership and the caller must not free the pointer
+  it the callee retains ownership and the caller must not free the pointer. A
+  `.xzint` return names the deallocator with a `release <symbol>` clause, where
+  the symbol is an `extern func` in the same interface taking one borrowed
+  `Ptr` and returning `Unit`
   ([10-ffi-interop.md](10-ffi-interop.md)).
 - **C layout (`@cstruct`)** — a `@cstruct record` is guaranteed the C ABI
   struct layout (fields in declaration order, C alignment and padding), so it

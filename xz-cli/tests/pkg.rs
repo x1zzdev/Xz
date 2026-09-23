@@ -186,6 +186,59 @@ fn pkg_gen_rejects_transfer_on_an_export_interface() {
 }
 
 #[test]
+fn pkg_validate_accepts_a_transfer_return_with_a_release_symbol() {
+    let program = parse_interface(
+        "@interface foreign\nextern func free(ptr: Ptr) -> Unit\nextern func strdup(s: Str) -> transfer Str release free\n",
+    );
+    assert!(pkg::validate_interface(&program).is_ok());
+}
+
+#[test]
+fn pkg_validate_requires_a_release_symbol_on_a_transfer_return() {
+    let program = parse_interface(
+        "@interface foreign\nextern func read(path: Str) -> transfer Str\n",
+    );
+    let err = pkg::validate_interface(&program).unwrap_err();
+    assert!(err.contains("must declare its deallocator"), "unexpected error: {}", err);
+}
+
+#[test]
+fn pkg_validate_rejects_a_release_clause_on_a_non_transfer_return() {
+    let program = parse_interface(
+        "@interface foreign\nextern func free(ptr: Ptr) -> Unit\nextern func name() -> Str release free\n",
+    );
+    let err = pkg::validate_interface(&program).unwrap_err();
+    assert!(err.contains("not 'transfer'"), "unexpected error: {}", err);
+}
+
+#[test]
+fn pkg_validate_rejects_a_release_symbol_that_is_not_declared() {
+    let program = parse_interface(
+        "@interface foreign\nextern func read(path: Str) -> transfer Str release missing\n",
+    );
+    let err = pkg::validate_interface(&program).unwrap_err();
+    assert!(err.contains("not an 'extern func' declared"), "unexpected error: {}", err);
+}
+
+#[test]
+fn pkg_validate_rejects_a_release_symbol_that_is_not_ptr_to_unit() {
+    let program = parse_interface(
+        "@interface foreign\nextern func free(ptr: Str) -> Unit\nextern func read(p: Str) -> transfer Str release free\n",
+    );
+    let err = pkg::validate_interface(&program).unwrap_err();
+    assert!(err.contains("func(ptr: Ptr) -> Unit"), "unexpected error: {}", err);
+}
+
+#[test]
+fn pkg_validate_rejects_release_on_an_export_interface() {
+    let program = parse_interface(
+        "@interface export\nextern func free(ptr: Ptr) -> Unit\nextern func read(p: Str) -> transfer Str release free\n",
+    );
+    let err = pkg::validate_interface(&program).unwrap_err();
+    assert!(err.contains("@export"), "unexpected error: {}", err);
+}
+
+#[test]
 fn pkg_add_builds_registry_url() {
     assert_eq!(
         pkg::interface_url("https://xz.example/interfaces/", "libcurl"),

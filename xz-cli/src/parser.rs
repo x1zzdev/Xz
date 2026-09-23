@@ -37,6 +37,10 @@ impl Parser {
         self.cur() == &kind
     }
 
+    fn at_ident(&self, text: &str) -> bool {
+        matches!(self.cur(), TokKind::Ident(s) if s == text)
+    }
+
     fn eat(&mut self, kind: TokKind) -> Option<Token> {
         if self.at(kind) {
             let tok = self.tokens[self.i].clone();
@@ -290,14 +294,21 @@ let mut trusted = false;
         let params = self.params()?;
         self.expect(TokKind::RParen, String::from("')'"))?;
         let mut transfer_ret = false;
+        let mut release: Option<String> = None;
         let ret = if self.at(TokKind::Arrow) {
             self.eat(TokKind::Arrow);
             transfer_ret = self.eat(TokKind::Transfer).is_some();
-            Some(self.ty()?)
+            let ty = self.ty()?;
+            if self.at_ident("release") {
+                self.i += 1;
+                let sym = self.expect_ident()?;
+                release = Some(sym.text);
+            }
+            Some(ty)
         } else {
             None
         };
-        Ok(ExternDecl { name: name_tok.text.clone(), type_params: type_params, params: params, ret: ret, transfer_ret: transfer_ret, span: start })
+        Ok(ExternDecl { name: name_tok.text.clone(), type_params: type_params, params: params, ret: ret, transfer_ret: transfer_ret, release: release, span: start })
     }
 
     fn record_decl(&mut self) -> Result<RecordDecl, ParseError> {

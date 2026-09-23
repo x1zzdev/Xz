@@ -1,7 +1,7 @@
 //! `xz pkg` — package/interface tooling. The first slice is
 //! `xz pkg gen --lang python`: a `ctypes` wrapper generated from a `.xzint`
 //! interface file (docs/10-ffi-interop.md).
-use crate::ast::{InterfaceKind, Item, Program};
+use crate::ast::{ExternDecl, InterfaceKind, Item, Program, Type};
 use crate::lexer::lex;
 use crate::parser::parse;
 use crate::resolve::resolve;
@@ -49,10 +49,84 @@ pub fn validate_interface(program: &Program) -> Result<(), String> {
                         e.name
                     ));
                 }
+                if e.release.is_some() {
+                    return Err(format!(
+                        "extern func '{}' return: 'release' names a deallocator for a 'transfer' return, which an '@interface export' cannot declare",
+                        e.name
+                    ));
+                }
             }
+        }
+        return Ok(());
+    }
+
+    let externs: Vec<&ExternDecl> = program
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Extern(e) => Some(e),
+            _ => None,
+        })
+        .collect();
+    for e in &externs {
+        if !e.transfer_ret {
+            if e.release.is_some() {
+                return Err(format!(
+                    "extern func '{}' return: 'release' names a deallocator for a 'transfer' return, but this return is not 'transfer'",
+                    e.name
+                ));
+            }
+            continue;
+        }
+        let Some(sym) = &e.release else {
+            return Err(format!(
+                "extern func '{}' return: a 'transfer' return must declare its deallocator with 'release <symbol>'",
+                e.name
+            ));
+        };
+        if sym == &e.name {
+            return Err(format!(
+                "extern func '{}' return: a function cannot release its own returned buffer",
+                e.name
+            ));
+        }
+        let Some(release) = externs.iter().find(|f| &f.name == sym) else {
+            return Err(format!(
+                "extern func '{}' return: 'release' names '{}', which is not an 'extern func' declared in this interface",
+                e.name, sym
+            ));
+        };
+        if !is_ptr_to_unit(release) {
+            return Err(format!(
+                "extern func '{}' return: release symbol '{}' must be declared as 'func(ptr: Ptr) -> Unit' with one borrowed pointer parameter",
+                e.name, sym
+            ));
         }
     }
     Ok(())
+}
+
+/// A release symbol takes one borrowed `Ptr` and returns `Unit`.
+fn is_ptr_to_unit(func: &ExternDecl) -> bool {
+    if func.params.len() != 1 || func.transfer_ret {
+        return false;
+    }
+    let p = &func.params[0];
+    if p.mutable || p.transfer || !is_ptr(&p.ty) {
+        return false;
+    }
+    match &func.ret {
+        None => true,
+        Some(ty) => is_unit(ty),
+    }
+}
+
+fn is_ptr(ty: &Type) -> bool {
+    matches!(ty, Type::NamedPlain(n) | Type::Named(n, _) if n == "Ptr")
+}
+
+fn is_unit(ty: &Type) -> bool {
+    matches!(ty, Type::NamedPlain(n) | Type::Named(n, _) if n == "Unit")
 }
 
 /// Validate an interface file and generate its Python `ctypes` wrapper, bound

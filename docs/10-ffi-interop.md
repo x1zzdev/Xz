@@ -159,9 +159,22 @@ The return modifier is the mirror of a `transfer` parameter: legal only on an
 `extern func` return and requiring a pointer-carrying type. Because the
 deallocator is library-specific, `transfer` marks the obligation rather than
 choosing how to release it; an Xz wrapper hands the pointer to the library's
-release function. The generated Python wrapper copies a returned `Str`/`Bytes`
-into a Python value and cannot take ownership, so it rejects a `transfer`
-return rather than leak the buffer.
+release function. A `.xzint` interface names that function on the symbol with a
+`release <symbol>` clause, so a consumer of the declaration knows which symbol
+frees the returned buffer:
+
+```
+extern func free(ptr: Ptr) -> Unit
+extern func strdup(s: Str) -> transfer Str release free
+```
+
+The release symbol is declared in the same interface as an `extern func` taking
+one borrowed `Ptr` and returning `Unit`. A `transfer` return without a `release`
+clause is a definition error, and a `release` clause on a return that is not
+`transfer` is a definition error: a buffer is never silently leaked or freed
+twice. The generated Python wrapper copies a returned `Str`/`Bytes` into a
+Python value and cannot take ownership, so it rejects a `transfer` return rather
+than leak the buffer.
 
 ## Exporting an Xz library (`xz build --shared`)
 

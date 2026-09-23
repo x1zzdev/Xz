@@ -152,6 +152,10 @@ impl Printer {
                         s.push_str("transfer ");
                     }
                     s.push_str(&self.type_str(ret));
+                    if let Some(sym) = &e.release {
+                        s.push_str(" release ");
+                        s.push_str(sym);
+                    }
                 }
                 self.out.push_str(&s);
             }
