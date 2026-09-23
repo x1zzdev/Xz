@@ -19,7 +19,8 @@ fn pkg_gen_binds_extern_interface() {
     // `xz pkg gen --lang python` transcribes a `.xzint` interface: every
     // `extern` is bound against the named C library (not the sibling
     // `libXz.so`), and every `@cstruct` becomes a `ctypes.Structure`.
-    let src = r#"extern func curl_easy_init() -> Ptr
+    let src = r#"@interface foreign
+extern func curl_easy_init() -> Ptr
 extern func curl_easy_setopt(handle: Ptr, option: Int, param: Ptr) -> Int
 extern func curl_easy_cleanup(handle: Ptr)
 
@@ -74,7 +75,8 @@ extern func curl_easy_cleanup(handle: Ptr)
 fn pkg_gen_marshals_str_params() {
     // An `extern` that takes `Str` is wrapped to accept a Python `str` and
     // build the `XzStr` ABI struct (docs/10-ffi-interop.md).
-    let src = r#"extern func puts(s: Str) -> Int
+    let src = r#"@interface foreign
+extern func puts(s: Str) -> Int
 extern func noop()
 "#;
     let program = parse_interface(src);
@@ -104,7 +106,7 @@ extern func noop()
 
 #[test]
 fn pkg_gen_escapes_library_name() {
-    let program = parse_interface("extern func noop()\n");
+    let program = parse_interface("@interface foreign\nextern func noop()\n");
     let out = pkg::generate_python(&program, "weird\"lib.so").expect("generate");
     assert!(
         out.contains("ctypes.CDLL(\"weird\\\"lib.so\")"),
@@ -116,7 +118,8 @@ fn pkg_gen_escapes_library_name() {
 #[test]
 fn pkg_gen_rejects_function_bodies() {
     let program = parse_interface(
-        r#"extern func puts(s: Str) -> Int
+        r#"@interface foreign
+extern func puts(s: Str) -> Int
 func helper() -> Int {
     1
 }
@@ -129,7 +132,8 @@ func helper() -> Int {
 #[test]
 fn pkg_gen_rejects_plain_record() {
     let program = parse_interface(
-        r#"record Buffer {
+        r#"@interface foreign
+record Buffer {
     ptr: Ptr
 }
 "#,
@@ -143,7 +147,7 @@ fn pkg_gen_rejects_transfer_param() {
     // The ctypes wrapper copies Str/Bytes into Python values, so it cannot
     // honor a `transfer` parameter; it must reject rather than degrade it
     // silently (docs/10-ffi-interop.md).
-    let program = parse_interface("extern func write(transfer frame: Bytes) -> Int\n");
+    let program = parse_interface("@interface foreign\nextern func write(transfer frame: Bytes) -> Int\n");
     let err = pkg::generate_python(&program, "libx.so").unwrap_err();
     assert!(err.contains("'transfer'"), "unexpected error: {}", err);
     assert!(err.contains("frame"), "error should name the parameter: {}", err);
@@ -154,10 +158,31 @@ fn pkg_gen_rejects_transfer_return() {
     // The ctypes wrapper copies the returned buffer into a Python value and
     // cannot take ownership of it, so a `transfer` return must be rejected
     // rather than leak the buffer (docs/10-ffi-interop.md).
-    let program = parse_interface("extern func read(path: Str) -> transfer Str\n");
+    let program = parse_interface("@interface foreign\nextern func read(path: Str) -> transfer Str\n");
     let err = pkg::generate_python(&program, "libx.so").unwrap_err();
     assert!(err.contains("'transfer'"), "unexpected error: {}", err);
     assert!(err.contains("return"), "error should name the return: {}", err);
+}
+
+#[test]
+fn pkg_gen_requires_an_interface_kind_marker() {
+    let program = parse_interface("extern func noop()\n");
+    let err = pkg::generate_python(&program, "libx.so").unwrap_err();
+    assert!(
+        err.contains("@interface export"),
+        "unexpected error: {}",
+        err
+    );
+}
+
+#[test]
+fn pkg_gen_rejects_transfer_on_an_export_interface() {
+    // An `@interface export` describes an Xz `@export` surface, which cannot
+    // accept ownership from its C caller (docs/10-ffi-interop.md).
+    let program = parse_interface("@interface export\nextern func write(transfer frame: Bytes) -> Int\n");
+    let err = pkg::generate_python(&program, "libx.so").unwrap_err();
+    assert!(err.contains("frame"), "error should name the parameter: {}", err);
+    assert!(err.contains("@export"), "unexpected error: {}", err);
 }
 
 #[test]
@@ -188,16 +213,16 @@ fn pkg_add_rejects_unsafe_names() {
 fn pkg_add_verifies_fetched_interface() {
     // A fetched interface is untrusted until it passes the same checks as
     // `xz pkg gen`: only `extern func` and `@cstruct record` survive.
-    let src = "extern func puts(s: Str) -> Int\n";
+    let src = "@interface foreign\nextern func puts(s: Str) -> Int\n";
     assert!(pkg::verify_interface_source(src, "libc.xzint").is_ok());
-    let with_body = "extern func puts(s: Str) -> Int\nfunc helper() -> Int {\n    1\n}\n";
+    let with_body = "@interface foreign\nextern func puts(s: Str) -> Int\nfunc helper() -> Int {\n    1\n}\n";
     let err = match pkg::verify_interface_source(with_body, "libc.xzint") {
         Ok(_) => panic!("a function body must be rejected"),
         Err(e) => e,
     };
     assert!(err.contains("'helper'"), "unexpected error: {}", err);
 
-    let plain = "record Buffer {\n    ptr: Ptr\n}\n";
+    let plain = "@interface foreign\nrecord Buffer {\n    ptr: Ptr\n}\n";
     let err = match pkg::verify_interface_source(plain, "libx.xzint") {
         Ok(_) => panic!("a plain record must be rejected"),
         Err(e) => e,

@@ -1,4 +1,5 @@
 use crate::ast::{Program, Item, FuncDecl, TaskDecl, ChanDecl, ExternDecl, RecordDecl, EnumDecl};
+use crate::ast::InterfaceKind;
 use crate::ast::{Param, Field, Variant, TypeParam, Contract, Block, Stmt, StmtKind, Decl, Assign, AssignTarget, AssignOp};
 use crate::ast::{DocComment, DocClaim, Type, Expr, IfExpr, Pattern, UnaryOp, BinOp, PropKind};
 use crate::token::{TokKind, Token, Span, DocTag};
@@ -72,6 +73,11 @@ impl Parser {
     }
 
     fn run(&mut self) -> Result<Program, ParseError> {
+        let interface_kind = if self.at(TokKind::AtInterface) {
+            Some(self.interface_marker()?)
+        } else {
+            None
+        };
         let mut items: Vec<Item> = vec![];
         while !self.at(TokKind::Eof) {
             let item = self.top_level();
@@ -80,7 +86,22 @@ impl Parser {
                 Ok(it) => items.push(it),
             }
         }
-        Ok(Program { items: items })
+        Ok(Program { items: items, interface_kind: interface_kind })
+    }
+
+    /// A `.xzint` interface file opens with exactly one `@interface export` or
+    /// `@interface foreign` marker (docs/10-ffi-interop.md).
+    fn interface_marker(&mut self) -> Result<InterfaceKind, ParseError> {
+        self.expect(TokKind::AtInterface, String::from("'@interface'"))?;
+        let kind = self.expect_ident()?;
+        match kind.text.as_str() {
+            "export" => Ok(InterfaceKind::Export),
+            "foreign" => Ok(InterfaceKind::Foreign),
+            other => Err(ParseError {
+                message: format!("expected 'export' or 'foreign' after '@interface', found '{other}'"),
+                span: kind.span,
+            }),
+        }
     }
 
     fn top_level(&mut self) -> Result<Item, ParseError> {
@@ -130,6 +151,15 @@ impl Parser {
             TokKind::Enum => {
                 let decl = self.enum_decl()?;
                 Ok(Item::Enum(decl))
+            }
+            TokKind::AtInterface => {
+                let cur = self.tokens[self.i].clone();
+                Err(ParseError {
+                    message: String::from(
+                        "the '@interface' marker must appear exactly once, before any declaration",
+                    ),
+                    span: cur.span,
+                })
             }
             _ => {
                 let cur = self.tokens[self.i].clone();

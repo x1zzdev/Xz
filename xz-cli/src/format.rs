@@ -10,6 +10,7 @@ use crate::ast::{
     Assign, AssignOp, AssignTarget, BinOp, Block, Contract, Decl, EnumDecl, Expr, FuncDecl, IfExpr,
     Item, Param, Pattern, Program, RecordDecl, Stmt, StmtKind, Type, TypeParam, UnaryOp, Variant,
 };
+use crate::ast::InterfaceKind;
 use crate::lexer::lex_with_comments;
 use crate::parser::parse;
 use crate::token::Comment;
@@ -54,6 +55,13 @@ impl Printer {
     }
 
     fn program(mut self, program: &Program) -> String {
+        if let Some(kind) = program.interface_kind {
+            let name = match kind {
+                InterfaceKind::Export => "export",
+                InterfaceKind::Foreign => "foreign",
+            };
+            self.out.push_str(&format!("@interface {name}\n"));
+        }
         for item in &program.items {
             self.emit_item(item);
         }

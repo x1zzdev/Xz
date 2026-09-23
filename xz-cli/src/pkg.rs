@@ -1,7 +1,7 @@
 //! `xz pkg` — package/interface tooling. The first slice is
 //! `xz pkg gen --lang python`: a `ctypes` wrapper generated from a `.xzint`
 //! interface file (docs/10-ffi-interop.md).
-use crate::ast::{Item, Program};
+use crate::ast::{InterfaceKind, Item, Program};
 use crate::lexer::lex;
 use crate::parser::parse;
 use crate::resolve::resolve;
@@ -10,7 +10,13 @@ use crate::typecheck::typecheck;
 /// A `.xzint` interface file is a declaration-only Xz source (docs/10): only
 /// `extern func` signatures and `@cstruct record` declarations are allowed, so
 /// the generated wrapper stays a faithful, complete description of a C ABI.
+/// It opens with exactly one `@interface export` or `@interface foreign`
+/// marker, which decides whether `transfer` ownership is legal.
 pub fn validate_interface(program: &Program) -> Result<(), String> {
+    let kind = program.interface_kind.ok_or_else(|| {
+        "'.xzint' interface files must open with exactly one '@interface export' or '@interface foreign' marker"
+            .to_string()
+    })?;
     for item in &program.items {
         let (kind, name) = match item {
             Item::Extern(_) => continue,
@@ -25,6 +31,26 @@ pub fn validate_interface(program: &Program) -> Result<(), String> {
             "'.xzint' interface files may only declare 'extern func' and '@cstruct record'; found {} '{}'",
             kind, name
         ));
+    }
+    if kind == InterfaceKind::Export {
+        for item in &program.items {
+            if let Item::Extern(e) = item {
+                for p in &e.params {
+                    if p.transfer {
+                        return Err(format!(
+                            "extern func '{}' parameter '{}': 'transfer' cannot cross an Xz '@export' boundary; declare it only in an '@interface foreign'",
+                            e.name, p.name
+                        ));
+                    }
+                }
+                if e.transfer_ret {
+                    return Err(format!(
+                        "extern func '{}' return: 'transfer' cannot cross an Xz '@export' boundary; declare it only in an '@interface foreign'",
+                        e.name
+                    ));
+                }
+            }
+        }
     }
     Ok(())
 }

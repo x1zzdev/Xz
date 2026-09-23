@@ -3,6 +3,16 @@ use crate::token::{Span, DocTag};
 #[derive(Clone)]
 pub struct Program {
     pub items: Vec<Item>,
+    pub interface_kind: Option<InterfaceKind>,
+}
+
+/// The kind a `.xzint` interface file declares with its opening `@interface`
+/// marker (docs/10-ffi-interop.md). `Export` describes the `@export` surface an
+/// Xz shared library exposes; `Foreign` describes a foreign C library.
+#[derive(Clone, Copy, PartialEq)]
+pub enum InterfaceKind {
+    Export,
+    Foreign,
 }
 
 #[derive(Clone)]

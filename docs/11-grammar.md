@@ -94,7 +94,8 @@ trailing `?`): `await fetch(url)?` parses as `(await fetch(url))?`.
 ## Syntactic grammar
 
 ```
-program         := top_level*
+program         := interface_marker? top_level*
+interface_marker := "@interface" ("export" | "foreign")
 top_level       := func_decl | task_decl | chan_decl | extern_decl
                  | record_decl | enum_decl
 
@@ -204,6 +205,11 @@ The grammar alone is not the whole contract. The compiler also enforces:
   go ([04-memory-model.md](04-memory-model.md)).
 - **Handle affinity** — `Ptr`-bearing records are never copied; handoff is
   `transfer(x)` only ([10-ffi-interop.md](10-ffi-interop.md)).
+- **Interface kind** — an `@interface export` or `@interface foreign` marker is
+  legal only as the first construct of a `.xzint` interface file, and there must
+  be exactly one. `export` declares the `@export` surface an Xz shared library
+  exposes; `foreign` declares a foreign C library. The kind decides whether
+  `transfer` ownership is legal ([10-ffi-interop.md](10-ffi-interop.md)).
 - **Parameter ownership** — a `transfer` parameter modifier is legal only on an
   `extern func` parameter, is mutually exclusive with `mut`, and requires a
   pointer-carrying type (`Str`, `Bytes`, `Ptr`, or a `@cstruct record` that

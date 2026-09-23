@@ -239,6 +239,10 @@ impl Lexer {
                     self.push(TokKind::AtExport, start, name);
                     continue;
                 }
+                if name == "interface" {
+                    self.push(TokKind::AtInterface, start, name);
+                    continue;
+                }
                 return Err(self.err(format!("unknown attribute @{name}"), start));
             }
 

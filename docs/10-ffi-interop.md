@@ -259,6 +259,26 @@ declarations. Contracts belong to the Xz wrappers that call the externs, not to
 the raw declarations. One interface file is written per library and reused by
 every project that calls it.
 
+Every interface file opens with exactly one interface-kind marker on its own
+line, before any declaration:
+
+```
+@interface export
+```
+
+```
+@interface foreign
+```
+
+The marker states what the file describes, because both kinds declare functions
+with the same `extern func` syntax. `@interface export` describes the `@export`
+surface an Xz shared library exposes; `@interface foreign` describes a foreign C
+library. The kind decides the ownership rules: an `@export` surface borrows its
+parameters and retains its returns, so it cannot declare `transfer` in either
+direction, while a foreign library may take and hand back ownership. A file with
+no marker, or with more than one, is rejected: the consumer never guesses the
+boundary kind.
+
 ```
 xz pkg gen --lang python libcurl.xzint              # -> libcurl.py, loads libcurl.so
 xz pkg gen --lang python libcurl.xzint --lib libcurl.so.4
