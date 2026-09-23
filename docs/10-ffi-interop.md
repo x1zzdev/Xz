@@ -179,6 +179,11 @@ symbols; everything else keeps internal linkage and stays private:
 
 ```c
 // libXz.h (generated)
+//
+// ABI ownership (docs/10-ffi-interop.md): every parameter is valid only for
+// the duration of the call, and a returned pointer (XzStr, XzBytes, void*, or
+// a struct containing one) is retained by the library and must not be freed by
+// the caller. An `@export` function cannot transfer ownership either way.
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -200,6 +205,12 @@ A `mut` parameter maps to `T*` in the header and bindings — the C in/out
 convention. The callee still uses copy-in/copy-out internally
 ([04-memory-model.md](04-memory-model.md), [13-codegen.md](13-codegen.md)), so
 a C caller passes the address of the value it wants updated.
+
+The header also states the ownership convention in a preamble: a parameter is
+borrowed for the call, and a returned pointer is retained by the library. An
+`@export` function cannot use `transfer` (a foreign `extern func` modifier
+only), so ownership never varies across exports and no per-symbol annotation
+is needed.
 
 `Str`/`Bytes` cross as the two-field `XzStr`/`XzBytes` structs (pointer +
 length, no NUL guarantee); `Ptr` is `void*`. The `.so` carries the same libc
