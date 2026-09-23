@@ -638,6 +638,11 @@ func main() {
     assert!(header.contains("int64_t add(int64_t a, int64_t b);"), "missing add prototype:\n{}", header);
     assert!(!header.contains("hidden"), "private helper must not be in the header");
     assert!(header.contains("typedef struct XzStr"), "missing XzStr");
+    assert!(
+        header.contains("retained by the library and must not be freed by"),
+        "header must state the ABI ownership convention:\n{}",
+        header
+    );
     assert!(header.contains("bool flag;"), "Bool must map to C bool:\n{}", header);
     let inner_pos = header.find("typedef struct Inner").ok_or("Inner record missing")?;
     let outer_pos = header.find("typedef struct Outer").ok_or("Outer record missing")?;
