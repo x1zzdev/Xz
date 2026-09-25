@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+*.sh text eol=lf
+
+*.xz linguist-language=Xz
+*.xzint linguist-language=Xz
+
+LICENSE-APACHE linguist-documentation
+LICENSE-MIT linguist-documentation
