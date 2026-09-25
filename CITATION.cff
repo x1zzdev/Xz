@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use Xz in academic work, please cite it using the metadata below."
+title: "Xz: a general-purpose language for AI-written, human-reviewed code"
+abstract: >-
+  Xz is a general-purpose programming language designed so that humans can read,
+  verify, and trust machine-written code. Declared behavior is checked against
+  the implementation, side effects and failure paths are explicit in the type
+  system, and the compiler emits structured diagnostics for automated repair.
+type: software
+authors:
+  - name: "Jangseowoo"
+    alias: "x1zz"
+    email: "ax1s@x1zz.com"
+repository-code: "https://github.com/x1zzdev/Xz"
+url: "https://github.com/x1zzdev/Xz"
+license: "MIT OR Apache-2.0"
+keywords:
+  - programming language
+  - compiler
+  - LLVM
+  - intent verification
+  - formal contracts
