@@ -77,6 +77,20 @@ Phase 1부터 4까지는 끝났고 나머지는 부분 구현 상태다. 각 Pha
 | [11-grammar.md](docs/11-grammar.md) | 권위 있는 문법 |
 | [12-stdlib.md](docs/12-stdlib.md) | 표준 라이브러리 표면 |
 | [13-codegen.md](docs/13-codegen.md) | LLVM 백엔드와 런타임 |
+| [14-codegen-notes.md](docs/14-codegen-notes.md) | 백엔드에서 부딪힌 문제와 그 결정 |
+| [15-ecosystem.md](docs/15-ecosystem.md) | Xz 코어 위에 올라가는 호스트 통합 |
+
+## 생태계
+
+Xz는 언어와 컴파일러다. 프레임워크는 C ABI와 `.xzint` 인터페이스 형식을 통해 Xz에 연결되므로, 언어 자체를 바꾸지 않고도 호스트 통합을 만들 수 있다.
+
+| 프로젝트 | 호스트 | 역할 |
+|---|---|---|
+| **Xz** (이 저장소) | 없음 | 언어, 명세, 컴파일러, LLVM 백엔드, C ABI, `.xzint` |
+| [next.xz](https://github.com/x1zzdev/next-xz) | Next.js / TypeScript | 바인딩 생성, Bun FFI·Wasm 로더, 에이전트 루프, `/___audit` 오버레이 |
+| [rails.xz](https://github.com/imrubydev/rails-xz) | Ruby on Rails | Ruby FFI 브리지, ActiveJob 에이전트 루프, `/xz_audit` 엔진 |
+
+두 툴킷은 같은 경로를 따른다. 에이전트가 계약이 붙은 `.xz` 모듈을 쓰고, `xz check-json`이 수정 루프를 돌리고, `xz build --shared`가 라이브러리를 만들고, 사람이 호스트의 감사 화면에서 계약을 승인한다. 프레임워크가 바뀌어도 코어는 그대로다. 이게 핵심이다. 자세한 내용은 [docs/15-ecosystem.md](docs/15-ecosystem.md)에 있다.
 
 ## 기여
 

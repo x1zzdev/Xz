@@ -7,7 +7,7 @@ Xz (see [docs/01-philosophy.md](docs/01-philosophy.md)).
 
 ## Repo layout
 
-- `docs/01..14` — the specification. `docs/11-grammar.md` is the authoritative
+- `docs/01..15` — the specification. `docs/11-grammar.md` is the authoritative
   grammar (which constructs exist); `docs/12-stdlib.md` is the stdlib surface
   (which names exist).
 - `examples/*.xz` — design-validation programs. They must comply with the

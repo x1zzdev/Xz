@@ -14,5 +14,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 - Structured concurrency: typed channels, a deterministic task scheduler, and `async` / `await` on the JIT path.
 - Tooling: `xz fmt`, `xz lsp`, `xz pkg gen`, and `xz pkg add`.
 - Standard library first slices: `List`, `Map`, `Set`, `io`, `math`, and `time`.
+- Ecosystem documentation covering the `next.xz` and `rails.xz` host toolkits that consume the compiler through the C ABI and `.xzint` interfaces.
 
 [Unreleased]: https://github.com/x1zzdev/Xz/commits/main

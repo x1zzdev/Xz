@@ -77,8 +77,28 @@ The specification lives in `docs/`. Start with the philosophy, then read the par
 | [11-grammar.md](docs/11-grammar.md) | The authoritative grammar |
 | [12-stdlib.md](docs/12-stdlib.md) | The standard library surface |
 | [13-codegen.md](docs/13-codegen.md) | The LLVM backend and runtime |
+| [14-codegen-notes.md](docs/14-codegen-notes.md) | Backend problems and the decisions that settled them |
+| [15-ecosystem.md](docs/15-ecosystem.md) | Host integrations built on the Xz core |
 
 A Korean overview is available at [README_kr.md](README_kr.md).
+
+## Ecosystem
+
+Xz is the language and the compiler. Frameworks connect to it through the C ABI
+and the `.xzint` interface format, so a host integration can be built without
+changing the language itself.
+
+| Project | Host | Role |
+|---|---|---|
+| **Xz** (this repository) | none | Language, specification, compiler, LLVM backend, C ABI, `.xzint` |
+| [next.xz](https://github.com/x1zzdev/next-xz) | Next.js / TypeScript | Binding generation, Bun FFI and Wasm loader, agent loop, `/___audit` overlay |
+| [rails.xz](https://github.com/imrubydev/rails-xz) | Ruby on Rails | Ruby FFI bridge, ActiveJob agent loop, `/xz_audit` engine |
+
+Each toolkit follows the same path: an agent writes a contracted `.xz` module,
+`xz check-json` drives the repair loop, `xz build --shared` produces the library,
+and a human approves the contracts in the host's audit view. The core does not
+change for each framework, and that is the point. See
+[docs/15-ecosystem.md](docs/15-ecosystem.md).
 
 ## Contributing
 
