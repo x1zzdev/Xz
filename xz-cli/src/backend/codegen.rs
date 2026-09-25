@@ -1499,11 +1499,14 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             let hint = param_kinds.get(i).cloned();
             let saved_list_hint = self.list_hint.clone();
             let saved_none_hint = self.none_hint.clone();
+            let saved_set_hint = self.set_hint.clone();
             self.list_hint = hint.clone();
-            self.none_hint = hint;
+            self.none_hint = hint.clone();
+            self.set_hint = hint;
             vals.push(self.gen_expr(a)?);
             self.list_hint = saved_list_hint;
             self.none_hint = saved_none_hint;
+            self.set_hint = saved_set_hint;
         }
         for (i, v) in vals.iter().enumerate() {
             let p = self.backend.builder.build_struct_gep(env_ty, env, i as u32, "await.arg").unwrap();
@@ -2072,11 +2075,14 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 let hint = param_kinds.get(i).cloned();
                 let saved_list_hint = self.list_hint.clone();
                 let saved_none_hint = self.none_hint.clone();
+                let saved_set_hint = self.set_hint.clone();
                 self.list_hint = hint.clone();
-                self.none_hint = hint;
+                self.none_hint = hint.clone();
+                self.set_hint = hint;
                 let v = self.gen_expr(a)?;
                 self.list_hint = saved_list_hint;
                 self.none_hint = saved_none_hint;
+                self.set_hint = saved_set_hint;
                 call_args.push(v.into());
             }
             let call = self.backend.builder.build_direct_call(fv, &call_args, "call").unwrap();

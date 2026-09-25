@@ -801,9 +801,9 @@ let mut trusted = false;
             }
             TokKind::LBrace => {
                 self.i += 1;
-                // `{}` is an empty Map or Set; the binding's declared type
-                // decides which (docs/11). Represented as an empty Map literal
-                // and accepted by both.
+                // `{}` is an empty Map or Set; the expected type — a binding's
+                // declared type or a call parameter — decides which (docs/11).
+                // Represented as an empty Map literal and accepted by both.
                 if self.at(TokKind::RBrace) {
                     self.i += 1;
                     return Ok(Expr::MapLit(vec![]));

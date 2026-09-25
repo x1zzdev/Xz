@@ -1370,6 +1370,35 @@ fn set_literal_insert_contains_and_iteration_run() {
 }
 
 #[test]
+fn empty_brace_takes_set_type_from_call_parameter() {
+    // An empty `{}` takes its collection type from the expected type, not only
+    // a binding's declared type: as a call argument it must materialize as a
+    // Set when the parameter is `Set[T]`, not the default empty Map (docs/11).
+    expect_output(
+        r#"/// @intent  Returns the number of elements in s.
+/// @effects none
+func count(s: Set[Int]) -> Int {
+    s.len()
+}
+
+/// @intent  Returns the number of entries in m.
+/// @effects none
+func size(m: Map[Str, Int]) -> Int {
+    m.len()
+}
+
+func main() {
+    print(count({}).to_str())
+    print(" ")
+    print(size({}).to_str())
+    print("\n")
+}"#,
+        "0 0\n",
+        "empty {} as a Set call argument",
+    );
+}
+
+#[test]
 fn read_file_reads_and_missing_is_err() -> Result<(), String> {
     // `read_file` reads a real temp file through the JIT host (fresh heap Str
     // payload wrapped in Result[Str, Err]); a missing path yields err.

@@ -100,8 +100,9 @@ assignment/argument/return copies it; `m.insert(k, v)` returns a *new* map
 Keys must be `Int`, `usize`, `Bool`, `Char`, or `Str` (types with decidable
 equality); `Float`, records, enums, and collections are rejected. A repeated key
 in a literal is the same as inserting again: the later value wins and the key
-keeps its first position. `{}` (empty) requires a declared key and value type:
-`let m: Map[Str, Int] = {}`. There is no `m[k]` indexing and no index
+keeps its first position. `{}` (empty) takes its key and value type from the
+expected type: `let m: Map[Str, Int] = {}`, or a parameter of type
+`Map[Str, Int]`. There is no `m[k]` indexing and no index
 assignment; `get` returns `Option`, and changes go through `insert`.
 
 ## `Set[T]`
@@ -121,8 +122,9 @@ set (see [03-type-system.md](03-type-system.md)).
 
 Elements must be `Int`, `usize`, `Bool`, `Char`, or `Str` (types with decidable
 equality); `Float`, records, enums, and collections are rejected. A repeated
-element in a literal keeps its first position. `{}` (empty) requires a declared
-element type: `let s: Set[Int] = {}`. There is no `remove` yet and no in-place
+element in a literal keeps its first position. `{}` (empty) takes its element
+type from the expected type: `let s: Set[Int] = {}`, or a parameter of type
+`Set[Int]`. There is no `remove` yet and no in-place
 mutation; changes go through `insert`.
 
 ## Numeric

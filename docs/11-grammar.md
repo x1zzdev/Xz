@@ -263,7 +263,8 @@ The grammar alone is not the whole contract. The compiler also enforces:
   in [12-stdlib.md](12-stdlib.md); their literals and keys are fixed by the
   language (not a second spelling of a method). A `{` opens a Map literal when
   its first element is followed by `:`, and a Set literal otherwise; an empty
-  `{}` takes its type from the binding (`Map[K, V]` or `Set[T]`). `List[T]` is
+  `{}` takes its type from the expected type — a binding or a call parameter
+  (`Map[K, V]` or `Set[T]`). `List[T]` is
   specified in [12-stdlib.md](12-stdlib.md); `[]` is its
   literal and `xs[i]` its indexing, both fixed by the language (not a second
   spelling of a method).
