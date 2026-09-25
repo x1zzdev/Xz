@@ -2,7 +2,14 @@
 name = "xz-cli"
 version = "0.1.0"
 edition = "2024"
-description = "Xz language compiler CLI (Phase 1-4: front end + LLVM backend)"
+rust-version = "1.85"
+description = "Xz language compiler CLI (front end + LLVM backend)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/x1zzdev/Xz"
+homepage = "https://github.com/x1zzdev/Xz"
+authors = ["Jangseowoo (x1zz) <ax1s@x1zz.com>"]
+keywords = ["language", "compiler", "llvm", "contracts"]
+categories = ["compilers", "development-tools"]
 
 [[bin]]
 name = "xz"
