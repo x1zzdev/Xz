@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question
+    url: https://github.com/x1zzdev/Xz/discussions
+    about: Usage questions, design discussions, and open-ended ideas.
+  - name: Report a security vulnerability
+    url: https://github.com/x1zzdev/Xz/security/advisories/new
+    about: Do not report vulnerabilities in a public issue. See SECURITY.md.

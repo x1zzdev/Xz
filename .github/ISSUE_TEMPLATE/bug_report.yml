@@ -1,0 +1,68 @@
+name: Bug report
+description: The compiler crashes, rejects valid code, or disagrees with the specification.
+title: "bug: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. A minimal reproduction is worth more than a long description.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: The smallest `.xz` file that shows the problem.
+      render: xz
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      description: The exact command you ran.
+      placeholder: "xz run examples/hello.xz"
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The full output, including any diagnostic code.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The commit hash or version you built from.
+    validations:
+      required: false
+  - type: dropdown
+    id: authority
+    attributes:
+      label: Does the specification agree with you?
+      description: The specification is the contract. See docs/11-grammar.md.
+      options:
+        - The specification agrees; the compiler is wrong
+        - The specification disagrees; I think the specification is wrong
+        - The specification is silent
+        - Not sure
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched the existing issues for a duplicate.
+          required: true
+        - label: This is not a security issue. Security reports go through SECURITY.md.
+          required: true

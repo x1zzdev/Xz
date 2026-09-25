@@ -1,0 +1,45 @@
+name: Feature request
+description: Propose a change to the language, the tooling, or the specification.
+title: "feat: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Xz is defined by its specification, so a feature request is a proposal to change the specification. Read docs/01-philosophy.md first: the four reviewer questions decide what is accepted.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What can a reviewer or a user not do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Be concrete. Show the syntax, the type, or the command you have in mind.
+      render: xz
+    validations:
+      required: true
+  - type: textarea
+    id: philosophy
+    attributes:
+      label: How it survives the philosophy gate
+      description: What does it do, what can it change, what does it guarantee, what can go wrong? How does this proposal make those easier to answer?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else could solve the problem, including doing nothing?
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched the existing issues and the specification for a duplicate.
+          required: true
