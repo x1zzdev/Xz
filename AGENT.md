@@ -1,18 +1,21 @@
 # AGENT.md — Working agreements for this repository
 
-Xz is in the **design/documentation phase**: the product of this repo is
-`docs/` and `examples/`. There is no implementation yet. Everything an AI
-assistant does here must make the language *more reviewable* — that is the
-whole point of Xz (see [docs/01-philosophy.md](docs/01-philosophy.md)).
+Xz is a language defined by its specification. The product of this repo is
+`docs/` plus the reference compiler in `xz-cli/`. Everything an AI assistant
+does here must make the language *more reviewable* — that is the whole point of
+Xz (see [docs/01-philosophy.md](docs/01-philosophy.md)).
 
 ## Repo layout
 
-- `docs/01..12` — the specification. `docs/11-grammar.md` is the authoritative
+- `docs/01..14` — the specification. `docs/11-grammar.md` is the authoritative
   grammar (which constructs exist); `docs/12-stdlib.md` is the stdlib surface
   (which names exist).
 - `examples/*.xz` — design-validation programs. They must comply with the
   docs, not invent syntax.
 - `xz-cli/` — the compiler implementation (Rust).
+- Root community docs (`README.md`, `CONTRIBUTING.md`, `SECURITY.md`, …) are
+  English. Their `_kr.md` counterparts are Korean translations; when an English
+  doc changes, update the Korean one in the same change if it exists.
 
 ## Ground rules
 
