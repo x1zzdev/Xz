@@ -461,6 +461,42 @@ func main() {
 }
 
 #[test]
+fn read_file_result_buffer_is_released_at_scope_exit() -> Result<(), String> {
+    // docs/12: the `Str` payload of `read_file(path)?` is a fresh heap buffer
+    // freed by the same rules as `concat`/`to_str` results. The binding
+    // uniquely owns it, so scope exit emits the registry release.
+    let src = r#"func main() -> Result[Unit, Err] {
+    let contents = read_file("a.txt")?
+    print(contents)
+    ok()
+}"#;
+    let program = checked_program(src)?;
+    let backend = compile(&program)?;
+    let ir = backend.module.print_to_string().to_string();
+    let calls = ir.matches("call void @xz_str_free").count();
+    assert_eq!(calls, 1, "the owned read_file buffer must be released at scope exit:\n{}", ir);
+    Ok(())
+}
+
+#[test]
+fn copied_read_file_result_buffer_is_not_released() -> Result<(), String> {
+    // Copying the binding shares the buffer, so neither alias is released
+    // (leak) rather than risk a double free.
+    let src = r#"func main() -> Result[Unit, Err] {
+    let a = read_file("a.txt")?
+    let b = a
+    print(b)
+    ok()
+}"#;
+    let program = checked_program(src)?;
+    let backend = compile(&program)?;
+    let ir = backend.module.print_to_string().to_string();
+    let calls = ir.matches("call void @xz_str_free").count();
+    assert_eq!(calls, 0, "a copied read_file buffer must not be released:\n{}", ir);
+    Ok(())
+}
+
+#[test]
 fn list_literal_index_and_iteration_run() {
     // List[T]: literal construction, bounds-checked indexing returning
     // Result[T, IndexError], non-mutating append, len/is_empty, and

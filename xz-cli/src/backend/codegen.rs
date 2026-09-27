@@ -935,8 +935,20 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 }
                 _ => false,
             },
+            // A `?` unwraps a fresh heap `Str` payload out of a fallible call
+            // (`read_file(path)?`), so the binding owns that buffer
+            // (docs/12-stdlib.md, docs/13-codegen.md).
+            Expr::Prop(inner, _) => self.is_fresh_str_result(inner),
             _ => false,
         }
+    }
+
+    /// Is `e` a call that, on success, yields a fresh heap `Str` this frame
+    /// would own? `read_file` allocates a new buffer through the runtime
+    /// (docs/12-stdlib.md); its `Result` payload is freed by the same rules as
+    /// a `concat`/`to_str` result.
+    fn is_fresh_str_result(&self, e: &Expr) -> bool {
+        matches!(e, Expr::Call(callee, _) if matches!(&**callee, Expr::Name(n) if n == "read_file"))
     }
 
     fn base_is_str(&self, e: &Expr) -> bool {

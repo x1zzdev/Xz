@@ -64,8 +64,8 @@ Memory is reclaimed **conservatively but soundly**:
   already-freed buffer is a no-op. This makes the generated IR safe to be
   sloppy: the registry is the backstop against double-frees.
 - Codegen marks a binding as the **unique owner** of a fresh buffer only when
-  the buffer was created by this function (`concat`, `to_str`) and never
-  copied. Unique owners are freed at overwrite and function exit.
+  the buffer was created by this function (`concat`, `to_str`, `read_file`)
+  and never copied. Unique owners are freed at overwrite and function exit.
 - Any copy or embed — `let y = x`, identity `x.to_str()`, a `Str` inside
   `Option`/`Result`/record/enum, or a `Str` through an `if`/`match` phi —
   *downgrades* the source to shared, so it leaks instead of being freed. This

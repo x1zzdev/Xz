@@ -138,8 +138,9 @@ rule: **a `Str` value is a `{ ptr, len }` pair pointing at an immutable
 buffer.** The kinds of buffer:
 
 - **Literal** — an LLVM global byte array; valid for the process lifetime.
-- **Fresh heap** — allocated by `xz_concat` / each to_str host function with
-  `std::alloc`; every allocation is recorded in a runtime registry.
+- **Fresh heap** — allocated by `xz_concat`, each to_str host function, and
+  `xz_read_file` with `std::alloc`; every allocation is recorded in a runtime
+  registry.
   `xz_str_free(ptr, len)` deallocates *only* if the pointer is still in the
   registry — so calling it on a literal or an already-freed buffer is a no-op.
 - **Shared/unknown** — copies of another binding's buffer, values read from
