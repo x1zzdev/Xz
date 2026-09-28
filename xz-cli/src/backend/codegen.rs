@@ -1822,7 +1822,16 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     fn gen_assign(&mut self, a: &ast::Assign) {
         match &a.target {
             ast::AssignTarget::Name(n) => {
-                match self.gen_expr(&a.value) {
+                // A map-valued RHS literal sees the target's declared key/value
+                // kinds, so a record/enum key can resolve its kind.
+                let saved_map_hint = self.map_hint.clone();
+                self.map_hint = self
+                    .map_kvs
+                    .get(n)
+                    .map(|(k, v)| Kind::Map(Box::new(k.clone()), Box::new(v.clone())));
+                let value = self.gen_expr(&a.value);
+                self.map_hint = saved_map_hint;
+                match value {
                     Ok(v) => match self.scope.get(n) {
                         Some((ptr, ty)) => {
                             let ptr = *ptr;
@@ -3776,7 +3785,12 @@ impl<'ctx> Codegen<'_, 'ctx> {
         if self.is_main && !self.backend.tasks.is_empty() {
             self.emit_scheduler_start();
         }
+        // A returned map literal sees the function's return type, so a
+        // record/enum key can resolve its kind (docs/13 § Map representation).
+        let saved_map_hint = self.map_hint.clone();
+        self.map_hint = self.ret_kind.clone();
         let val = self.gen_block(body);
+        self.map_hint = saved_map_hint;
         // Release any Str buffers this function's bindings uniquely own
         // (unless the return type can escape Str storage, in which case the
         // return value may alias a binding and those stay live for the caller).

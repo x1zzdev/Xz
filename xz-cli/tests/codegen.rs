@@ -607,6 +607,37 @@ func main() -> Result[Unit, Err] {
 }
 
 #[test]
+fn map_record_key_in_return_and_assignment_runs() {
+    // A record-keyed map literal resolves its key kind from the return type and
+    // from the assignment target, not only from a `let` binding.
+    expect_output(
+        r#"record P {
+    x: Int
+}
+
+/// Builds a map.
+/// @intent  Returns a one-entry map.
+/// @effects none
+func build() -> Map[P, Int] { {P(7): 8} }
+
+func main() -> Result[Unit, Err] {
+    mut m: Map[P, Int] = {}
+    m = {P(1): 2}
+    let a = m.get(P(1))
+    if a is some { print(a.to_str()) } else { print("none") }
+    print(" ")
+    let r = build()
+    let b = r.get(P(7))
+    if b is some { print(b.to_str()) } else { print("none") }
+    print("\n")
+    ok()
+}"#,
+        "2 8\n",
+        "record map key in return and assignment",
+    );
+}
+
+#[test]
 fn map_nested_record_and_enum_keys_run() {
     // A record containing a nested record and an enum field, and an enum whose
     // payload is a Str: the hash and equality recurse through both shapes.
