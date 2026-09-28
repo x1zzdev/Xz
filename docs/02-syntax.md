@@ -27,6 +27,10 @@ counter += 1
 
 Primitive types: `Bool`, `Int` (64-bit), `Float` (IEEE-754 double), `Char`, `Str`, `Bytes`.
 
+Opaque clock types: `Instant` (a monotonic reading), `Timestamp` (a wall-clock
+reading), and `Duration` (a signed span). They are value types with fixed
+arithmetic, no literals, and no casts ([03-type-system.md](03-type-system.md)).
+
 ## Records and enums
 
 ```

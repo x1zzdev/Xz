@@ -101,6 +101,10 @@ reads); Phase 8 has begun with the LSP diagnostics server and now includes the
   [12-stdlib.md](12-stdlib.md); `examples/contracts.xz`)
 - [x] `time` first slice — `now()` and `monotonic()` clock reads
   (`@effects io`; [12-stdlib.md](12-stdlib.md); `examples/time.xz`)
+- [ ] Typed `time` — `Instant`/`Timestamp`/`Duration` replace raw `Float`
+  seconds, so a cross-clock subtraction is a compile error; specified in
+  [03-type-system.md](03-type-system.md), [11-grammar.md](11-grammar.md), and
+  [12-stdlib.md](12-stdlib.md), not yet lowered
 - Networking (HTTP)
 
 ## Phase 8 — Tooling

@@ -169,7 +169,7 @@ type            := union_type
 union_type      := nominal ("|" nominal)*
 nominal         := prim | IDENT ("[" type ("," type)* "]")?
 prim            := "Bool" | "Int" | "usize" | "Float" | "Char" | "Str" | "Bytes"
-                 | "Unit" | "Ptr"
+                 | "Unit" | "Ptr" | "Instant" | "Timestamp" | "Duration"
                  | "Option[" type "]" | "Result[" type "," type "]"
                  | "Chan[" type "]"
 ```
@@ -228,6 +228,10 @@ The grammar alone is not the whole contract. The compiler also enforces:
   non-`transfer` return, and a `@cstruct` handle `transfer` return (whose
   pointer the `(Ptr) -> Unit` symbol cannot name) are definition errors
   ([10-ffi-interop.md](10-ffi-interop.md)).
+- **Time arithmetic** — `Instant`, `Timestamp`, and `Duration` support exactly
+  the operators in [03-type-system.md](03-type-system.md); the two clock types
+  never mix, and a `Duration` converts to a raw number only through
+  `seconds()`/`millis()`/`nanos()`.
 - **C layout (`@cstruct`)** — a `@cstruct record` is guaranteed the C ABI
   struct layout (fields in declaration order, C alignment and padding), so it
   may cross the FFI boundary by value. Its fields must therefore be

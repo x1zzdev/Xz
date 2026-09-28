@@ -28,7 +28,7 @@ exist yet.
 | `ok(v)` / `err(e)` | `Result[T, E]` constructors; `ok()` when `T` is `Unit` |
 | `some(v)` / `none` | `Option[T]` constructors |
 | `x is ok` / `x is err` / `x is none` | predicates, valid in contract expressions; narrow `x` |
-| `x.to_str() -> Str` | every value type implements `to_str()` (built-in `Show`) |
+| `x.to_str() -> Str` | every value type implements `to_str()` (built-in `Show`), except the opaque clock readings `Instant`/`Timestamp` — only their differences are meaningful |
 | `Err` | root error type; constructible `Err(message: Str)` |
 
 **Error records.** A record whose fields are exactly `{ message: Str }` (or
@@ -162,18 +162,30 @@ untyped failure path. To use a value, `match` it; to assert it exists, use
 
 ## `time`
 
-Clock reads. Both return seconds as `Float` and carry `@effects io` — they read
-the host clock, so a function that calls them declares `io`. There is no
-`Instant`/`Duration` type yet; the unit is seconds, as with `math`.
+Clock reads return opaque readings, not raw seconds
+([03-type-system.md](03-type-system.md)); elapsed time is a typed subtraction.
+Both carry `@effects io` — they read the host clock, so a function that calls
+them declares `io`.
 
 | Signature | Notes |
 |---|---|
-| `now() -> Float` | wall-clock time as seconds since the Unix epoch (UTC), fractional. May jump forwards or backwards (NTP, manual clock changes); use it for timestamps, not for measuring durations |
-| `monotonic() -> Float` | seconds from the host's monotonic clock (`CLOCK_MONOTONIC`, system boot) that never decreases; use it for measuring elapsed time. Only differences are meaningful, never the absolute value. The JIT and native paths read the same clock, so the origin does not depend on the process |
+| `now() -> Timestamp` | a wall-clock reading. May jump forwards or backwards (NTP, manual clock changes); use it for timestamps, not for measuring durations |
+| `monotonic() -> Instant` | a reading of the host's monotonic clock (`CLOCK_MONOTONIC`, system boot) that never decreases; use it for measuring elapsed time. Only differences are meaningful, never the absolute value. The JIT and native paths read the same clock, so the origin does not depend on the process |
+
+Subtracting two readings of the same clock yields a `Duration`:
+`monotonic() - started`. The `Duration` surface:
+
+| Signature | Notes |
+|---|---|
+| `d.seconds() -> Float` | fractional seconds |
+| `d.millis() -> Int` | whole milliseconds (truncating) |
+| `d.nanos() -> Int` | whole nanoseconds |
+| `d.to_str() -> Str` | the span rendered in seconds |
 
 ## Out of scope (Phase 7)
 
-`Set` removal, networking (HTTP), ranges, `Instant`/`Duration` types, and any
-module structure. The grammar reserves their syntax; nothing provides it yet.
-`List`, `Map`, `Set` (above), `read_file`, and `time` are the collections and
-I/O so far.
+`Set` removal, networking (HTTP), ranges, and any module structure. The
+grammar reserves their syntax; nothing provides it yet.
+`List`, `Map`, `Set` (above), `read_file`, `time`, and the `Instant`/
+`Timestamp`/`Duration` types (specified, not yet lowered) are the collections,
+I/O, and clock surface so far.

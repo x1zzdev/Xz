@@ -63,6 +63,37 @@ semantics (see [04-memory-model.md](04-memory-model.md) and
 Handle rules are *affine*: each handle value has exactly one owner at a time,
 and ownership moves only through the explicit, visible `transfer`.
 
+## Time types
+
+`Instant`, `Timestamp`, and `Duration` are opaque, built-in value types for
+clock readings, so elapsed time is not a raw `Float` of seconds:
+
+- `Instant` — a reading of the **monotonic** clock (`monotonic()`); it never
+  decreases, and only differences are meaningful.
+- `Timestamp` — a reading of the **wall** clock (`now()`), which may jump
+  forwards or backwards (NTP, manual clock changes).
+- `Duration` — a signed span between two readings, at nanosecond resolution.
+
+They are ordinary value types — copied by assignment, argument, or return — not
+handles. They are produced only by the `time` functions
+([12-stdlib.md](12-stdlib.md)): there is no literal and no cast to or from
+`Int`/`Float`. The two clock types never mix, so subtracting an `Instant` from
+a `Timestamp` is a compile error rather than a misleading number.
+
+The operators are fixed and exhaustive:
+
+| Expression | Result |
+|---|---|
+| `Instant - Instant`, `Timestamp - Timestamp` | `Duration` |
+| `Instant + Duration`, `Instant - Duration` | `Instant` |
+| `Timestamp + Duration`, `Timestamp - Duration` | `Timestamp` |
+| `Duration + Duration`, `Duration - Duration` | `Duration` |
+| `Duration` `==`/`!=`/`<`/`<=`/`>`/`>=` | `Bool` |
+
+A `Duration` becomes a raw number only through an explicit accessor:
+`d.seconds() -> Float`, `d.millis() -> Int`, `d.nanos() -> Int`
+([12-stdlib.md](12-stdlib.md)).
+
 ## Composite types
 
 | Type | Kind | Notes |
