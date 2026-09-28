@@ -383,6 +383,17 @@ fn transfer_on_non_extern_param_rejected() {
 }
 
 #[test]
+fn transfer_on_export_param_rejected() {
+    // The `@export` boundary is borrow-only by decision (docs/10): a C caller
+    // owns the buffers it passes, so `transfer` may not cross inward.
+    let err = typecheck_error(r#"@export func consume(transfer data: Bytes) {}"#);
+    match err {
+        Some(e) => assert!(e.contains("cannot cross an Xz '@export' boundary"), "unexpected error: {}", e),
+        None => panic!("transfer on an @export parameter was accepted"),
+    }
+}
+
+#[test]
 fn transfer_pointer_return_with_release_accepted() {
     // docs/10: a `transfer` return moves buffer ownership to the caller, which
     // releases it through the named symbol. It is valid on an `extern func`

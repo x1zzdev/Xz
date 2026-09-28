@@ -399,7 +399,11 @@ impl TypeChecker {
                     self.cur_span = f.span.clone();
                     for p in &f.params {
                         if p.transfer {
-                            self.error_at(format!("func '{}' parameter '{}': 'transfer' is a C ABI declaration; use it on an 'extern func'", f.name, p.name), p.span.clone());
+                            if f.exported {
+                                self.error_at(format!("@export func '{}' parameter '{}': 'transfer' cannot cross an Xz '@export' boundary; the export surface borrows its parameters", f.name, p.name), p.span.clone());
+                            } else {
+                                self.error_at(format!("func '{}' parameter '{}': 'transfer' is a C ABI declaration; use it on an 'extern func'", f.name, p.name), p.span.clone());
+                            }
                         }
                     }
                     if f.is_async {
