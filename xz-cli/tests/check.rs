@@ -1403,11 +1403,11 @@ func slurp(path: Str) -> Result[Str, Err] {
 }
 
 #[test]
-fn time_reads_accepted_with_io() {
+fn time_reads_accepted_with_clock() {
     expect_ok(
         r#"/// Reads the monotonic clock.
 /// @intent  Returns monotonic seconds.
-/// @effects io
+/// @effects clock
 func stamp() -> Float {
     monotonic()
 }
@@ -1416,12 +1416,12 @@ func main() {
     let t = stamp()
     print(t.to_str())
 }"#,
-        "monotonic with io",
+        "monotonic with clock",
     );
 }
 
 #[test]
-fn time_reads_derive_io_effect() {
+fn time_reads_derive_clock_effect() {
     expect_intent_code(
         r#"/// Reads the clock.
 /// @intent  Returns the wall clock.
@@ -1430,7 +1430,7 @@ func stamp() -> Float {
     now()
 }"#,
         "I0020",
-        "now needs the io effect",
+        "now needs the clock effect",
     );
 }
 

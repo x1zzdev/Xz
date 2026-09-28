@@ -19,6 +19,7 @@ pub struct IntentSuggestion {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EffectSet {
     pub io: bool,
+    pub clock: bool,
     pub chan: bool,
     pub mut_: bool,
     pub extern_: bool,
@@ -26,11 +27,12 @@ pub struct EffectSet {
 
 impl EffectSet {
     fn empty() -> EffectSet {
-        EffectSet { io: false, chan: false, mut_: false, extern_: false }
+        EffectSet { io: false, clock: false, chan: false, mut_: false, extern_: false }
     }
 
     fn merge(&mut self, other: &EffectSet) {
         self.io = self.io || other.io;
+        self.clock = self.clock || other.clock;
         self.chan = self.chan || other.chan;
         self.mut_ = self.mut_ || other.mut_;
         self.extern_ = self.extern_ || other.extern_;
@@ -40,6 +42,7 @@ impl EffectSet {
         let mut v: Vec<&'static str> = vec![];
         if self.mut_ { v.push("mut"); }
         if self.io { v.push("io"); }
+        if self.clock { v.push("clock"); }
         if self.chan { v.push("chan"); }
         if self.extern_ { v.push("extern"); }
         v
@@ -191,7 +194,7 @@ impl IntentChecker {
         let raw = declared_text[0].clone();
         let declared: EffectSet = effect_set_from_text(&raw);
         if !is_valid_effects(&raw) {
-            self.error("I0024", format!("unknown effect in @effects on '{}' (allowed: none, mut, io, chan, extern)", name), span.clone());
+            self.error("I0024", format!("unknown effect in @effects on '{}' (allowed: none, mut, io, clock, chan, extern)", name), span.clone());
         }
         let mut dl = declared.labels();
         let mut dd = derived.labels();
@@ -229,6 +232,7 @@ fn effect_set_from_text(text: &str) -> EffectSet {
         match part.trim() {
             "mut" => set.mut_ = true,
             "io" => set.io = true,
+            "clock" => set.clock = true,
             "chan" => set.chan = true,
             "extern" => set.extern_ = true,
             _ => {}
@@ -240,7 +244,7 @@ fn effect_set_from_text(text: &str) -> EffectSet {
 fn is_valid_effects(text: &str) -> bool {
     let t = text.trim();
     if t == "none" || t == "" { return true; }
-    t.split(',').all(|p| ["mut", "io", "chan", "extern"].contains(&p.trim()))
+    t.split(',').all(|p| ["mut", "io", "clock", "chan", "extern"].contains(&p.trim()))
 }
 
 fn walk_block(block: &ast::Block, set: &mut EffectSet, callees: &CalleeEffects) {
@@ -272,8 +276,10 @@ fn walk_expr(e: &Expr, set: &mut EffectSet, callees: &CalleeEffects) {
             for a in args { walk_expr(a, set, callees); }
             match &**callee {
                 Expr::Name(n) => {
-                    if n == "print" || n == "read_file" || n == "now" || n == "monotonic" {
+                    if n == "print" || n == "read_file" {
                         set.io = true;
+                    } else if n == "now" || n == "monotonic" {
+                        set.clock = true;
                     } else if let Some(callee_effects) = callees.declared.get(n) {
                         set.merge(callee_effects);
                     } else if callees.externs.contains(n) {

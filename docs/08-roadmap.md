@@ -100,7 +100,7 @@ reads); Phase 8 has begun with the LSP diagnostics server and now includes the
 - [x] `math` — `PI`/`E` constants and `approx_sqrt`/`abs` (earlier phases;
   [12-stdlib.md](12-stdlib.md); `examples/contracts.xz`)
 - [x] `time` first slice — `now()` and `monotonic()` clock reads
-  (`@effects io`; [12-stdlib.md](12-stdlib.md); `examples/time.xz`)
+  (`@effects clock`; [12-stdlib.md](12-stdlib.md); `examples/time.xz`)
 - [ ] Typed `time` — `Instant`/`Timestamp`/`Duration` replace raw `Float`
   seconds, so a cross-clock subtraction is a compile error; specified in
   [03-type-system.md](03-type-system.md), [11-grammar.md](11-grammar.md), and

@@ -29,7 +29,7 @@ func deg_to_rad(deg: Float) -> Float
 | `@intent` | Prose description of behavior (for humans and AI) | Advisory — read by reviewers, never machine-gated |
 | `@requires` | Entry conditions in natural language | **Paired** with a `pre`, in order |
 | `@ensures` | Exit guarantees in natural language | **Paired** with a `post`, in order |
-| `@effects` | Declared side-effect profile: `none` / `mut` / `io` / `chan` / `extern` | **Auto-derived** from the body and compared |
+| `@effects` | Declared side-effect profile: `none` / `mut` / `io` / `clock` / `chan` / `extern` | **Auto-derived** from the body and compared |
 | `@trusted` | Human-review stamp on one claim line | Discharges the proof obligation of the paired `pre`/`post` |
 
 Natural-language text is **never parsed**. The compiler checks three separable
@@ -57,11 +57,12 @@ paired formal line is the machine's obligation.
    enforcement — a contract is either proven, trusted, or rejected.
 
 3. **Effect derivation.** The compiler derives the actual effect profile of a
-   function from its body (which `mut` bindings it touches, I/O calls, channel
-   `send`/`recv`, `extern` calls), **transitively over calls** — a function's
-   derived profile is the union of its own effects and its callees' (stdlib
-   functions like `print` carry `@effects io`). A mismatch with the declared
-   `@effects` is an error:
+   function from its body (which `mut` bindings it touches, I/O calls, clock
+   reads, channel `send`/`recv`, `extern` calls), **transitively over calls** —
+   a function's derived profile is the union of its own effects and its
+   callees' (stdlib functions like `print` carry `@effects io`, clock reads
+   carry `@effects clock`). A mismatch with the declared `@effects` is an
+   error:
 
    ```
    /// @effects none
@@ -70,6 +71,11 @@ paired formal line is the machine's obligation.
        n
    }
    ```
+
+   `clock` distinguishes a read of the host clock — non-deterministic, but it
+   changes no program state — from `io`, which is an observable side effect
+   (`print`, file reads). A function that only measures elapsed time therefore
+   declares `clock`, not `io`.
 
    The derived profile is surfaced in tooling (hover, `xz check --verbose`),
    so the reviewer answers "what can it change?" without reading the body.
@@ -137,6 +143,6 @@ This is not "Python syntax on Rust." It is a language whose compiler enforces th
 - `I0021` — NL claim without a paired formal contract; write the `pre`/`post`
 - `I0022` — missing intent comment on a public `func`/`task` (every top-level declaration except `main`)
 - `I0023` — missing `@effects` declaration
-- `I0024` — unknown effect label in `@effects` (allowed: `none`, `mut`, `io`, `chan`, `extern`)
+- `I0024` — unknown effect label in `@effects` (allowed: `none`, `mut`, `io`, `clock`, `chan`, `extern`)
 
 All emitted as JSON diagnostics (see [07-compiler.md](07-compiler.md)).

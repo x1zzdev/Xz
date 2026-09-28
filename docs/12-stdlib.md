@@ -13,7 +13,8 @@ exist yet.
 - Every stdlib function carries an intent comment; stdlib claims are
   `@trusted` by the Xz maintainers. The stdlib is the reference for what
   "trusted" means.
-- `print` and I/O carry `@effects io`; `math` carries `@effects none`.
+- `print` and I/O carry `@effects io`; clock reads carry `@effects clock`;
+  `math` carries `@effects none`.
 - No global mutable state. The only global bindings are the **immutable
   constants** below; a constant is not mutable state.
 - There is no module system yet. All names below are global; namespacing is
@@ -164,8 +165,9 @@ untyped failure path. To use a value, `match` it; to assert it exists, use
 
 Clock reads return opaque readings, not raw seconds
 ([03-type-system.md](03-type-system.md)); elapsed time is a typed subtraction.
-Both carry `@effects io` — they read the host clock, so a function that calls
-them declares `io`.
+Both carry `@effects clock` — they read a host clock, so a function that calls
+them declares `clock` (a non-deterministic read that changes no program state,
+distinct from `io`).
 
 | Signature | Notes |
 |---|---|

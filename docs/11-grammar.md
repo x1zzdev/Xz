@@ -186,7 +186,7 @@ intent_line     := "///" "intent"  NL_TEXT
                  | "///" "@ensures"  NL_TEXT trusted?
                  | "///" "@effects"  effect_list
 trusted         := "@trusted" "//" "reviewed by" IDENT "on" DATE
-effect_list     := "none" | ("mut" | "io" | "chan" | "extern") ("," effect_list)?
+effect_list     := "none" | ("mut" | "io" | "clock" | "chan" | "extern") ("," effect_list)?
 ```
 
 ## Well-formedness constraints
