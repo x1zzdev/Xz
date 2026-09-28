@@ -1,4 +1,6 @@
 use serde_json::{json, Value};
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Command, Stdio};
 use xz_cli::lsp::Server;
 
 const VALID: &str = r#"/// Returns one.
@@ -338,4 +340,86 @@ fn shutdown_then_exit_sets_flags() {
     assert!(s.shutdown_received());
     assert!(s.handle(r#"{"jsonrpc":"2.0","method":"exit"}"#).is_none());
     assert!(s.should_exit());
+}
+
+/// Frame a JSON-RPC body as an LSP `Content-Length` message (the byte count is
+/// the body length, not its character count).
+fn frame(body: &str) -> String {
+    format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
+}
+
+/// Read one `Content-Length`-framed body from an LSP stream, or `None` at EOF.
+fn read_frame<R: BufRead>(reader: &mut R) -> Option<String> {
+    let mut length: Option<usize> = None;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            break;
+        }
+        if let Some(value) = trimmed.strip_prefix("Content-Length:") {
+            length = value.trim().parse::<usize>().ok();
+        }
+    }
+    let mut buf = vec![0u8; length?];
+    reader.read_exact(&mut buf).ok()?;
+    String::from_utf8(buf).ok()
+}
+
+#[test]
+fn stdio_server_frames_content_length_messages() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_xz"))
+        .arg("lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn xz lsp");
+
+    let initialize = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {}
+    })
+    .to_string();
+    let did_open = json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": { "textDocument": { "uri": "file:///smoke.xz", "text": VALID } }
+    })
+    .to_string();
+    let shutdown = json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }).to_string();
+    let exit = json!({ "jsonrpc": "2.0", "method": "exit" }).to_string();
+
+    {
+        let stdin = child.stdin.as_mut().expect("stdin");
+        for body in [&initialize, &did_open, &shutdown, &exit] {
+            stdin.write_all(frame(body).as_bytes()).expect("write frame");
+        }
+        stdin.flush().expect("flush stdin");
+    }
+    drop(child.stdin.take());
+
+    let mut reader = BufReader::new(child.stdout.take().expect("stdout"));
+    let init: Value =
+        serde_json::from_str(&read_frame(&mut reader).expect("initialize response")).unwrap();
+    assert_eq!(init["id"], 1);
+    assert_eq!(init["result"]["capabilities"]["textDocumentSync"], 1);
+
+    let publish: Value =
+        serde_json::from_str(&read_frame(&mut reader).expect("diagnostics notification")).unwrap();
+    assert_eq!(publish["method"], "textDocument/publishDiagnostics");
+    assert!(diagnostics(&publish).is_empty());
+
+    let shutdown_resp: Value =
+        serde_json::from_str(&read_frame(&mut reader).expect("shutdown response")).unwrap();
+    assert_eq!(shutdown_resp["id"], 3);
+    assert!(shutdown_resp["error"].is_null());
+
+    let status = child.wait().expect("wait for xz lsp");
+    assert_eq!(status.code(), Some(0));
 }
