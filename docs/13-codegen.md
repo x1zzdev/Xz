@@ -241,7 +241,7 @@ Phase 6 lowers structured concurrency to the JIT host scheduler
 - `async func` lowers like an ordinary function: it has no separate frame type,
   because `recv` and `await` are the only suspension points and each blocks the
   running task at the point it is called.
-- `await f(args)` — where `f` is a named, non-generic `async` function — spawns `f` as a
+- `await f(args)` — where `f` is a named `async` function — spawns `f` as a
   child coroutine and suspends the caller (docs/05-concurrency.md rule 6). The
   caller evaluates the arguments into a stack struct, spawns an internal
   trampoline `@__await_N(ptr)` with `xz_task_spawn_arg(@__await_N, env)`, then
@@ -249,7 +249,9 @@ Phase 6 lowers structured concurrency to the JIT host scheduler
   the result on that channel, so the scheduler runs other ready tasks while the
   child is blocked. The caller's frame (and its argument struct) stays alive
   through the block, and a `Unit` result is a zero-byte send. Await channels get
-  ids after the declared `chan`s, so no id collides.
+  ids after the declared `chan`s, so no id collides. A generic `f` is
+  monomorphized on the concrete argument types first (see § Generic functions),
+  and the trampoline calls the specialization.
 
 `size` is the `TargetData` ABI size of the payload's LLVM type, so both sides
 copy the same bytes. A `Str`/record payload copy shares the immutable byte
@@ -316,8 +318,6 @@ codegen, and `xz build-native` applies it before `llc`.
 
 ## Scope (explicitly out)
 
-- `await` of a generic function — a generic `async` callee is not monomorphized
-  at an `await` site yet.
 - `Set` removal and set algebra (union/intersection) — the `Set[T]` first slice
   has literal, `contains`, `insert`, `len`/`is_empty`, and iteration; elements
   are restricted to `Int`/`usize`/`Bool`/`Char`/`Str`.
@@ -329,8 +329,9 @@ phase is a documented extension of this contract.
 
 ## Generic functions: monomorphization
 
-A generic function is not declared directly. Each call site infers the type
-arguments from the concrete argument types and requests a specialization:
+A generic function is not declared directly. Each call site — including an
+`await` site (see § Concurrency) — infers the type arguments from the
+concrete argument types and requests a specialization:
 
 - the **type arguments** are recovered from the arguments' LLVM types via a
   canonical `kind_from_llvm` — structurally-equal LLVM types (e.g. `Str` and
