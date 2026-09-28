@@ -135,8 +135,11 @@ key's original position. Lookup and insertion are average O(1) through an
 internal hash index; that index is never observable and does not change the
 insertion order above.
 
-Keys are restricted to types with decidable equality — `Int`, `usize`, `Bool`,
-`Char`, and `Str`. A missing key is absence, not an error, so lookup returns
+Keys are restricted to types with decidable structural equality: `Int`,
+`usize`, `Bool`, `Char`, `Str`, or a `record`/`enum` all of whose fields are
+themselves such key types. `Float` is excluded because NaN makes equality
+non-reflexive, and collections are excluded because their equality is not part
+of the key contract. A missing key is absence, not an error, so lookup returns
 `Option[V]`; contrast `List[T]` indexing, whose `Result[T, IndexError]` reflects
 that an index is a positional claim that can be out of range.
 
@@ -151,10 +154,11 @@ change a set is the non-mutating `s.insert(e)`, which returns a *new* set; when
 `e` is already present the new set has the same elements in the same positions.
 
 Elements are restricted to types with decidable equality — `Int`, `usize`,
-`Bool`, `Char`, and `Str`, the same restriction as `Map` keys. Membership is a
-question about presence, not position, so `s.contains(e)` returns `Bool`;
-contrast `List[T]` indexing, whose `Result[T, IndexError]` reflects that an
-index is a positional claim that can be out of range.
+`Bool`, `Char`, and `Str`. `Map` keys additionally allow records/enums of such
+types; `Set` does not yet. Membership is a question about presence, not position,
+so `s.contains(e)` returns `Bool`; contrast `List[T]` indexing, whose
+`Result[T, IndexError]` reflects that an index is a positional claim that can be
+out of range.
 
 ## Error channel
 

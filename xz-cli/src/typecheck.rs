@@ -485,14 +485,14 @@ impl TypeChecker {
             "Map" => {
                 let key = self.from_ast(&args[0]);
                 let val = self.from_ast(&args[1]);
-                if !map_key_ok(&key) && !matches!(key, Kind::Unknown | Kind::TypeVar(_)) {
-                    self.error(format!("Map key type must be Int, usize, Bool, Char, or Str, got {:?}", key));
+                if !self.map_key_ok(&key) && !matches!(key, Kind::Unknown | Kind::TypeVar(_)) {
+                    self.error(map_key_error(&key));
                 }
                 Kind::Map(Box::new(key), Box::new(val))
             }
             "Set" => {
                 let elem = self.from_ast(&args[0]);
-                if !map_key_ok(&elem) && !matches!(elem, Kind::Unknown | Kind::TypeVar(_)) {
+                if !set_elem_ok(&elem) && !matches!(elem, Kind::Unknown | Kind::TypeVar(_)) {
                     self.error(format!("Set element type must be Int, usize, Bool, Char, or Str, got {:?}", elem));
                 }
                 Kind::Set(Box::new(elem))
@@ -516,6 +516,55 @@ impl TypeChecker {
                 }
                 Kind::Unknown
             }
+        }
+    }
+
+    /// Whether a type may be a `Map` key: a primitive with decidable equality,
+    /// or a record/enum all of whose fields are themselves key types. `Float` is
+    /// excluded because of NaN (docs/03-type-system.md, docs/12-stdlib.md).
+    /// `visiting` guards against by-value cycles.
+    fn map_key_ok(&self, k: &Kind) -> bool {
+        let mut visiting = HashSet::new();
+        self.map_key_ok_inner(k, &mut visiting)
+    }
+
+    fn map_key_ok_inner(&self, k: &Kind, visiting: &mut HashSet<String>) -> bool {
+        match k {
+            Kind::Int | Kind::Usize | Kind::Bool | Kind::Char | Kind::Str => true,
+            Kind::Record(name) => {
+                let key = format!("record:{}", name);
+                if !visiting.insert(key.clone()) {
+                    return false;
+                }
+                let ok = self
+                    .fields
+                    .iter()
+                    .filter(|((r, _), _)| r == name)
+                    .all(|(_, fk)| self.map_key_ok_inner(fk, visiting));
+                visiting.remove(&key);
+                ok
+            }
+            Kind::Enum(name) => {
+                let key = format!("enum:{}", name);
+                if !visiting.insert(key.clone()) {
+                    return false;
+                }
+                let ok = self
+                    .enum_variants
+                    .get(name)
+                    .map(|vs| {
+                        vs.iter().all(|v| {
+                            self.variants
+                                .get(v)
+                                .map(|(_, fs)| fs.iter().all(|fk| self.map_key_ok_inner(fk, visiting)))
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false);
+                visiting.remove(&key);
+                ok
+            }
+            _ => false,
         }
     }
 
@@ -1041,8 +1090,8 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             self.error(format!("map literal values must share a type: {:?} vs {:?}", v0, vt));
                         }
                     }
-                    if !map_key_ok(&k0) && !matches!(k0, Kind::Unknown) {
-                        self.error(format!("Map key type must be Int, usize, Bool, Char, or Str, got {:?}", k0));
+                    if !self.map_key_ok(&k0) && !matches!(k0, Kind::Unknown) {
+                        self.error(map_key_error(&k0));
                     }
                     Kind::Map(Box::new(k0), Box::new(v0))
                 }
@@ -1059,7 +1108,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             self.error(format!("set literal elements must share a type: {:?} vs {:?}", e0, et));
                         }
                     }
-                    if !map_key_ok(&e0) && !matches!(e0, Kind::Unknown) {
+                    if !set_elem_ok(&e0) && !matches!(e0, Kind::Unknown) {
                         self.error(format!("Set element type must be Int, usize, Bool, Char, or Str, got {:?}", e0));
                     }
                     Kind::Set(Box::new(e0))
@@ -1350,11 +1399,19 @@ fn is_error_ctor(name: &str) -> bool {
     is_error_record(name)
 }
 
-/// Whether a type may be a `Map` key: only types with decidable equality
-/// (`Float` is excluded because of NaN; records/enums/collections are future
-/// work). See docs/12-stdlib.md.
-fn map_key_ok(k: &Kind) -> bool {
+/// Whether a type may be a `Set` element: only the primitive types with
+/// decidable equality (`Float` is excluded because of NaN; records/enums/
+/// collections are not supported yet). See docs/03-type-system.md.
+fn set_elem_ok(k: &Kind) -> bool {
     matches!(k, Kind::Int | Kind::Usize | Kind::Bool | Kind::Char | Kind::Str)
+}
+
+/// The diagnostic for a rejected `Map` key type.
+fn map_key_error(k: &Kind) -> String {
+    format!(
+        "Map key type must be Int, usize, Bool, Char, Str, or a record/enum of such types, got {:?}",
+        k
+    )
 }
 
 /// Whether a field type is representable in a `@cstruct` record (docs/10).

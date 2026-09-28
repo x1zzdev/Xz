@@ -34,6 +34,10 @@ pub struct Codegen<'b, 'ctx> {
     /// while evaluating a `let s: Set[T] = {}`, the declared kind, so the
     /// empty brace literal materializes an empty set, not an empty map.
     set_hint: Option<Kind>,
+    /// while evaluating a `let m: Map[K, V] = ...`, the declared kind, so a map
+    /// literal whose keys are records/enums (whose LLVM type cannot name them)
+    /// can hash and compare them structurally.
+    map_hint: Option<Kind>,
     /// list-typed binding name -> element kind, so `for x in xs` and `xs[i]`
     /// can load the right element type (codegen carries no types otherwise).
     list_elems: HashMap<String, Kind>,
@@ -510,7 +514,13 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         }
         let key_bt = self.basic_type_of(kvals[0]);
         let val_bt = self.basic_type_of(vvals[0]);
-        let key_kind = kind_from_llvm(self.backend, key_bt);
+        // A record/enum key's LLVM struct type cannot name it, so the declared
+        // `Map[K, V]` hint supplies the key kind; primitives fall back to the
+        // value type.
+        let key_kind = match &self.map_hint {
+            Some(Kind::Map(k, _)) => (**k).clone(),
+            _ => kind_from_llvm(self.backend, key_bt),
+        };
         let n = entries.len() as u64;
         let keys = self.alloc_buffer(key_bt, n, "map.keys")?;
         let vals = self.alloc_buffer(val_bt, n, "map.vals")?;
@@ -565,8 +575,8 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     }
 
     /// Hash a Map key to an i64. Int/usize hash their value, Bool/Char are
-    /// zero-extended first, Str hashes its bytes (FNV-1a); a fixed final mix
-    /// spreads the bits over the table (docs/13-codegen.md § Map
+    /// zero-extended first, Str hashes its bytes (FNV-1a), and a record/enum
+    /// folds the hashes of its fields (docs/13-codegen.md § Map
     /// representation). The hash is a pure function of the key, so lowering is
     /// deterministic.
     fn map_hash(
@@ -582,9 +592,134 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 self.backend.builder.build_int_z_extend(iv, int, "h.zext").unwrap()
             }
             Kind::Str => self.map_hash_str(key_val)?,
+            Kind::Record(name) => self.map_hash_record(key_val, name)?,
+            Kind::Enum(name) => self.map_hash_enum(key_val, name)?,
             _ => return Err(format!("Map key type {:?} has no hash lowering", key_kind)),
         };
         Ok(self.map_mix(raw))
+    }
+
+    /// Fold the field hashes of a record key with the same FNV-style combine the
+    /// `Str` hash uses. Field kinds are the declared record fields.
+    fn map_hash_record(
+        &mut self,
+        val: BasicValueEnum<'ctx>,
+        name: &str,
+    ) -> Result<inkwell::values::IntValue<'ctx>, String> {
+        let fields = self
+            .backend
+            .record_fields
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("unknown record '{}' as a Map key", name))?;
+        let sv = val.into_struct_value();
+        let int = self.backend.types.int;
+        let mut acc = int.const_int(0xcbf2_9ce4_8422_2325, false);
+        for (i, fk) in fields.iter().enumerate() {
+            let fv = self.backend.builder.build_extract_value(sv, i as u32, "hr.f").unwrap();
+            let fh = self.map_hash(fv, fk)?;
+            acc = self.backend.builder.build_xor(acc, fh, "hr.x").unwrap();
+            acc = self
+                .backend
+                .builder
+                .build_int_mul(acc, int.const_int(0x0000_0100_0000_01b3, false), "hr.m")
+                .unwrap();
+        }
+        Ok(acc)
+    }
+
+    /// Hash an enum key: fold the tag with the hashes of the active variant's
+    /// payload fields, dispatched at runtime on the tag.
+    fn map_hash_enum(
+        &mut self,
+        val: BasicValueEnum<'ctx>,
+        name: &str,
+    ) -> Result<inkwell::values::IntValue<'ctx>, String> {
+        let variants = self.enum_variant_list(name)?;
+        let sv = val.into_struct_value();
+        let payload = self.backend.builder.build_extract_value(sv, 0, "he.box").unwrap().into_pointer_value();
+        let tag_raw = self.backend.builder.build_extract_value(sv, 1, "he.tag").unwrap().into_int_value();
+        let int = self.backend.types.int;
+        let tag = self.backend.builder.build_int_z_extend(tag_raw, int, "he.tag64").unwrap();
+        let mut seed = int.const_int(0xcbf2_9ce4_8422_2325, false);
+        seed = self.backend.builder.build_xor(seed, tag, "he.seed").unwrap();
+
+        let fnv = self.cur_fn();
+        let merge = self.backend.context.append_basic_block(fnv, "he.merge");
+        let default_bb = self.backend.context.append_basic_block(fnv, "he.default");
+        let mut case_bbs = Vec::with_capacity(variants.len());
+        let mut next_bbs = Vec::with_capacity(variants.len());
+        for _ in 0..variants.len() {
+            case_bbs.push(self.backend.context.append_basic_block(fnv, "he.case"));
+            next_bbs.push(self.backend.context.append_basic_block(fnv, "he.next"));
+        }
+        for (i, (tagv, _)) in variants.iter().enumerate() {
+            let cmp = self
+                .backend
+                .builder
+                .build_int_compare(IntPredicate::EQ, tag, int.const_int(*tagv as u64, false), "he.cmp")
+                .unwrap();
+            self.backend.builder.build_conditional_branch(cmp, case_bbs[i], next_bbs[i]).unwrap();
+            self.backend.builder.position_at_end(next_bbs[i]);
+        }
+        self.backend.builder.build_unconditional_branch(default_bb).unwrap();
+
+        self.backend.builder.position_at_end(default_bb);
+        self.backend.builder.build_unconditional_branch(merge).unwrap();
+
+        let mut incoming: Vec<(inkwell::values::IntValue<'ctx>, BasicBlock<'ctx>)> = vec![(seed, default_bb)];
+        for (i, (_, fields)) in variants.iter().enumerate() {
+            self.backend.builder.position_at_end(case_bbs[i]);
+            let vt = self.enum_payload_ty(fields);
+            let mut acc = seed;
+            for (j, fk) in fields.iter().enumerate() {
+                let fptr = self.backend.builder.build_struct_gep(vt, payload, j as u32, "he.fp").unwrap();
+                let fty = self.backend.kind_to_llvm(fk);
+                let fv = self.build_load(fty, fptr, "he.fv");
+                let fh = self.map_hash(fv, fk)?;
+                acc = self.backend.builder.build_xor(acc, fh, "he.fx").unwrap();
+                acc = self
+                    .backend
+                    .builder
+                    .build_int_mul(acc, int.const_int(0x0000_0100_0000_01b3, false), "he.fm")
+                    .unwrap();
+            }
+            let end = self.backend.builder.get_insert_block().unwrap();
+            self.backend.builder.build_unconditional_branch(merge).unwrap();
+            incoming.push((acc, end));
+        }
+
+        self.backend.builder.position_at_end(merge);
+        let phi = self.backend.builder.build_phi(int, "he.phi").unwrap();
+        let inc: Vec<(&dyn BasicValue<'ctx>, BasicBlock<'ctx>)> =
+            incoming.iter().map(|(v, bb)| (v as &dyn BasicValue<'ctx>, *bb)).collect();
+        phi.add_incoming(&inc);
+        Ok(phi.as_basic_value().into_int_value())
+    }
+
+    /// The field kinds of each variant of `name`, in tag order.
+    fn enum_variant_list(&self, name: &str) -> Result<Vec<(u32, Vec<Kind>)>, String> {
+        let names = self
+            .backend
+            .enum_variants
+            .get(name)
+            .ok_or_else(|| format!("unknown enum '{}' as a Map key", name))?;
+        let mut out = Vec::with_capacity(names.len());
+        for vn in names {
+            let (_, tag, fields) = self
+                .backend
+                .variants
+                .get(vn)
+                .ok_or_else(|| format!("unknown enum variant '{}'", vn))?;
+            out.push((*tag, fields.clone()));
+        }
+        Ok(out)
+    }
+
+    /// The heap box type of a variant's fields, matching `gen_enum_ctor`.
+    fn enum_payload_ty(&self, fields: &[Kind]) -> StructType<'ctx> {
+        let tys: Vec<BasicTypeEnum<'ctx>> = fields.iter().map(|k| self.backend.kind_to_llvm(k)).collect();
+        self.backend.context.struct_type(&tys, false)
     }
 
     /// FNV-1a over a `Str`'s bytes.
@@ -777,13 +912,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         key_kind: &Kind,
     ) -> Result<(PointerValue<'ctx>, inkwell::values::IntValue<'ctx>), String> {
         let int = self.backend.types.int;
-        let key_bt: BasicTypeEnum<'ctx> = match key_kind {
-            Kind::Int | Kind::Usize => self.backend.types.int.into(),
-            Kind::Bool => self.backend.types.bool.into(),
-            Kind::Char => self.backend.types.char.into(),
-            Kind::Str => self.backend.types.xz_str.into(),
-            _ => return Err(format!("Map key type {:?} has no index lowering", key_kind)),
-        };
+        let key_bt: BasicTypeEnum<'ctx> = self.backend.kind_to_llvm(key_kind);
         let doubled = self.backend.builder.build_int_mul(len, int.const_int(2, false), "ib.dbl").unwrap();
         let lt8 = self.backend.builder.build_int_compare(IntPredicate::SLT, doubled, int.const_int(8, false), "ib.lt8").unwrap();
         let want = self.backend.builder.build_select(lt8, int.const_int(8, false), doubled, "ib.want").unwrap().into_int_value();
@@ -832,7 +961,8 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     }
 
     /// Equality of two keys, dispatched on the key kind (docs/12): by value for
-    /// Int/usize/Bool/Char, by content for Str.
+    /// Int/usize/Bool/Char, by content for Str, and structurally (field by
+    /// field) for records and enums.
     fn map_key_eq(
         &mut self,
         a: BasicValueEnum<'ctx>,
@@ -854,8 +984,104 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                     .unwrap();
                 Ok(call.try_as_basic_value().basic().unwrap().into_int_value())
             }
+            Kind::Record(name) => self.map_key_eq_record(a, b, name),
+            Kind::Enum(name) => self.map_key_eq_enum(a, b, name),
             _ => Err(format!("Map key type {:?} has no equality lowering", kind)),
         }
+    }
+
+    /// Structural equality of two record keys: conjunction of field equalities.
+    fn map_key_eq_record(
+        &mut self,
+        a: BasicValueEnum<'ctx>,
+        b: BasicValueEnum<'ctx>,
+        name: &str,
+    ) -> Result<inkwell::values::IntValue<'ctx>, String> {
+        let fields = self
+            .backend
+            .record_fields
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("unknown record '{}' as a Map key", name))?;
+        let a_sv = a.into_struct_value();
+        let b_sv = b.into_struct_value();
+        let bool_ty = self.backend.types.bool;
+        let mut acc = bool_ty.const_int(1, false);
+        for (i, fk) in fields.iter().enumerate() {
+            let av = self.backend.builder.build_extract_value(a_sv, i as u32, "kr.a").unwrap();
+            let bv = self.backend.builder.build_extract_value(b_sv, i as u32, "kr.b").unwrap();
+            let eq = self.map_key_eq(av, bv, fk)?;
+            acc = self.backend.builder.build_and(acc, eq, "kr.and").unwrap();
+        }
+        Ok(acc)
+    }
+
+    /// Structural equality of two enum keys: the tags must match and, for the
+    /// active variant, so must every payload field.
+    fn map_key_eq_enum(
+        &mut self,
+        a: BasicValueEnum<'ctx>,
+        b: BasicValueEnum<'ctx>,
+        name: &str,
+    ) -> Result<inkwell::values::IntValue<'ctx>, String> {
+        let variants = self.enum_variant_list(name)?;
+        let a_sv = a.into_struct_value();
+        let b_sv = b.into_struct_value();
+        let a_box = self.backend.builder.build_extract_value(a_sv, 0, "ke.abox").unwrap().into_pointer_value();
+        let b_box = self.backend.builder.build_extract_value(b_sv, 0, "ke.bbox").unwrap().into_pointer_value();
+        let a_tag = self.backend.builder.build_extract_value(a_sv, 1, "ke.atag").unwrap().into_int_value();
+        let b_tag = self.backend.builder.build_extract_value(b_sv, 1, "ke.btag").unwrap().into_int_value();
+        let i32t = self.backend.context.i32_type();
+        let bool_ty = self.backend.types.bool;
+
+        let fnv = self.cur_fn();
+        let merge = self.backend.context.append_basic_block(fnv, "ke.merge");
+        let default_bb = self.backend.context.append_basic_block(fnv, "ke.default");
+        let mut case_bbs = Vec::with_capacity(variants.len());
+        let mut next_bbs = Vec::with_capacity(variants.len());
+        for _ in 0..variants.len() {
+            case_bbs.push(self.backend.context.append_basic_block(fnv, "ke.case"));
+            next_bbs.push(self.backend.context.append_basic_block(fnv, "ke.next"));
+        }
+        for (i, (tagv, _)) in variants.iter().enumerate() {
+            let tconst = i32t.const_int(*tagv as u64, false);
+            let c1 = self.backend.builder.build_int_compare(IntPredicate::EQ, a_tag, tconst, "ke.c1").unwrap();
+            let c2 = self.backend.builder.build_int_compare(IntPredicate::EQ, b_tag, tconst, "ke.c2").unwrap();
+            let both = self.backend.builder.build_and(c1, c2, "ke.both").unwrap();
+            self.backend.builder.build_conditional_branch(both, case_bbs[i], next_bbs[i]).unwrap();
+            self.backend.builder.position_at_end(next_bbs[i]);
+        }
+        self.backend.builder.build_unconditional_branch(default_bb).unwrap();
+
+        self.backend.builder.position_at_end(default_bb);
+        self.backend.builder.build_unconditional_branch(merge).unwrap();
+
+        let mut incoming: Vec<(inkwell::values::IntValue<'ctx>, BasicBlock<'ctx>)> =
+            vec![(bool_ty.const_zero(), default_bb)];
+        for (i, (_, fields)) in variants.iter().enumerate() {
+            self.backend.builder.position_at_end(case_bbs[i]);
+            let vt = self.enum_payload_ty(fields);
+            let mut acc = bool_ty.const_int(1, false);
+            for (j, fk) in fields.iter().enumerate() {
+                let fty = self.backend.kind_to_llvm(fk);
+                let afp = self.backend.builder.build_struct_gep(vt, a_box, j as u32, "ke.afp").unwrap();
+                let bfp = self.backend.builder.build_struct_gep(vt, b_box, j as u32, "ke.bfp").unwrap();
+                let av = self.build_load(fty, afp, "ke.av");
+                let bv = self.build_load(fty, bfp, "ke.bv");
+                let eq = self.map_key_eq(av, bv, fk)?;
+                acc = self.backend.builder.build_and(acc, eq, "ke.and").unwrap();
+            }
+            let end = self.backend.builder.get_insert_block().unwrap();
+            self.backend.builder.build_unconditional_branch(merge).unwrap();
+            incoming.push((acc, end));
+        }
+
+        self.backend.builder.position_at_end(merge);
+        let phi = self.backend.builder.build_phi(bool_ty, "ke.phi").unwrap();
+        let inc: Vec<(&dyn BasicValue<'ctx>, BasicBlock<'ctx>)> =
+            incoming.iter().map(|(v, bb)| (v as &dyn BasicValue<'ctx>, *bb)).collect();
+        phi.add_incoming(&inc);
+        Ok(phi.as_basic_value().into_int_value())
     }
 
     /// Return a new Map with `key` set to `val`: replace in place when `key`
@@ -918,11 +1144,11 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         &mut self,
         map_val: BasicValueEnum<'ctx>,
         key_val: BasicValueEnum<'ctx>,
+        key_kind: &Kind,
         val_kind: &Kind,
     ) -> GenResult<'ctx> {
         let (_, vals, _) = self.map_parts(map_val);
-        let key_kind = kind_from_llvm(self.backend, self.basic_type_of(key_val));
-        let idx = self.map_find_key(map_val, key_val, &key_kind)?;
+        let idx = self.map_find_key(map_val, key_val, key_kind)?;
         let val_bt = self.backend.kind_to_llvm(val_kind);
         let int = self.backend.types.int;
         let found = self.backend.builder.build_int_compare(IntPredicate::SGE, idx, int.const_zero(), "get.found").unwrap();
@@ -1510,13 +1736,16 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 let saved_hint = self.none_hint.clone();
                 let saved_list_hint = self.list_hint.clone();
                 let saved_set_hint = self.set_hint.clone();
+                let saved_map_hint = self.map_hint.clone();
                 self.none_hint = declared_kind.clone();
                 self.list_hint = declared_kind.clone();
                 self.set_hint = declared_kind.clone();
+                self.map_hint = declared_kind.clone();
                 let r = self.gen_expr(e);
                 self.none_hint = saved_hint;
                 self.list_hint = saved_list_hint;
                 self.set_hint = saved_set_hint;
+                self.map_hint = saved_map_hint;
                 match r {
                     Ok(v) => match &declared_kind {
                         Some(k) => {
@@ -1826,13 +2055,16 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                     let saved_list_hint = self.list_hint.clone();
                     let saved_none_hint = self.none_hint.clone();
                     let saved_set_hint = self.set_hint.clone();
+                    let saved_map_hint = self.map_hint.clone();
                     self.list_hint = hint.clone();
                     self.none_hint = hint.clone();
-                    self.set_hint = hint;
+                    self.set_hint = hint.clone();
+                    self.map_hint = hint;
                     vals.push(self.gen_expr(a)?);
                     self.list_hint = saved_list_hint;
                     self.none_hint = saved_none_hint;
                     self.set_hint = saved_set_hint;
+                    self.map_hint = saved_map_hint;
                 }
                 vals
             }
@@ -2405,13 +2637,16 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 let saved_list_hint = self.list_hint.clone();
                 let saved_none_hint = self.none_hint.clone();
                 let saved_set_hint = self.set_hint.clone();
+                let saved_map_hint = self.map_hint.clone();
                 self.list_hint = hint.clone();
                 self.none_hint = hint.clone();
-                self.set_hint = hint;
+                self.set_hint = hint.clone();
+                self.map_hint = hint;
                 let v = self.gen_expr(a)?;
                 self.list_hint = saved_list_hint;
                 self.none_hint = saved_none_hint;
                 self.set_hint = saved_set_hint;
+                self.map_hint = saved_map_hint;
                 call_args.push(v.into());
             }
             let call = self.backend.builder.build_direct_call(fv, &call_args, "call").unwrap();
@@ -2676,12 +2911,12 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             if args.len() != 1 {
                 return self.fail("get takes one argument");
             }
-            let (_, val_kind) = match self.map_kv_kind(receiver) {
+            let (key_kind, val_kind) = match self.map_kv_kind(receiver) {
                 Some(kv) => kv,
                 None => return self.fail("cannot determine the map value type for get; bind the map with a declared `Map[K, V]` type"),
             };
             let kv = self.gen_expr(&args[0])?;
-            return self.gen_map_get(rv, kv, &val_kind);
+            return self.gen_map_get(rv, kv, &key_kind, &val_kind);
         }
         if method == "contains" {
             if args.len() != 1 {
@@ -3359,6 +3594,7 @@ pub fn gen_function(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         none_hint: None,
         list_hint: None,
         set_hint: None,
+        map_hint: None,
         list_elems: HashMap::new(),
         set_elems: HashMap::new(),
         map_kvs: HashMap::new(),
@@ -3393,6 +3629,7 @@ pub fn gen_specialized(
         none_hint: None,
         list_hint: None,
         set_hint: None,
+        map_hint: None,
         list_elems: HashMap::new(),
         set_elems: HashMap::new(),
         map_kvs: HashMap::new(),
@@ -3422,6 +3659,7 @@ pub fn gen_task(backend: &mut LlvmBackend<'static>, t: &ast::TaskDecl) {
         none_hint: None,
         list_hint: None,
         set_hint: None,
+        map_hint: None,
         list_elems: HashMap::new(),
         set_elems: HashMap::new(),
         map_kvs: HashMap::new(),
@@ -3455,6 +3693,7 @@ pub fn gen_main(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         none_hint: None,
         list_hint: None,
         set_hint: None,
+        map_hint: None,
         list_elems: HashMap::new(),
         set_elems: HashMap::new(),
         map_kvs: HashMap::new(),

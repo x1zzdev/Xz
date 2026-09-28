@@ -571,6 +571,87 @@ fn map_literal_get_insert_and_iteration_run() {
 }
 
 #[test]
+fn map_record_and_enum_keys_run() {
+    // Record and enum keys use the structural hash/equality lowering: a
+    // duplicate key keeps its first position with the later value, and lookup
+    // compares fields (docs/03, 13).
+    expect_output(
+        r#"record Point {
+    x: Int
+    y: Int
+}
+
+enum Color {
+    red()
+    rgb(r: Int, g: Int, b: Int)
+}
+
+func main() -> Result[Unit, Err] {
+    let m: Map[Point, Int] = {Point(1, 2): 10, Point(3, 4): 20, Point(1, 2): 30}
+    print(m.len().to_str())
+    print(" ")
+    let g = m.get(Point(3, 4))
+    if g is some { print(g.to_str()) } else { print("none") }
+    print(" ")
+    let c: Map[Color, Int] = {red(): 1, rgb(1, 2, 3): 2, rgb(1, 2, 3): 3}
+    print(c.len().to_str())
+    print(" ")
+    let cg = c.get(rgb(1, 2, 3))
+    if cg is some { print(cg.to_str()) } else { print("none") }
+    print("\n")
+    ok()
+}"#,
+        "2 20 2 3\n",
+        "record and enum map keys",
+    );
+}
+
+#[test]
+fn map_nested_record_and_enum_keys_run() {
+    // A record containing a nested record and an enum field, and an enum whose
+    // payload is a Str: the hash and equality recurse through both shapes.
+    expect_output(
+        r#"record Inner {
+    a: Int
+    b: Bool
+}
+
+record Outer {
+    name: Str
+    inner: Inner
+}
+
+enum Kind {
+    left(s: Str)
+    right(n: Int)
+}
+
+record Tagged {
+    label: Str
+    kind: Kind
+}
+
+func main() -> Result[Unit, Err] {
+    let m: Map[Outer, Int] = {Outer("hi", Inner(1, true)): 5, Outer("hi", Inner(1, true)): 9, Outer("hi", Inner(2, false)): 7}
+    print(m.len().to_str())
+    print(" ")
+    let g = m.get(Outer("hi", Inner(2, false)))
+    if g is some { print(g.to_str()) } else { print("none") }
+    print(" ")
+    let t: Map[Tagged, Int] = {Tagged("x", left("p")): 1, Tagged("x", left("p")): 2, Tagged("x", right(4)): 3}
+    print(t.len().to_str())
+    print(" ")
+    let tg = t.get(Tagged("x", right(4)))
+    if tg is some { print(tg.to_str()) } else { print("none") }
+    print("\n")
+    ok()
+}"#,
+        "2 7 2 3\n",
+        "nested record and enum map keys",
+    );
+}
+
+#[test]
 fn map_int_keys_index_growth_and_replacement_run() {
     // Int-keyed Map past the initial table size: exercises open-addressing
     // growth, lookup after grow, in-place value replacement (position kept),

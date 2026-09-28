@@ -1287,6 +1287,46 @@ fn float_map_key_rejected() {
 }
 
 #[test]
+fn record_and_enum_map_keys_accepted() {
+    expect_ok(
+        r#"record Point {
+    x: Int
+    y: Bool
+}
+
+enum Color {
+    red()
+    rgb(r: Int, g: Int, b: Int)
+}
+
+func main() {
+    let m: Map[Point, Int] = {Point(1, true): 1}
+    let c: Map[Color, Int] = {red(): 1, rgb(1, 2, 3): 2}
+    print(m.len().to_str() + c.len().to_str())
+}"#,
+        "record and enum map keys",
+    );
+}
+
+#[test]
+fn map_key_with_non_key_field_rejected() {
+    let err = typecheck_error(
+        r#"record P {
+    x: Float
+}
+
+func main() {
+    let m: Map[P, Int] = {}
+    print(m.len().to_str())
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("Map key type"), "unexpected error: {}", e),
+        None => panic!("Float-field record accepted as a Map key"),
+    }
+}
+
+#[test]
 fn map_insert_key_type_mismatch_rejected() {
     let err = typecheck_error(
         r#"func main() {

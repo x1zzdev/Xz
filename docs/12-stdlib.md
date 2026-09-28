@@ -98,10 +98,12 @@ assignment/argument/return copies it; `m.insert(k, v)` returns a *new* map
 | `m.insert(k: K, v: V) -> Map[K, V]` | a new map; replaces the value if `k` is present, keeping its position |
 | `m.keys() -> List[K]`, `m.values() -> List[V]` | snapshots in insertion order |
 
-Keys must be `Int`, `usize`, `Bool`, `Char`, or `Str` (types with decidable
-equality); `Float`, records, enums, and collections are rejected. A repeated key
-in a literal is the same as inserting again: the later value wins and the key
-keeps its first position. `{}` (empty) takes its key and value type from the
+Keys must be `Int`, `usize`, `Bool`, `Char`, `Str`, or a `record`/`enum` all of
+whose fields are themselves key types (types with decidable structural
+equality); `Float` and collections are rejected. Two record/enum keys are equal
+when their fields are equal and, for an enum, they share a variant. A repeated
+key in a literal is the same as inserting again: the later value wins and the
+key keeps its first position. `{}` (empty) takes its key and value type from the
 expected type: `let m: Map[Str, Int] = {}`, or a parameter of type
 `Map[Str, Int]`. There is no `m[k]` indexing and no index
 assignment; `get` returns `Option`, and changes go through `insert`.

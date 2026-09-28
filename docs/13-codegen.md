@@ -199,7 +199,7 @@ registry-guarded, so freeing one alias would be a use-after-free. Only a
 | `xs.append(x)` | malloc `len+1` elements, copy the old buffer, store `x`, return a new List |
 | `for x in xs` | induction `0..len`; load the element at each index |
 | `{k1: v1, ...}` | allocate the key/value columns and the hash index once, then insert each entry in order (a repeated key keeps its first position with the later value) |
-| `m.get(k)` | hash-index probe (Int/usize/Bool/Char hashed by value, Str by content), linear probing → `some(value)` / `none` |
+| `m.get(k)` | hash-index probe (Int/usize/Bool/Char hashed by value, Str by content, records/enums by folding field hashes), linear probing → `some(value)` / `none` |
 | `m.insert(k, v)` | malloc `len` or `len+1` key and value buffers plus a freshly built hash index, copy, replace at the existing slot or append, return a new Map |
 | `m.keys()` / `m.values()` | allocate a `List[K]` / `List[V]` buffer and copy the column, in insertion order |
 | `{e1, e2, ...}` | start from the empty set and `insert` each element in first-insertion order |
@@ -226,7 +226,12 @@ observable: iteration, `keys`, and `values` read the columns in order, so no
 hash order leaks into behavior. Because entries are immutable, a copy shares the
 columns and the index; `insert` always builds new buffers and returns a new Map.
 The hash is a fixed function of the key (no per-process seed), so the same
-program lowers to the same index and the same output.
+program lowers to the same index and the same output. For a record key the hash
+folds the field hashes; for an enum key it folds the tag with the active
+variant's payload field hashes. Equality compares record fields recursively and,
+for an enum, requires equal tags and equal payload fields; an enum's box pointer
+is never compared, so two structurally equal values at different addresses are
+the same key.
 
 ### `?` early return
 
