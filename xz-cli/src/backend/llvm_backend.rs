@@ -53,9 +53,11 @@ impl<'ctx> TypeMap<'ctx> {
         let xz_str = context.struct_type(&[ptr.into(), i64.into()], false);
         let xz_bytes = context.struct_type(&[ptr.into(), i64.into()], false);
         let xz_list = context.struct_type(&[ptr.into(), i64.into()], false);
-        // Map[K, V] is three words: a key buffer, a value buffer, and the entry
-        // count. Entries are immutable, so copies share both buffers.
-        let xz_map = context.struct_type(&[ptr.into(), ptr.into(), i64.into()], false);
+        // Map[K, V] is five words: a key buffer, a value buffer, the entry
+        // count, an open-addressing hash-index table (column positions), and the
+        // table capacity. Entries are immutable, so copies share both buffers
+        // and the index; iteration reads the columns in insertion order.
+        let xz_map = context.struct_type(&[ptr.into(), ptr.into(), i64.into(), ptr.into(), i64.into()], false);
         TypeMap {
             int: i64,
             float: context.f64_type(),

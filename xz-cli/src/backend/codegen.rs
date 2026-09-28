@@ -464,25 +464,362 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         (keys, vals, len)
     }
 
-    /// Lower `{k1: v1, ...}`: start from the empty map and `insert` each entry
-    /// in order, so a repeated key replaces at its first position (docs/12).
+    /// Split a Map value into its hash-index table and capacity.
+    fn map_index_parts(
+        &mut self,
+        v: BasicValueEnum<'ctx>,
+    ) -> (PointerValue<'ctx>, inkwell::values::IntValue<'ctx>) {
+        let st = v.into_struct_value();
+        let idx = self.backend.builder.build_extract_value(st, 3, "mi").unwrap().into_pointer_value();
+        let cap = self.backend.builder.build_extract_value(st, 4, "mc").unwrap().into_int_value();
+        (idx, cap)
+    }
+
+    /// Assemble a `{ keys, vals, len, idx, cap }` Map value.
+    fn map_value(
+        &mut self,
+        keys: PointerValue<'ctx>,
+        vals: PointerValue<'ctx>,
+        len: inkwell::values::IntValue<'ctx>,
+        idx: PointerValue<'ctx>,
+        cap: inkwell::values::IntValue<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        let mut agg = self.backend.types.xz_map.const_zero();
+        agg = self.backend.builder.build_insert_value(agg, keys, 0, "m.kp").unwrap().into_struct_value();
+        agg = self.backend.builder.build_insert_value(agg, vals, 1, "m.vp").unwrap().into_struct_value();
+        agg = self.backend.builder.build_insert_value(agg, len, 2, "m.len").unwrap().into_struct_value();
+        agg = self.backend.builder.build_insert_value(agg, idx, 3, "m.ip").unwrap().into_struct_value();
+        agg = self.backend.builder.build_insert_value(agg, cap, 4, "m.cp").unwrap().into_struct_value();
+        agg.into()
+    }
+
+    /// Lower `{k1: v1, ...}`: allocate the key/value columns and the hash index
+    /// once, then place each entry in order. A repeated key keeps its first
+    /// position and the later value wins (docs/12), all in a single pass
+    /// (docs/13-codegen.md § Map representation).
     fn gen_map_lit(&mut self, entries: &[(Expr, Expr)]) -> GenResult<'ctx> {
         // `{}` is Map or Set by the binding's declared type (docs/11).
         if entries.is_empty() {
             return self.gen_empty_brace();
         }
-        let mut agg: BasicValueEnum<'ctx> = self.backend.types.xz_map.const_zero().into();
+        let mut kvals: Vec<BasicValueEnum<'ctx>> = Vec::with_capacity(entries.len());
+        let mut vvals: Vec<BasicValueEnum<'ctx>> = Vec::with_capacity(entries.len());
         for (k, v) in entries {
-            let kv = self.gen_expr(k)?;
-            let vv = self.gen_expr(v)?;
-            let key_kind = kind_from_llvm(self.backend, self.basic_type_of(kv));
-            agg = self.map_insert_value(agg, kv, vv, &key_kind)?;
+            kvals.push(self.gen_expr(k)?);
+            vvals.push(self.gen_expr(v)?);
         }
-        Ok(agg)
+        let key_bt = self.basic_type_of(kvals[0]);
+        let val_bt = self.basic_type_of(vvals[0]);
+        let key_kind = kind_from_llvm(self.backend, key_bt);
+        let n = entries.len() as u64;
+        let keys = self.alloc_buffer(key_bt, n, "map.keys")?;
+        let vals = self.alloc_buffer(val_bt, n, "map.vals")?;
+        // The table holds at most `n` entries, so a power of two at least twice
+        // that keeps the load factor at or below one half.
+        let mut cap_u = 1u64;
+        while cap_u < n.saturating_mul(2).max(8) {
+            cap_u <<= 1;
+        }
+        let int = self.backend.types.int;
+        let cap = int.const_int(cap_u, false);
+        let idx = self.alloc_map_column(8, cap, "map.idx")?;
+        self.map_fill_index(idx, cap);
+        let cur_ptr = self.backend.builder.build_alloca(int, "map.cur").unwrap();
+        self.backend.builder.build_store(cur_ptr, int.const_zero()).unwrap();
+        for (key, val) in kvals.iter().zip(vvals.iter()) {
+            let cur = self.build_load(int.into(), cur_ptr, "map.curv").into_int_value();
+            let found = self.map_probe_find_raw(keys, idx, cap, cur, *key, &key_kind)?;
+            let is_found = self
+                .backend
+                .builder
+                .build_int_compare(IntPredicate::SGE, found, int.const_zero(), "map.found")
+                .unwrap();
+            let fnv = self.cur_fn();
+            let put = self.backend.context.append_basic_block(fnv, "map.put");
+            let append = self.backend.context.append_basic_block(fnv, "map.append");
+            let cont = self.backend.context.append_basic_block(fnv, "map.cont");
+            self.backend.builder.build_conditional_branch(is_found, put, append).unwrap();
+
+            self.backend.builder.position_at_end(put);
+            let vslot = unsafe { self.backend.builder.build_in_bounds_gep(val_bt, vals, &[found], "map.vs").unwrap() };
+            self.backend.builder.build_store(vslot, *val).unwrap();
+            self.backend.builder.build_unconditional_branch(cont).unwrap();
+
+            self.backend.builder.position_at_end(append);
+            let kslot = unsafe { self.backend.builder.build_in_bounds_gep(key_bt, keys, &[cur], "map.ks").unwrap() };
+            self.backend.builder.build_store(kslot, *key).unwrap();
+            let vslot2 = unsafe { self.backend.builder.build_in_bounds_gep(val_bt, vals, &[cur], "map.vs2").unwrap() };
+            self.backend.builder.build_store(vslot2, *val).unwrap();
+            let h = self.map_hash(*key, &key_kind)?;
+            let slot = self.map_probe_empty(idx, cap, h);
+            let eslot = unsafe { self.backend.builder.build_in_bounds_gep(int, idx, &[slot], "map.es").unwrap() };
+            self.backend.builder.build_store(eslot, cur).unwrap();
+            let cur1 = self.backend.builder.build_int_add(cur, int.const_int(1, false), "map.cur1").unwrap();
+            self.backend.builder.build_store(cur_ptr, cur1).unwrap();
+            self.backend.builder.build_unconditional_branch(cont).unwrap();
+
+            self.backend.builder.position_at_end(cont);
+        }
+        let len = self.build_load(int.into(), cur_ptr, "map.len").into_int_value();
+        Ok(self.map_value(keys, vals, len, idx, cap))
     }
 
-    /// Linear scan for `key` in the map's key column; returns the matching
-    /// index or -1. Keys are compared with `map_key_eq`.
+    /// Hash a Map key to an i64. Int/usize hash their value, Bool/Char are
+    /// zero-extended first, Str hashes its bytes (FNV-1a); a fixed final mix
+    /// spreads the bits over the table (docs/13-codegen.md § Map
+    /// representation). The hash is a pure function of the key, so lowering is
+    /// deterministic.
+    fn map_hash(
+        &mut self,
+        key_val: BasicValueEnum<'ctx>,
+        key_kind: &Kind,
+    ) -> Result<inkwell::values::IntValue<'ctx>, String> {
+        let int = self.backend.types.int;
+        let raw = match key_kind {
+            Kind::Int | Kind::Usize => key_val.into_int_value(),
+            Kind::Bool | Kind::Char => {
+                let iv = key_val.into_int_value();
+                self.backend.builder.build_int_z_extend(iv, int, "h.zext").unwrap()
+            }
+            Kind::Str => self.map_hash_str(key_val)?,
+            _ => return Err(format!("Map key type {:?} has no hash lowering", key_kind)),
+        };
+        Ok(self.map_mix(raw))
+    }
+
+    /// FNV-1a over a `Str`'s bytes.
+    fn map_hash_str(
+        &mut self,
+        key_val: BasicValueEnum<'ctx>,
+    ) -> Result<inkwell::values::IntValue<'ctx>, String> {
+        let (ptr, len) = self.str_parts(key_val);
+        let int = self.backend.types.int;
+        let i8t = self.backend.types.char;
+        let fnv = self.cur_fn();
+        let header = self.backend.context.append_basic_block(fnv, "h.header");
+        let body = self.backend.context.append_basic_block(fnv, "h.body");
+        let done = self.backend.context.append_basic_block(fnv, "h.done");
+        let h_ptr = self.backend.builder.build_alloca(int, "h.acc").unwrap();
+        let i_ptr = self.backend.builder.build_alloca(int, "h.i").unwrap();
+        self.backend.builder.build_store(h_ptr, int.const_int(0xcbf2_9ce4_8422_2325, false)).unwrap();
+        self.backend.builder.build_store(i_ptr, int.const_zero()).unwrap();
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        self.backend.builder.position_at_end(header);
+        let i_cur = self.build_load(int.into(), i_ptr, "h.ic").into_int_value();
+        let cond = self.backend.builder.build_int_compare(IntPredicate::SLT, i_cur, len, "h.cond").unwrap();
+        self.backend.builder.build_conditional_branch(cond, body, done).unwrap();
+
+        self.backend.builder.position_at_end(body);
+        let bslot = unsafe { self.backend.builder.build_in_bounds_gep(i8t, ptr, &[i_cur], "h.bs").unwrap() };
+        let b = self.backend.builder.build_load(i8t, bslot, "h.b").unwrap();
+        let b64 = self.backend.builder.build_int_z_extend(b.into_int_value(), int, "h.b64").unwrap();
+        let h_cur = self.build_load(int.into(), h_ptr, "h.hc").into_int_value();
+        let xored = self.backend.builder.build_xor(h_cur, b64, "h.xor").unwrap();
+        let mul = self.backend.builder.build_int_mul(xored, int.const_int(0x0000_0100_0000_01b3, false), "h.mul").unwrap();
+        self.backend.builder.build_store(h_ptr, mul).unwrap();
+        let i_next = self.backend.builder.build_int_add(i_cur, int.const_int(1, false), "h.in").unwrap();
+        self.backend.builder.build_store(i_ptr, i_next).unwrap();
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        self.backend.builder.position_at_end(done);
+        Ok(self.build_load(int.into(), h_ptr, "h.ret").into_int_value())
+    }
+
+    /// SplitMix64 finalizer: spreads a raw key over the table index space.
+    fn map_mix(&mut self, x: inkwell::values::IntValue<'ctx>) -> inkwell::values::IntValue<'ctx> {
+        let int = self.backend.types.int;
+        let s30 = self.backend.builder.build_right_shift(x, int.const_int(30, false), false, "h.s30").unwrap();
+        let x1 = self.backend.builder.build_xor(x, s30, "h.x1").unwrap();
+        let x2 = self.backend.builder.build_int_mul(x1, int.const_int(0xbf58_476d_1ce4_e5b9, false), "h.x2").unwrap();
+        let s27 = self.backend.builder.build_right_shift(x2, int.const_int(27, false), false, "h.s27").unwrap();
+        let x3 = self.backend.builder.build_xor(x2, s27, "h.x3").unwrap();
+        let x4 = self.backend.builder.build_int_mul(x3, int.const_int(0x94d0_49bb_1331_11eb, false), "h.x4").unwrap();
+        let s31 = self.backend.builder.build_right_shift(x4, int.const_int(31, false), false, "h.s31").unwrap();
+        self.backend.builder.build_xor(x4, s31, "h.x5").unwrap()
+    }
+
+    /// The smallest power of two `>= n` (n >= 1), by doubling.
+    fn map_next_pow2(&mut self, n: inkwell::values::IntValue<'ctx>) -> inkwell::values::IntValue<'ctx> {
+        let int = self.backend.types.int;
+        let fnv = self.cur_fn();
+        let header = self.backend.context.append_basic_block(fnv, "pow.header");
+        let body = self.backend.context.append_basic_block(fnv, "pow.body");
+        let done = self.backend.context.append_basic_block(fnv, "pow.done");
+        let c_ptr = self.backend.builder.build_alloca(int, "pow.c").unwrap();
+        self.backend.builder.build_store(c_ptr, int.const_int(1, false)).unwrap();
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        self.backend.builder.position_at_end(header);
+        let c = self.build_load(int.into(), c_ptr, "pow.cc").into_int_value();
+        let cond = self.backend.builder.build_int_compare(IntPredicate::SLT, c, n, "pow.cond").unwrap();
+        self.backend.builder.build_conditional_branch(cond, body, done).unwrap();
+
+        self.backend.builder.position_at_end(body);
+        let c2 = self.backend.builder.build_left_shift(c, int.const_int(1, false), "pow.shl").unwrap();
+        self.backend.builder.build_store(c_ptr, c2).unwrap();
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        self.backend.builder.position_at_end(done);
+        self.build_load(int.into(), c_ptr, "pow.ret").into_int_value()
+    }
+
+    /// Probe the hash index for `key`; returns its column position or -1. An
+    /// empty map (`len == 0`) has no table, so it cannot contain the key.
+    fn map_probe_find_raw(
+        &mut self,
+        keys: PointerValue<'ctx>,
+        idx: PointerValue<'ctx>,
+        cap: inkwell::values::IntValue<'ctx>,
+        len: inkwell::values::IntValue<'ctx>,
+        key_val: BasicValueEnum<'ctx>,
+        key_kind: &Kind,
+    ) -> Result<inkwell::values::IntValue<'ctx>, String> {
+        let key_bt = self.basic_type_of(key_val);
+        let int = self.backend.types.int;
+        let h = self.map_hash(key_val, key_kind)?;
+        let mask = self.backend.builder.build_int_sub(cap, int.const_int(1, false), "p.mask").unwrap();
+        let fnv = self.cur_fn();
+        let go = self.backend.context.append_basic_block(fnv, "p.go");
+        let header = self.backend.context.append_basic_block(fnv, "p.header");
+        let body = self.backend.context.append_basic_block(fnv, "p.body");
+        let next = self.backend.context.append_basic_block(fnv, "p.next");
+        let found = self.backend.context.append_basic_block(fnv, "p.found");
+        let done = self.backend.context.append_basic_block(fnv, "p.done");
+        let slot_ptr = self.backend.builder.build_alloca(int, "p.slot").unwrap();
+        let out_ptr = self.backend.builder.build_alloca(int, "p.out").unwrap();
+        self.backend.builder.build_store(out_ptr, int.const_int(u64::MAX, false)).unwrap();
+        let empty = self.backend.builder.build_int_compare(IntPredicate::EQ, len, int.const_zero(), "p.empty").unwrap();
+        self.backend.builder.build_conditional_branch(empty, done, go).unwrap();
+
+        self.backend.builder.position_at_end(go);
+        let start = self.backend.builder.build_and(h, mask, "p.start").unwrap();
+        self.backend.builder.build_store(slot_ptr, start).unwrap();
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        self.backend.builder.position_at_end(header);
+        let slot = self.build_load(int.into(), slot_ptr, "p.sc").into_int_value();
+        let eslot = unsafe { self.backend.builder.build_in_bounds_gep(int, idx, &[slot], "p.es").unwrap() };
+        let entry = self.backend.builder.build_load(int, eslot, "p.entry").unwrap().into_int_value();
+        let is_empty = self.backend.builder.build_int_compare(IntPredicate::EQ, entry, int.const_int(u64::MAX, false), "p.isempty").unwrap();
+        self.backend.builder.build_conditional_branch(is_empty, done, body).unwrap();
+
+        self.backend.builder.position_at_end(body);
+        let kslot = unsafe { self.backend.builder.build_in_bounds_gep(key_bt, keys, &[entry], "p.ks").unwrap() };
+        let kcur = self.backend.builder.build_load(key_bt, kslot, "p.k").unwrap();
+        let eq = self.map_key_eq(kcur, key_val, key_kind)?;
+        self.backend.builder.build_conditional_branch(eq, found, next).unwrap();
+
+        self.backend.builder.position_at_end(next);
+        let slot1 = self.backend.builder.build_int_add(slot, int.const_int(1, false), "p.s1").unwrap();
+        let slotm = self.backend.builder.build_and(slot1, mask, "p.sm").unwrap();
+        self.backend.builder.build_store(slot_ptr, slotm).unwrap();
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        self.backend.builder.position_at_end(found);
+        self.backend.builder.build_store(out_ptr, entry).unwrap();
+        self.backend.builder.build_unconditional_branch(done).unwrap();
+
+        self.backend.builder.position_at_end(done);
+        Ok(self.build_load(int.into(), out_ptr, "p.ret").into_int_value())
+    }
+
+    /// The first empty slot a hash probes to. Used when the key is known absent,
+    /// so no equality check is needed.
+    fn map_probe_empty(
+        &mut self,
+        idx: PointerValue<'ctx>,
+        cap: inkwell::values::IntValue<'ctx>,
+        h: inkwell::values::IntValue<'ctx>,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let int = self.backend.types.int;
+        let mask = self.backend.builder.build_int_sub(cap, int.const_int(1, false), "pe.mask").unwrap();
+        let fnv = self.cur_fn();
+        let header = self.backend.context.append_basic_block(fnv, "pe.header");
+        let body = self.backend.context.append_basic_block(fnv, "pe.body");
+        let done = self.backend.context.append_basic_block(fnv, "pe.done");
+        let slot_ptr = self.backend.builder.build_alloca(int, "pe.slot").unwrap();
+        let start = self.backend.builder.build_and(h, mask, "pe.start").unwrap();
+        self.backend.builder.build_store(slot_ptr, start).unwrap();
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        self.backend.builder.position_at_end(header);
+        let slot = self.build_load(int.into(), slot_ptr, "pe.sc").into_int_value();
+        let eslot = unsafe { self.backend.builder.build_in_bounds_gep(int, idx, &[slot], "pe.es").unwrap() };
+        let entry = self.backend.builder.build_load(int, eslot, "pe.entry").unwrap().into_int_value();
+        let is_empty = self.backend.builder.build_int_compare(IntPredicate::EQ, entry, int.const_int(u64::MAX, false), "pe.isempty").unwrap();
+        self.backend.builder.build_conditional_branch(is_empty, done, body).unwrap();
+
+        self.backend.builder.position_at_end(body);
+        let slot1 = self.backend.builder.build_int_add(slot, int.const_int(1, false), "pe.s1").unwrap();
+        let slotm = self.backend.builder.build_and(slot1, mask, "pe.sm").unwrap();
+        self.backend.builder.build_store(slot_ptr, slotm).unwrap();
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        self.backend.builder.position_at_end(done);
+        self.build_load(int.into(), slot_ptr, "pe.ret").into_int_value()
+    }
+
+    /// Fill a fresh index table of `cap` i64 slots with -1 (empty).
+    fn map_fill_index(&mut self, idx: PointerValue<'ctx>, cap: inkwell::values::IntValue<'ctx>) {
+        let int = self.backend.types.int;
+        let bytes = self.backend.builder.build_int_mul(cap, int.const_int(8, false), "fi.bytes").unwrap();
+        let _ = self.backend.builder.build_memset(idx, 1, self.backend.types.char.const_int(0xff, false), bytes).unwrap();
+    }
+
+    /// Build a hash index for a key column of `len` entries: size the table to
+    /// twice the load, fill it empty, then place each column position at its
+    /// probed slot. Returns the table and its capacity.
+    fn map_index_build(
+        &mut self,
+        keys: PointerValue<'ctx>,
+        len: inkwell::values::IntValue<'ctx>,
+        key_kind: &Kind,
+    ) -> Result<(PointerValue<'ctx>, inkwell::values::IntValue<'ctx>), String> {
+        let int = self.backend.types.int;
+        let key_bt: BasicTypeEnum<'ctx> = match key_kind {
+            Kind::Int | Kind::Usize => self.backend.types.int.into(),
+            Kind::Bool => self.backend.types.bool.into(),
+            Kind::Char => self.backend.types.char.into(),
+            Kind::Str => self.backend.types.xz_str.into(),
+            _ => return Err(format!("Map key type {:?} has no index lowering", key_kind)),
+        };
+        let doubled = self.backend.builder.build_int_mul(len, int.const_int(2, false), "ib.dbl").unwrap();
+        let lt8 = self.backend.builder.build_int_compare(IntPredicate::SLT, doubled, int.const_int(8, false), "ib.lt8").unwrap();
+        let want = self.backend.builder.build_select(lt8, int.const_int(8, false), doubled, "ib.want").unwrap().into_int_value();
+        let cap = self.map_next_pow2(want);
+        let idx = self.alloc_map_column(8, cap, "m.idx")?;
+        self.map_fill_index(idx, cap);
+
+        let fnv = self.cur_fn();
+        let header = self.backend.context.append_basic_block(fnv, "ib.header");
+        let body = self.backend.context.append_basic_block(fnv, "ib.body");
+        let done = self.backend.context.append_basic_block(fnv, "ib.done");
+        let i_ptr = self.backend.builder.build_alloca(int, "ib.i").unwrap();
+        self.backend.builder.build_store(i_ptr, int.const_zero()).unwrap();
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        self.backend.builder.position_at_end(header);
+        let i_cur = self.build_load(int.into(), i_ptr, "ib.ic").into_int_value();
+        let cond = self.backend.builder.build_int_compare(IntPredicate::SLT, i_cur, len, "ib.cond").unwrap();
+        self.backend.builder.build_conditional_branch(cond, body, done).unwrap();
+
+        self.backend.builder.position_at_end(body);
+        let kslot = unsafe { self.backend.builder.build_in_bounds_gep(key_bt, keys, &[i_cur], "ib.ks").unwrap() };
+        let kcur = self.backend.builder.build_load(key_bt, kslot, "ib.k").unwrap();
+        let h = self.map_hash(kcur, key_kind)?;
+        let slot = self.map_probe_empty(idx, cap, h);
+        let eslot = unsafe { self.backend.builder.build_in_bounds_gep(int, idx, &[slot], "ib.es").unwrap() };
+        self.backend.builder.build_store(eslot, i_cur).unwrap();
+        let i_next = self.backend.builder.build_int_add(i_cur, int.const_int(1, false), "ib.in").unwrap();
+        self.backend.builder.build_store(i_ptr, i_next).unwrap();
+        self.backend.builder.build_unconditional_branch(header).unwrap();
+
+        self.backend.builder.position_at_end(done);
+        Ok((idx, cap))
+    }
+
+    /// Return the column position of `key`, or -1. An index probe (docs/13).
     fn map_find_key(
         &mut self,
         map_val: BasicValueEnum<'ctx>,
@@ -490,42 +827,8 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         key_kind: &Kind,
     ) -> Result<inkwell::values::IntValue<'ctx>, String> {
         let (keys, _, len) = self.map_parts(map_val);
-        let key_bt = self.basic_type_of(key_val);
-        let int = self.backend.types.int;
-        let fnv = self.cur_fn();
-        let header = self.backend.context.append_basic_block(fnv, "find.header");
-        let body = self.backend.context.append_basic_block(fnv, "find.body");
-        let next = self.backend.context.append_basic_block(fnv, "find.next");
-        let found = self.backend.context.append_basic_block(fnv, "find.found");
-        let done = self.backend.context.append_basic_block(fnv, "find.done");
-        let i_ptr = self.backend.builder.build_alloca(int, "find.i").unwrap();
-        let idx_ptr = self.backend.builder.build_alloca(int, "find.idx").unwrap();
-        self.backend.builder.build_store(i_ptr, int.const_zero()).unwrap();
-        self.backend.builder.build_store(idx_ptr, int.const_int(u64::MAX, false)).unwrap();
-        self.backend.builder.build_unconditional_branch(header).unwrap();
-
-        self.backend.builder.position_at_end(header);
-        let i_cur = self.build_load(int.into(), i_ptr, "find.ic").into_int_value();
-        let cond = self.backend.builder.build_int_compare(IntPredicate::SLT, i_cur, len, "find.cond").unwrap();
-        self.backend.builder.build_conditional_branch(cond, body, done).unwrap();
-
-        self.backend.builder.position_at_end(body);
-        let kslot = unsafe { self.backend.builder.build_in_bounds_gep(key_bt, keys, &[i_cur], "find.ks").unwrap() };
-        let kcur = self.backend.builder.build_load(key_bt, kslot, "find.k").unwrap();
-        let eq = self.map_key_eq(kcur, key_val, key_kind)?;
-        self.backend.builder.build_conditional_branch(eq, found, next).unwrap();
-
-        self.backend.builder.position_at_end(next);
-        let i_next = self.backend.builder.build_int_add(i_cur, int.const_int(1, false), "find.in").unwrap();
-        self.backend.builder.build_store(i_ptr, i_next).unwrap();
-        self.backend.builder.build_unconditional_branch(header).unwrap();
-
-        self.backend.builder.position_at_end(found);
-        self.backend.builder.build_store(idx_ptr, i_cur).unwrap();
-        self.backend.builder.build_unconditional_branch(done).unwrap();
-
-        self.backend.builder.position_at_end(done);
-        Ok(self.build_load(int.into(), idx_ptr, "find.ret").into_int_value())
+        let (idx, cap) = self.map_index_parts(map_val);
+        self.map_probe_find_raw(keys, idx, cap, len, key_val, key_kind)
     }
 
     /// Equality of two keys, dispatched on the key kind (docs/12): by value for
@@ -556,7 +859,8 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     }
 
     /// Return a new Map with `key` set to `val`: replace in place when `key`
-    /// already exists, else append (docs/12).
+    /// already exists, else append (docs/12). The hash index is rebuilt for the
+    /// new columns (docs/13-codegen.md § Map representation).
     fn map_insert_value(
         &mut self,
         map_val: BasicValueEnum<'ctx>,
@@ -589,11 +893,8 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         self.backend.builder.build_store(kslot, key_val).unwrap();
         let vslot = unsafe { self.backend.builder.build_in_bounds_gep(val_bt, new_vals, &[slot], "m.vslot").unwrap() };
         self.backend.builder.build_store(vslot, val_val).unwrap();
-        let mut agg = self.backend.types.xz_map.const_zero();
-        agg = self.backend.builder.build_insert_value(agg, new_keys, 0, "m.kp").unwrap().into_struct_value();
-        agg = self.backend.builder.build_insert_value(agg, new_vals, 1, "m.vp").unwrap().into_struct_value();
-        agg = self.backend.builder.build_insert_value(agg, new_len, 2, "m.len").unwrap().into_struct_value();
-        Ok(agg.into())
+        let (new_idx, cap) = self.map_index_build(new_keys, new_len, key_kind)?;
+        Ok(self.map_value(new_keys, new_vals, new_len, new_idx, cap))
     }
 
     /// malloc a map column of `count` elements (at least one byte).

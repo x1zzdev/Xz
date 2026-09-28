@@ -571,6 +571,83 @@ fn map_literal_get_insert_and_iteration_run() {
 }
 
 #[test]
+fn map_int_keys_index_growth_and_replacement_run() {
+    // Int-keyed Map past the initial table size: exercises open-addressing
+    // growth, lookup after grow, in-place value replacement (position kept),
+    // and insertion-order keys (docs/13 § Map representation).
+    expect_output(
+        r#"func main() -> Result[Unit, Err] {
+    mut counts: Map[Int, Int] = {}
+    for i in 0..20 {
+        counts = counts.insert(i, i * i)
+    }
+    print(counts.len().to_str())
+    print(" ")
+    let a = counts.get(7)
+    if a is some {
+        print(a.to_str())
+    } else {
+        print("none")
+    }
+    print(" ")
+    counts = counts.insert(3, 999)
+    let b = counts.get(3)
+    if b is some {
+        print(b.to_str())
+    } else {
+        print("none")
+    }
+    print(" ")
+    for k in counts.keys() {
+        print(k.to_str())
+    }
+    print(" ")
+    let missing = counts.get(100)
+    if missing is none {
+        print("absent")
+    } else {
+        print("bad")
+    }
+    print("\n")
+    ok()
+}"#,
+        "20 49 999 012345678910111213141516171819 absent\n",
+        "Int map hash-index growth and replacement",
+    );
+}
+
+#[test]
+fn map_bool_and_char_keys_run() {
+    // Bool and Char keys take the zero-extend hash path (docs/13 § Map
+    // representation).
+    expect_output(
+        r#"func main() -> Result[Unit, Err] {
+    let flags: Map[Bool, Int] = {true: 1, false: 2}
+    print(flags.len().to_str())
+    print(" ")
+    let t = flags.get(true)
+    if t is some {
+        print(t.to_str())
+    } else {
+        print("none")
+    }
+    print(" ")
+    let grad: Map[Char, Int] = {'a': 10, 'b': 20}
+    let g = grad.get('b')
+    if g is some {
+        print(g.to_str())
+    } else {
+        print("none")
+    }
+    print("\n")
+    ok()
+}"#,
+        "2 1 20\n",
+        "Bool and Char map keys",
+    );
+}
+
+#[test]
 fn string_methods_run() {
     // Str.to_upper / to_lower (new heap buffer), Str.at (bounds-checked
     // Result[Char, IndexError]), and Str.to_bytes (layout identity).
