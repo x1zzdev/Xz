@@ -198,9 +198,9 @@ registry-guarded, so freeing one alias would be a use-after-free. Only a
 | `xs[i]` | bounds-checked: `0 <= i < len` → `ok(element)` else `err(IndexError)` |
 | `xs.append(x)` | malloc `len+1` elements, copy the old buffer, store `x`, return a new List |
 | `for x in xs` | induction `0..len`; load the element at each index |
-| `{k1: v1, ...}` | start from the empty map and `insert` each entry in order |
-| `m.get(k)` | linear key scan (Int/usize/Bool/Char by value, Str via `xz_str_eq`) → `some(value)` / `none` |
-| `m.insert(k, v)` | malloc `len` or `len+1` key and value buffers, copy, replace at the existing slot or append, return a new Map |
+| `{k1: v1, ...}` | allocate the key/value columns and the hash index once, then insert each entry in order (a repeated key keeps its first position with the later value) |
+| `m.get(k)` | hash-index probe (Int/usize/Bool/Char hashed by value, Str by content), linear probing → `some(value)` / `none` |
+| `m.insert(k, v)` | malloc `len` or `len+1` key and value buffers plus a freshly built hash index, copy, replace at the existing slot or append, return a new Map |
 | `m.keys()` / `m.values()` | allocate a `List[K]` / `List[V]` buffer and copy the column, in insertion order |
 | `{e1, e2, ...}` | start from the empty set and `insert` each element in first-insertion order |
 | `s.contains(e)` | linear scan with the same key-equality rule as `Map` (Int/usize/Bool/Char by value, Str via `xz_str_eq`) → `Bool` |
@@ -215,6 +215,18 @@ registry-guarded, so freeing one alias would be a use-after-free. Only a
 | `s.to_upper()` / `s.to_lower()` | host `xz_str_to_upper` / `xz_str_to_lower` (libc `toupper`/`tolower` loop in the native runtime) |
 | `main` body | its block is generated into the `main` `FunctionValue` |
 | `await f(args)` | spawn `f` as a child coroutine, then block on a synthetic completion channel (§ Concurrency) |
+
+### Map representation
+
+A `Map[K, V]` value is five words: the key column, the value column, the entry
+count, a hash-index table, and its capacity. The columns keep entries in
+insertion order; the index is an open-addressing table of column positions used
+only to make `get`/`insert` average O(1). The index is derived data and is never
+observable: iteration, `keys`, and `values` read the columns in order, so no
+hash order leaks into behavior. Because entries are immutable, a copy shares the
+columns and the index; `insert` always builds new buffers and returns a new Map.
+The hash is a fixed function of the key (no per-process seed), so the same
+program lowers to the same index and the same output.
 
 ### `?` early return
 

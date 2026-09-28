@@ -131,7 +131,9 @@ updates. Like `List[T]` it is a value type — assignment, an argument, or a
 return copies it — and its entries are immutable: there is no `m[k] = v`. The
 only way to change a map is the non-mutating `m.insert(k, v)`, which returns a
 *new* map; if `k` is already present its value is replaced in place, keeping the
-key's original position.
+key's original position. Lookup and insertion are average O(1) through an
+internal hash index; that index is never observable and does not change the
+insertion order above.
 
 Keys are restricted to types with decidable equality — `Int`, `usize`, `Bool`,
 `Char`, and `Str`. A missing key is absence, not an error, so lookup returns
