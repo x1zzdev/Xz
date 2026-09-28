@@ -1489,9 +1489,17 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             Expr::Name(n) => n.clone(),
             _ => return self.fail("await target must be a named function"),
         };
-        if self.backend.generic_params.contains_key(&name) {
-            return self.fail("await of a generic function is not supported yet");
-        }
+        // A generic async callee is monomorphized on the concrete argument
+        // types first; the await then targets the specialization (docs/13).
+        let generic = if self.backend.generic_params.contains_key(&name) {
+            Some(self.gen_generic_await_args(&name, args)?)
+        } else {
+            None
+        };
+        let name = match &generic {
+            Some((mangled, _)) => mangled.clone(),
+            None => name,
+        };
         let fv = match self.backend.functions.get(&name).copied() {
             Some(fv) => fv,
             None => return self.fail(&format!("await target '{}' is not a function", name)),
@@ -1502,24 +1510,32 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         };
         let ret_kind = xz_ret.unwrap_or(Kind::Unit);
 
-        // Evaluate arguments with the callee's declared types as hints (an
-        // empty `[]`/`none` argument materializes its type from the parameter).
         let env_ty = self.backend.context.struct_type(&params, false);
         let env = self.backend.builder.build_alloca(env_ty, "await.env").unwrap();
-        let mut vals: Vec<BasicValueEnum<'ctx>> = Vec::with_capacity(args.len());
-        for (i, a) in args.iter().enumerate() {
-            let hint = param_kinds.get(i).cloned();
-            let saved_list_hint = self.list_hint.clone();
-            let saved_none_hint = self.none_hint.clone();
-            let saved_set_hint = self.set_hint.clone();
-            self.list_hint = hint.clone();
-            self.none_hint = hint.clone();
-            self.set_hint = hint;
-            vals.push(self.gen_expr(a)?);
-            self.list_hint = saved_list_hint;
-            self.none_hint = saved_none_hint;
-            self.set_hint = saved_set_hint;
-        }
+        // A generic callee's arguments were evaluated to infer its type
+        // arguments already; a concrete callee's are evaluated here with its
+        // declared types as hints (an empty `[]`/`none` argument materializes
+        // its type from the parameter).
+        let vals: Vec<BasicValueEnum<'ctx>> = match generic {
+            Some((_, vals)) => vals,
+            None => {
+                let mut vals: Vec<BasicValueEnum<'ctx>> = Vec::with_capacity(args.len());
+                for (i, a) in args.iter().enumerate() {
+                    let hint = param_kinds.get(i).cloned();
+                    let saved_list_hint = self.list_hint.clone();
+                    let saved_none_hint = self.none_hint.clone();
+                    let saved_set_hint = self.set_hint.clone();
+                    self.list_hint = hint.clone();
+                    self.none_hint = hint.clone();
+                    self.set_hint = hint;
+                    vals.push(self.gen_expr(a)?);
+                    self.list_hint = saved_list_hint;
+                    self.none_hint = saved_none_hint;
+                    self.set_hint = saved_set_hint;
+                }
+                vals
+            }
+        };
         for (i, v) in vals.iter().enumerate() {
             let p = self.backend.builder.build_struct_gep(env_ty, env, i as u32, "await.arg").unwrap();
             self.backend.builder.build_store(p, *v).unwrap();
@@ -2187,7 +2203,6 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             .get(name)
             .cloned()
             .ok_or_else(|| format!("missing AST for generic function '{}'", name))?;
-        let tparams = self.backend.generic_params.get(name).cloned().unwrap_or_default();
         let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> = Vec::with_capacity(args.len());
         let mut val_tys: Vec<BasicTypeEnum<'ctx>> = Vec::with_capacity(args.len());
         for (i, a) in args.iter().enumerate() {
@@ -2203,6 +2218,62 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 call_args.push(v.into());
             }
         }
+        let type_args = self.infer_type_args(name, &val_tys)?;
+        let mangled = self.backend.specialize(name, &type_args)?;
+        let fv = self.backend.functions.get(&mangled).copied().ok_or("specialization not declared")?;
+        let call = self.backend.builder.build_direct_call(fv, &call_args, "call").unwrap();
+        match call.try_as_basic_value().basic() {
+            Some(v) => Ok(v),
+            None => Ok(self.backend.types.unit.const_zero().into()),
+        }
+    }
+
+    /// Evaluate a generic async call's arguments, infer the callee's type
+    /// arguments from their concrete LLVM types, and request the
+    /// specialization. Returns the mangled callee name and the evaluated
+    /// argument values (a `mut` argument crosses as an address, like a plain
+    /// call). The values are reused for the await trampoline's argument struct.
+    fn gen_generic_await_args(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+    ) -> Result<(String, Vec<BasicValueEnum<'ctx>>), String> {
+        let f = self
+            .backend
+            .func_asts
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("missing AST for generic function '{}'", name))?;
+        let mut vals: Vec<BasicValueEnum<'ctx>> = Vec::with_capacity(args.len());
+        let mut val_tys: Vec<BasicTypeEnum<'ctx>> = Vec::with_capacity(args.len());
+        for (i, a) in args.iter().enumerate() {
+            if f.params.get(i).map(|p| p.mutable).unwrap_or(false) {
+                let (ptr, vty) = self.gen_mut_arg(a)?;
+                vals.push(ptr.into());
+                val_tys.push(vty);
+            } else {
+                let v = self.gen_expr(a)?;
+                val_tys.push(self.basic_type_of(v));
+                vals.push(v);
+            }
+        }
+        let type_args = self.infer_type_args(name, &val_tys)?;
+        let mangled = self.backend.specialize(name, &type_args)?;
+        Ok((mangled, vals))
+    }
+
+    /// Infer a generic function's type arguments from the concrete LLVM types
+    /// of a call's arguments. Only a parameter that *is* a bare type parameter
+    /// (`x: T`) contributes a binding; a `List[T]`-style parameter needs
+    /// structural inference and is rejected with a clear message.
+    fn infer_type_args(&mut self, name: &str, val_tys: &[BasicTypeEnum<'ctx>]) -> Result<Vec<Kind>, String> {
+        let f = self
+            .backend
+            .func_asts
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("missing AST for generic function '{}'", name))?;
+        let tparams = self.backend.generic_params.get(name).cloned().unwrap_or_default();
         let mut bound: Vec<Option<Kind>> = vec![None; tparams.len()];
         for (i, p) in f.params.iter().enumerate() {
             if i >= val_tys.len() {
@@ -2220,19 +2291,14 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             }
         }
         if let Some(missing) = bound.iter().position(|b| b.is_none()) {
-            return self.fail(&format!(
+            let msg = format!(
                 "cannot infer type parameter '{}' for call to '{}' (only parameters that are a bare type parameter are supported)",
                 tparams[missing], name
-            ));
+            );
+            self.backend.fail(&msg);
+            return Err(msg);
         }
-        let type_args: Vec<Kind> = bound.into_iter().map(|b| b.unwrap()).collect();
-        let mangled = self.backend.specialize(name, &type_args)?;
-        let fv = self.backend.functions.get(&mangled).copied().ok_or("specialization not declared")?;
-        let call = self.backend.builder.build_direct_call(fv, &call_args, "call").unwrap();
-        match call.try_as_basic_value().basic() {
-            Some(v) => Ok(v),
-            None => Ok(self.backend.types.unit.const_zero().into()),
-        }
+        Ok(bound.into_iter().map(|b| b.unwrap()).collect())
     }
 
     fn gen_enum_ctor(

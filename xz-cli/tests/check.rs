@@ -1185,20 +1185,16 @@ func main() {
 }
 
 #[test]
-fn await_of_generic_async_rejected() {
-    let err = typecheck_error(
+fn await_of_generic_async_accepted() {
+    assert!(typechecks(
         r#"async func id[T](x: T) -> T {
     x
 }
 
 func main() {
     let r = await id(1)
-}"#,
-    );
-    match err {
-        Some(e) => assert!(e.contains("generic function"), "unexpected error: {}", e),
-        None => panic!("await of a generic async function accepted"),
-    }
+}"#
+    ));
 }
 
 #[test]

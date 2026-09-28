@@ -1260,6 +1260,43 @@ func main() -> Result[Unit, Err] {
 }
 
 #[test]
+fn await_of_generic_async_runs() -> Result<(), String> {
+    // `await f(args)` where `f` is generic monomorphizes the async callee on
+    // the concrete argument types and awaits the specialization instead of
+    // failing in codegen (docs/13).
+    let src = r#"/// Returns its argument unchanged.
+/// @intent  Returns x.
+/// @effects none
+async func id[T](x: T) -> T {
+    x
+}
+
+/// Awaits a generic callee with an Int and a Str.
+/// @intent  Prints the identity of an Int and a Str.
+/// @effects io
+func main() {
+    let a = await id(7)
+    print(a.to_str())
+    print("\n")
+    let b = await id("hi")
+    print(b)
+    print("\n")
+}"#;
+    let tokens = lex(src.to_string(), "await_generic.xz".to_string()).map_err(|e| e.message)?;
+    let program = parse(tokens).map_err(|e| e.message)?;
+    resolve(&program).map_err(|_| "resolve failed".to_string())?;
+    typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
+    check_intent(&program).map_err(|e| e[0].code.clone())?;
+    let backend = compile(&program)?;
+    let ir = backend.module.print_to_string().to_string();
+    assert!(ir.contains("define internal void @__await_"), "await needs a trampoline:\n{}", ir);
+    assert!(ir.contains("id$i") && ir.contains("id$s"), "generic await must monomorphize the callee:\n{}", ir);
+    let (_code, out) = run_capturing(backend.module)?;
+    assert_eq!(out, "7\nhi\n", "generic await output must be deterministic");
+    Ok(())
+}
+
+#[test]
 fn deterministic_tasks_and_channels_run() -> Result<(), String> {
     // Phase 6: `task` bodies are spawned by `main` in source order, and
     // `send`/`recv` move typed values through the deterministic scheduler
