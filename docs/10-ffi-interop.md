@@ -223,10 +223,15 @@ convention. The callee still uses copy-in/copy-out internally
 a C caller passes the address of the value it wants updated.
 
 The header also states the ownership convention in a preamble: a parameter is
-borrowed for the call, and a returned pointer is retained by the library. An
-`@export` function cannot use `transfer` (a foreign `extern func` modifier
-only), so ownership never varies across exports and no per-symbol annotation
-is needed.
+borrowed for the call, and a returned pointer is retained by the library. The
+export boundary is **borrow-only by decision**, not by omission: an `@export`
+function cannot use `transfer` in either direction (a foreign `extern func`
+modifier only), so ownership never varies across exports and no per-symbol
+annotation is needed. A C caller already owns the buffers it passes and holds
+the deallocator to free them, so accepting ownership inward would add no
+capability while the callee cannot know the caller's allocator; such a model
+would first need a `release <symbol>` clause on the parameter, symmetric to the
+`transfer` return, naming a `(Ptr) -> Unit` deallocator.
 
 `Str`/`Bytes` cross as the two-field `XzStr`/`XzBytes` structs (pointer +
 length, no NUL guarantee); `Ptr` is `void*`. The `.so` carries the same libc

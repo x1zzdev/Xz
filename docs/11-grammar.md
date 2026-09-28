@@ -240,7 +240,9 @@ The grammar alone is not the whole contract. The compiler also enforces:
   C-representable signature may be exported: every parameter and the return
   type must be a primitive (`Bool`/`Int`/`usize`/`Float`/`Char`/`Str`/
   `Bytes`/`Ptr`), a `@cstruct record`, or `Unit` (return only). `main` may not
-  be exported.
+  be exported. The boundary is borrow-only: an exported function borrows its
+  parameters and retains its returns, so it may not declare a `transfer`
+  parameter ([10-ffi-interop.md](10-ffi-interop.md)).
 - **Await context** — `await e` is legal only in a body that can suspend: an
   `async func`, `main`, or a `task`. `e` must be a call to a named `async`
   function ([05-concurrency.md](05-concurrency.md), [13-codegen.md](13-codegen.md)).
