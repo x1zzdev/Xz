@@ -34,6 +34,13 @@ async func pair(x: Int) -> Int {
     a + b
 }
 
+/// Returns its argument unchanged.
+/// @intent  Returns x.
+/// @effects none
+async func id[T](x: T) -> T {
+    x
+}
+
 /// Prints one log line.
 /// @intent  Prints the received message.
 /// @effects io, chan
@@ -48,5 +55,7 @@ func main() -> Result[Unit, Err] {
     print("pair: " + p.to_str() + "\n")
     let t = await triple(7)?
     print("triple: " + t.to_str() + "\n")
+    let g = await id("generic")
+    print("id: " + g + "\n")
     ok()
 }
