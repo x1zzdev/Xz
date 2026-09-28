@@ -1596,3 +1596,67 @@ func main() -> Result[Unit, Err] {
     assert_eq!(out, "1 3 ab 12 has-x 3 xy 9 tag\n");
     Ok(())
 }
+
+/// The portable `llc`/`ld`/crt toolchain the native build hardcodes. Absent on
+/// hosts without the LLVM 17 install, in which case the link test is skipped.
+fn native_toolchain_available() -> bool {
+    let llc = std::env::var("LLC").unwrap_or_else(|_| {
+        "/home/x1zz/.local/share/xz-llvm17/debroot/usr/lib/llvm-17/bin/llc".to_string()
+    });
+    std::path::Path::new(&llc).exists()
+        && std::path::Path::new("/usr/lib/x86_64-linux-gnu/crt1.o").exists()
+        && std::path::Path::new("/lib64/ld-linux-x86-64.so.2").exists()
+}
+
+#[test]
+fn native_build_links_and_runs_read_file() {
+    // `native_runtime_emits_valid_module` only verifies the IR. This drives the
+    // real `xz build-native` path (llc -> ld -> executable) and runs the result,
+    // so a broken `xz_read_file` runtime body or a missing libc symbol fails
+    // here rather than at first use.
+    if !native_toolchain_available() {
+        eprintln!("skipping native link test: llc/ld/crt toolchain not available");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("xz_native_test_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    std::fs::write(dir.join("data.txt"), "hello native\n").expect("write data file");
+    std::fs::write(
+        dir.join("prog.xz"),
+        r#"/// Reads a text file and prints its contents.
+/// @intent  Reads the file at `path` and prints it.
+/// @effects io
+func show(path: Str) -> Result[Unit, Err] {
+    let contents = read_file(path)?
+    print(contents)
+    ok()
+}
+
+func main() -> Result[Unit, Err] {
+    show("data.txt")?
+    ok()
+}"#,
+    )
+    .expect("write program");
+
+    let build = std::process::Command::new(env!("CARGO_BIN_EXE_xz"))
+        .arg("build-native")
+        .arg("prog.xz")
+        .current_dir(&dir)
+        .output()
+        .expect("run xz build-native");
+    assert!(
+        build.status.success(),
+        "xz build-native failed: {}",
+        String::from_utf8_lossy(&build.stdout)
+    );
+
+    let out = std::process::Command::new(dir.join("xz_program"))
+        .current_dir(&dir)
+        .output()
+        .expect("run native binary");
+    assert!(out.status.success(), "native binary exited with {}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello native\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
