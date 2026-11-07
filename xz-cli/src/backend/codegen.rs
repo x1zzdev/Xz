@@ -1277,9 +1277,11 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         Ok(self.build_load(int.into(), idx_ptr, "sfind.ret").into_int_value())
     }
 
-    /// Return a new Set with `element` added: when already present the same
-    /// elements stay in the same positions; otherwise malloc `len+1`, copy the
-    /// old buffer, and store the element at the end (docs/12).
+    /// Return a new Set with `element` added. When the element is already
+    /// present the receiver is returned unchanged — a no-op insert allocates
+    /// nothing and copies nothing, since the elements and their positions are
+    /// identical (docs/12). Otherwise malloc `len+1`, copy the old buffer, and
+    /// store the element at the end.
     fn set_insert_value(
         &mut self,
         set_val: BasicValueEnum<'ctx>,
@@ -1288,25 +1290,33 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     ) -> GenResult<'ctx> {
         let (buf, len) = self.str_parts(set_val);
         let idx = self.set_find(set_val, elem_val, elem_kind)?;
+        let int = self.backend.types.int;
+        let found = self.backend.builder.build_int_compare(IntPredicate::SGE, idx, int.const_zero(), "s.found").unwrap();
+        let fnv = self.cur_fn();
+        let head = self.backend.builder.get_insert_block().unwrap();
+        let append = self.backend.context.append_basic_block(fnv, "s.append");
+        let done = self.backend.context.append_basic_block(fnv, "s.done");
+        self.backend.builder.build_conditional_branch(found, done, append).unwrap();
+
+        self.backend.builder.position_at_end(append);
         let elem_bt = self.basic_type_of(elem_val);
         let elem_size = self.abi_size(elem_bt);
-        let int = self.backend.types.int;
-        let zero = int.const_zero();
-        let one = int.const_int(1, false);
-        let found = self.backend.builder.build_int_compare(IntPredicate::SGE, idx, zero, "s.found").unwrap();
-        let grow = self.backend.builder.build_select(found, zero, one, "s.grow").unwrap().into_int_value();
-        let new_len = self.backend.builder.build_int_add(len, grow, "s.newlen").unwrap();
+        let new_len = self.backend.builder.build_int_add(len, int.const_int(1, false), "s.newlen").unwrap();
         let new_buf = self.alloc_map_column(elem_size, new_len, "s.buf")?;
         let old_bytes = self.backend.builder.build_int_mul(len, int.const_int(elem_size, false), "s.bytes").unwrap();
         let _ = self.backend.builder.build_memcpy(new_buf, 1, buf, 1, old_bytes).unwrap();
-        // Store at the existing slot when found, else at the end.
-        let slot = self.backend.builder.build_select(found, idx, len, "s.slot").unwrap().into_int_value();
-        let eslot = unsafe { self.backend.builder.build_in_bounds_gep(elem_bt, new_buf, &[slot], "s.eslot").unwrap() };
+        let eslot = unsafe { self.backend.builder.build_in_bounds_gep(elem_bt, new_buf, &[len], "s.eslot").unwrap() };
         self.backend.builder.build_store(eslot, elem_val).unwrap();
         let mut agg = self.backend.types.xz_list.const_zero();
         agg = self.backend.builder.build_insert_value(agg, new_buf, 0, "s.bp").unwrap().into_struct_value();
         agg = self.backend.builder.build_insert_value(agg, new_len, 1, "s.len").unwrap().into_struct_value();
-        Ok(agg.into())
+        let appended: BasicValueEnum<'ctx> = agg.into();
+        self.backend.builder.build_unconditional_branch(done).unwrap();
+
+        self.backend.builder.position_at_end(done);
+        let phi = self.backend.builder.build_phi(self.backend.types.xz_list, "s.phi").unwrap();
+        phi.add_incoming(&[(&set_val, head), (&appended, append)]);
+        Ok(phi.as_basic_value())
     }
 
     /// `s.contains(e) -> Bool`: membership by linear scan.

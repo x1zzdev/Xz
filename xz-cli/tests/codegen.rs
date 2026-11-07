@@ -1632,6 +1632,30 @@ fn set_literal_insert_contains_and_iteration_run() {
 }
 
 #[test]
+fn set_insert_noop_returns_receiver_without_copy() -> Result<(), String> {
+    // `insert` of a present element must be a no-op that returns the receiver
+    // unchanged, so the O(n) buffer copy is skipped (docs/12). The lowering
+    // guards the append (malloc + memcpy) behind the find result and selects
+    // the receiver through a phi.
+    let src = r#"func main() {
+    let tags: Set[Str] = {"a"}
+    let again = tags.insert("a")
+    print(again.len().to_str())
+}"#;
+    let tokens = lex(src.to_string(), "set_noop.xz".to_string()).map_err(|e| e.message)?;
+    let program = parse(tokens).map_err(|e| e.message)?;
+    resolve(&program).map_err(|_| "resolve failed".to_string())?;
+    typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
+    check_intent(&program).map_err(|e| e[0].code.clone())?;
+    let backend = compile(&program)?;
+    let ir = backend.module.print_to_string().to_string();
+    assert!(ir.contains("br i1 %s.found"), "the append must be guarded by the find result:\n{}", ir);
+    assert!(ir.contains("s.append:"), "the guarded append block must exist:\n{}", ir);
+    assert!(ir.contains("s.phi = phi { ptr, i64 }"), "the no-op path must select the receiver through a phi:\n{}", ir);
+    Ok(())
+}
+
+#[test]
 fn empty_brace_takes_set_type_from_call_parameter() {
     // An empty `{}` takes its collection type from the expected type, not only
     // a binding's declared type: as a call argument it must materialize as a

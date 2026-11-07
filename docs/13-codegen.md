@@ -204,7 +204,7 @@ registry-guarded, so freeing one alias would be a use-after-free. Only a
 | `m.keys()` / `m.values()` | allocate a `List[K]` / `List[V]` buffer and copy the column, in insertion order |
 | `{e1, e2, ...}` | start from the empty set and `insert` each element in first-insertion order |
 | `s.contains(e)` | linear scan with the same key-equality rule as `Map` (Int/usize/Bool/Char by value, Str via `xz_str_eq`) → `Bool` |
-| `s.insert(e)` | malloc `len` or `len+1` elements, copy, append when absent, return a new Set |
+| `s.insert(e)` | present: return the receiver unchanged (no allocation or copy); absent: malloc `len+1` elements, copy, append, return a new Set |
 | `for e in s` | the `List` induction lowering over the element buffer, in insertion order |
 | enum construction | allocate a heap box, store the variant's fields, build `{ box, tag }` |
 | function call | `build_direct_call` with the target's `FunctionValue` |
