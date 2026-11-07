@@ -1634,3 +1634,39 @@ func main() -> Result[Unit, Err] {
 }"#
     ));
 }
+
+#[test]
+fn error_record_message_is_typed() {
+    // docs/03, docs/06: `err(e)` binds the error record; `e.message` is the
+    // observable `Str` payload.
+    assert!(typechecks(
+        r#"func fail() -> Result[Int, Err] {
+    err(DomainError("boom"))
+}
+
+func main() {
+    match fail() {
+        ok(v) -> print(v.to_str())
+        err(e) -> print(e.message)
+    }
+}"#
+    ));
+    // Any other field on an error record is rejected.
+    let e = typecheck_error(
+        r#"func fail() -> Result[Int, Err] {
+    err(DomainError("boom"))
+}
+
+func main() {
+    match fail() {
+        ok(v) -> print(v.to_str())
+        err(e) -> print(e.nope)
+    }
+}"#,
+    );
+    assert!(
+        e.as_deref().is_some_and(|m| m.contains("error record has no field 'nope'")),
+        "expected an unknown-field error, got {:?}",
+        e
+    );
+}

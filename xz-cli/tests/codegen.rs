@@ -186,6 +186,55 @@ func main() {
 }
 
 #[test]
+fn error_message_is_observable() {
+    // docs/03, docs/06: the `err(e)` arm binds the error record, whose
+    // `.message` is the Str payload carried in the Result's error slot.
+    expect_output(
+        r#"/// Always fails with a message.
+/// @intent  Returns a DomainError carrying "negative input".
+/// @effects none
+func fail() -> Result[Int, Err] {
+    err(DomainError("negative input"))
+}
+
+/// @intent  Prints the error message.
+/// @effects none
+func main() {
+    match fail() {
+        ok(v) -> print(v.to_str())
+        err(e) -> print("err: " + e.message)
+    }
+}"#,
+        "err: negative input",
+        "error message",
+    );
+}
+
+#[test]
+fn read_file_error_message_is_observable() {
+    // docs/12, docs/13: read_file's IoError carries the OS reason, published
+    // through `err_out` by the host. The exact text is OS-dependent, so assert
+    // the message is present and non-empty rather than pinning it.
+    let out = exec_capture(
+        r#"/// @effects io
+func main() {
+    let r = read_file("/no/such/path/definitely-missing")
+    match r {
+        ok(_) -> print("unexpected ok")
+        err(e) -> print("err: " + e.message)
+    }
+}"#,
+    );
+    match out {
+        Ok(s) => {
+            assert!(s.starts_with("err: "), "expected an error message, got {:?}", s);
+            assert!(s.len() > "err: ".len(), "expected a non-empty message, got {:?}", s);
+        }
+        Err(e) => panic!("read_file error program failed: {}", e),
+    }
+}
+
+#[test]
 fn question_mark_early_return_runs() {
     expect_exec(
         r#"/// Always fails.

@@ -39,6 +39,11 @@ pub struct TypeMap<'ctx> {
     pub char: inkwell::types::IntType<'ctx>,
     pub xz_str: StructType<'ctx>,
     pub xz_bytes: StructType<'ctx>,
+    /// The runtime shape of every Xz error type: an error record
+    /// `{ message: Str }` (docs/03-type-system.md, docs/13-codegen.md). `Err`
+    /// and error unions share this shape; the specific type is a compile-time
+    /// concern, so the payload is a single message string.
+    pub xz_error: StructType<'ctx>,
     pub xz_list: StructType<'ctx>,
     pub xz_map: StructType<'ctx>,
     pub xz_set: StructType<'ctx>,
@@ -53,6 +58,8 @@ impl<'ctx> TypeMap<'ctx> {
         let unit = context.struct_type(&[], false);
         let xz_str = context.struct_type(&[ptr.into(), i64.into()], false);
         let xz_bytes = context.struct_type(&[ptr.into(), i64.into()], false);
+        // An error record is exactly `{ message: Str }` (docs/03-type-system.md).
+        let xz_error = context.struct_type(&[xz_str.into()], false);
         let xz_list = context.struct_type(&[ptr.into(), i64.into()], false);
         // Map[K, V] is five words: a key buffer, a value buffer, the entry
         // count, an open-addressing hash-index table (column positions), and the
@@ -72,6 +79,7 @@ impl<'ctx> TypeMap<'ctx> {
             char: i8,
             xz_str,
             xz_bytes,
+            xz_error,
             xz_list,
             xz_map,
             xz_set,
@@ -203,9 +211,23 @@ impl<'ctx> LlvmBackend<'ctx> {
             Kind::Instant | Kind::Timestamp | Kind::Duration => self.types.int.into(),
             Kind::Record(name) => self.record_types.get(name).copied().unwrap_or(self.types.unit).into(),
             Kind::Enum(name) => self.enum_struct(name).into(),
-            Kind::Option(t) | Kind::Result(t, _) => {
+            Kind::Option(t) => {
                 let payload = self.kind_to_llvm(t);
                 self.context.struct_type(&[payload.into(), self.types.bool.into()], false).into()
+            }
+            // `Result[T, E]` is `{ T, { message: Str }, i1 }`: the ok payload,
+            // the error payload, and the ok-flag. Every error type lowers to
+            // the same `{ message: Str }` record, so the message is observable
+            // on the error path and every `Result` shares one error-field type
+            // (docs/03, docs/06, docs/13).
+            Kind::Result(t, _) => {
+                let payload = self.kind_to_llvm(t);
+                self.context
+                    .struct_type(
+                        &[payload.into(), self.types.xz_error.into(), self.types.bool.into()],
+                        false,
+                    )
+                    .into()
             }
             // List[T] is { ptr, i64 } regardless of T: elements live in a
             // separately allocated buffer (opaque pointers erase T in IR).
@@ -217,7 +239,9 @@ impl<'ctx> LlvmBackend<'ctx> {
             // a separately allocated buffer with an open-addressing hash index
             // over buffer positions (opaque pointers erase T).
             Kind::Set(_) => self.types.xz_set.into(),
-            Kind::Err | Kind::ErrUnion(_) => self.types.unit.into(),
+            // Every error type has the error-record shape `{ message: Str }`;
+            // the specific type is erased at runtime (docs/03, docs/06).
+            Kind::Err | Kind::ErrUnion(_) => self.types.xz_error.into(),
             // A channel name lowers to its integer id; `send`/`recv` pass the id
             // to the scheduler runtime (docs/13-codegen.md § Concurrency).
             Kind::Chan(_) => self.types.int.into(),
@@ -510,9 +534,17 @@ pub fn kind_from_llvm(backend: &LlvmBackend<'_>, t: BasicTypeEnum<'_>) -> Kind {
         BasicTypeEnum::StructType(st) => {
             if st == backend.types.xz_str {
                 Kind::Str
+            } else if st.count_fields() == 3
+                && st.get_field_type_at_index(1) == Some(backend.types.xz_error.into())
+                && st.get_field_type_at_index(2) == Some(backend.types.bool.into())
+            {
+                let payload = st.get_field_type_at_index(0).unwrap();
+                Kind::Result(Box::new(kind_from_llvm(backend, payload)), Box::new(Kind::Err))
             } else if st.count_fields() == 2 && st.get_field_type_at_index(1) == Some(backend.types.bool.into()) {
                 let payload = st.get_field_type_at_index(0).unwrap();
                 Kind::Option(Box::new(kind_from_llvm(backend, payload)))
+            } else if st == backend.types.xz_error {
+                Kind::Err
             } else if st.count_fields() == 0 {
                 Kind::Unit
             } else {
@@ -728,10 +760,15 @@ fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>,
         backend.declare_extern("xz_str_to_lower", &[ptr.into(), i64.into()], Some(xstr.into()));
         // Str key equality for Map[Str, V] lookup/insert (JIT host in runtime.rs).
         backend.declare_extern("xz_str_eq", &[ptr.into(), i64.into(), ptr.into(), i64.into()], Some(i1.into()));
-        // read_file(path_ptr, path_len, out) -> i1: reads the file and writes a
-        // fresh {ptr,len} Str payload through `out` (JIT host in runtime.rs;
-        // native body in emit_native_runtime). See docs/13-codegen.md.
-        backend.declare_extern("xz_read_file", &[ptr.into(), i64.into(), ptr.into()], Some(i1.into()));
+        // read_file(path_ptr, path_len, out, err_out) -> i1: reads the file and
+        // writes a fresh {ptr,len} Str payload through `out`; on failure writes
+        // the OS error message as a {ptr,len} Str through `err_out` (JIT host in
+        // runtime.rs; native body in emit_native_runtime). See docs/13-codegen.md.
+        backend.declare_extern(
+            "xz_read_file",
+            &[ptr.into(), i64.into(), ptr.into(), ptr.into()],
+            Some(i1.into()),
+        );
         // now() / monotonic() -> i64 nanoseconds. JIT host in runtime.rs; native
         // body (gettimeofday / clock_gettime) in emit_native_runtime.
         backend.declare_extern("xz_time_now", &[], Some(i64.into()));
@@ -1233,10 +1270,15 @@ pub fn emit_native_runtime(backend: &mut LlvmBackend<'static>) -> Result<(), Str
             None,
         );
         let fclose = backend.module.add_function("fclose", i32.fn_type(&[ptr.into()], false), None);
+        // On failure, report the OS reason through `err_out` via strerror(errno).
+        let strerror = backend.module.add_function("strerror", ptr.fn_type(&[i32.into()], false), None);
+        let strlen = backend.module.add_function("strlen", i64.fn_type(&[ptr.into()], false), None);
+        let errno_loc = backend.module.add_function("__errno_location", ptr.fn_type(&[], false), None);
 
         let path_ptr = f.get_nth_param(0).unwrap().into_pointer_value();
         let path_len = f.get_nth_param(1).unwrap().into_int_value();
         let out = f.get_nth_param(2).unwrap().into_pointer_value();
+        let err_out = f.get_nth_param(3).unwrap().into_pointer_value();
 
         let entry = backend.context.append_basic_block(f, "entry");
         let open_bb = backend.context.append_basic_block(f, "open");
@@ -1316,6 +1358,36 @@ pub fn emit_native_runtime(backend: &mut LlvmBackend<'static>) -> Result<(), Str
         backend.builder.build_unconditional_branch(ret_bb).unwrap();
 
         backend.builder.position_at_end(fail_bb);
+        // errno was set by the failed fopen; strerror gives the OS message.
+        let ep = backend
+            .builder
+            .build_direct_call(errno_loc, &[], "errno.loc")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        let ev = backend.builder.build_load(i32, ep, "errno").unwrap();
+        let msg = backend
+            .builder
+            .build_direct_call(strerror, &[ev.into()], "strerror")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        let mlen = backend
+            .builder
+            .build_direct_call(strlen, &[msg.into()], "strlen")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value();
+        let eptr = backend.builder.build_struct_gep(backend.types.xz_str, err_out, 0, "err.ptr").unwrap();
+        backend.builder.build_store(eptr, msg).unwrap();
+        let elen = backend.builder.build_struct_gep(backend.types.xz_str, err_out, 1, "err.len").unwrap();
+        backend.builder.build_store(elen, mlen).unwrap();
         backend.builder.build_unconditional_branch(ret_bb).unwrap();
 
         backend.builder.position_at_end(ret_bb);

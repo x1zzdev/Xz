@@ -18,7 +18,7 @@ cargo run -- run ../examples/ffi.xz         # capacity: 16
 cargo run -- run ../examples/lists.xz       # sum/grown/first/empty first
 cargo run -- run ../examples/maps.xz        # entries: 2 / ada: 40 / ...
 cargo run -- run ../examples/sets.xz        # tags: 2 / admin: true / order: admin ops dev
-cargo run -- run ../examples/io.xz          # Xz file I/O / len: 12 / missing: err
+cargo run -- run ../examples/io.xz          # Xz file I/O / len: 12 / missing: <OS error text>
 cargo run -- run ../examples/time.xz        # sum / elapsed / now
 cargo run -- run ../examples/shared_lib.xz  # 42
 cargo run -- run ../examples/concurrency.xz # job 0: ITEM0 ...
@@ -36,7 +36,7 @@ cargo run -- build --shared ../examples/shared_lib.xz  # libXz.so + libXz.h
 | `lists.xz` | `List[T]` literals, bounds-checked `xs[i]`, `append`, `for x in xs` |
 | `maps.xz` | `Map[K, V]` literals, `Option` lookup, non-mutating `insert`, insertion-order `keys`/`values` |
 | `sets.xz` | `Set[T]` literals, `contains`, non-mutating `insert`, insertion-order iteration |
-| `io.xz` | `read_file` returning `Result[Str, IoError]`, `?`, and the `err` path (`io_input.txt` is the input) |
+| `io.xz` | `read_file` returning `Result[Str, IoError]`, `?`, and the `err` path reading `e.message` (the OS error text; `io_input.txt` is the input) |
 | `time.xz` | `monotonic()`/`now()` typed readings, `Instant`/`Timestamp` subtraction into a `Duration`, and the `seconds`/`millis`/`nanos`/`to_str` accessors |
 | `shared_lib.xz` | `@export` library surface, `@cstruct` argument, `xz build --shared` |
 

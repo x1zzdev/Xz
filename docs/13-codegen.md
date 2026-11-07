@@ -51,8 +51,8 @@ what `xz build` (native output, Phase 5) will reuse.
 | `record` | an LLVM `struct` of the field types, in declaration order |
 | `@cstruct record` | same lowering — LLVM structs already use the C ABI layout (declaration order, natural alignment); the attribute additionally restricts field types at the front end ([10-ffi-interop.md](10-ffi-interop.md)) |
 | `enum` | `struct { i8*, i32 }` where the `i32` is the **tag** and the `i8*` is a **boxed heap pointer** to a struct of the active variant's fields (see [Notes](14-codegen-notes.md)) |
-| `Result[T, E]` | `struct { T, i1 }` — a *payload + ok-flag* (no heap; the error payload is unused by the runtime) |
-| `Option[T]` | `struct { T, i1 }` — same shape as `Result` |
+| `Result[T, E]` | `struct { T, E, i1 }` — the ok payload, the error payload, and the ok-flag. Every error type lowers to the same `{ message: Str }` record, so the error message is observable on the error path (docs/03, docs/06) |
+| `Option[T]` | `struct { T, i1 }` — payload + some-flag |
 | `List[T]` | `struct { T*, i64 }` — pointer to an element buffer + element count; elements are immutable, so the buffer is shared by copies |
 | `Map[K, V]` | `struct { K*, V*, i64 }` — key and value buffers + entry count; entries are immutable, so both buffers are shared by copies |
 | `Set[T]` | `struct { T*, i64 }` — pointer to an element buffer + element count, the same shape as `List[T]`; elements are immutable, so the buffer is shared by copies |
@@ -100,7 +100,7 @@ system linker.
 | `xz_str_to_upper` / `xz_str_to_lower` | `fn(i8*, i64) -> XzStr` | `Str.to_upper()` / `to_lower()` — a fresh byte buffer |
 | `xz_bool_to_str` | `fn(i1) -> XzStr` | `Bool.to_str()` |
 | `xz_str_eq` | `fn(i8*, i64, i8*, i64) -> i1` | `Map` key / `Set` element equality for `Str` values |
-| `xz_read_file` | `fn(i8*, i64, ptr) -> i1` | `read_file(path: Str)` — reads the file at the byte path and writes a fresh `{ptr, len}` payload through `out`, returning 1; 0 on any failure |
+| `xz_read_file` | `fn(i8*, i64, ptr, ptr) -> i1` | `read_file(path: Str)` — reads the file at the byte path and writes a fresh `{ptr, len}` payload through `out`, returning 1; on failure writes the OS error message (strerror on the native path) through `err_out` and returns 0 |
 | `xz_time_now` / `xz_time_monotonic` | `fn() -> i64` | `now()` / `monotonic()` — wall-clock nanoseconds since the Unix epoch / non-decreasing nanoseconds from the host monotonic clock (`CLOCK_MONOTONIC`, system boot), both as i64 nanoseconds |
 | `xz_str_free` | `fn(i8*, i64) -> ()` | frees a heap Str buffer (registry-guarded) |
 
@@ -187,11 +187,12 @@ registry-guarded, so freeing one alias would be a use-after-free. Only a
 | `loop { ... }` | header/body/after blocks; `break` → after, `continue` → header |
 | `for i in n { ... }` | Phase 4 range `0..n` (n Int, exclusive): induction variable `i`, header compare `i < n`, increment block; `break`/`continue` target after/incr |
 | `match` | branch on a tag (enum) or the ok-flag (Result/Option); the `match` value is a `phi` of arm values |
-| `ok(v)` / `err(e)` | struct `{ v, 1 }` / `{ zero, 0 }` |
+| `ok(v)` / `err(e)` | `{ v, zero, 1 }` / `{ zero, e, 0 }` — `e` is the error record `{ message: Str }` |
 | `none` | a zero of the declared `Option[T]` struct (the binding's type is the payload's source) |
-| `expr?` | branch on the ok-flag; on err, return a zero aggregate (early return) |
+| `expr?` | branch on the ok-flag; on err, early-return the enclosing `Result` carrying the callee's error record (docs/06) |
 | `x is some` / `x is ok` in `if` | flow typing: the branch narrows `x` to a pointer at its payload field, matching the type checker |
-| `x.value` under `is ok` | `extract_value` the payload |
+| `match ok(v)` / `match err(e)` | `ok`/`some` binds the ok payload (field 0); `err` binds the error record (field 1) |
+| `x.value` under `is ok` | `extract_value` the ok payload |
 | record field access | `extract_value` (records are by-value structs) |
 | record field assignment (`p.x = v`) | `struct_gep` to the field address, then store (reusing the `=`/`+=` logic) |
 | record construction | `insert_value` into a zero struct, in field order |
@@ -211,7 +212,7 @@ registry-guarded, so freeing one alias would be a use-after-free. Only a
 | function call | `build_direct_call` with the target's `FunctionValue` |
 | method call (`.to_str()`, `.len()`, `.abs()`) | `to_str` → host function; `len`/`is_empty` → field op; `abs`/`approx_sqrt` → LLVM intrinsics |
 | `s.at(i)` / `s.to_bytes()` | `at` → bounds-checked `Result[Char, IndexError]` (shared index helper); `to_bytes` → layout identity (no copy) |
-| `read_file(path)` | host `xz_read_file(ptr, len, out)`: on 1, build a `Result[Str, Err]` `{ payload, 1 }` from the `Str` written through `out`; else `{ zero, 0 }` |
+| `read_file(path)` | host `xz_read_file(ptr, len, out, err_out)`: on 1, build a `Result[Str, Err]` `{ payload, zero, 1 }` from the `Str` written through `out`; else `{ zero, { message }, 0 }` from the message written through `err_out` |
 | `now()` / `monotonic()` | host `xz_time_now()` / `xz_time_monotonic()` → `i64` nanoseconds |
 | `d.seconds()` / `d.millis()` / `d.nanos()` / `d.to_str()` | a `Duration` is i64 nanoseconds: `seconds` → `sitofp` × `1e-9` (Float); `millis` → truncating i64 division by `1_000_000`; `nanos` → identity; `to_str` → the seconds value through `xz_f64_to_str` (docs/03, docs/12) |
 | `s.to_upper()` / `s.to_lower()` | host `xz_str_to_upper` / `xz_str_to_lower` (libc `toupper`/`tolower` loop in the native runtime) |
@@ -251,9 +252,10 @@ keys.
 ### `?` early return
 
 `expr?` on a `Result[T,E]` produces the payload value in the success branch.
-The failure branch returns an empty aggregate of the enclosing function's
-return type. Contracts already guarantee the error channel is `Err`-accepted,
-so the runtime never observes an error value here.
+The failure branch returns the enclosing function's `Result` in the error state,
+copying the callee's error record (`{ message: Str }`) into its error payload, so
+a message survives propagation up the call stack. Contracts still guarantee the
+error channel is `Err`-accepted.
 
 ## Concurrency (`task`, `chan`, `send`, `recv`, `async`/`await`)
 

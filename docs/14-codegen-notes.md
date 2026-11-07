@@ -137,13 +137,16 @@ Two clarifications matter for review:
   carrying `Kind` through — is deliberate: it keeps the lowering purely
   mechanical, and re-typing the AST is a refactor without runtime benefit.
 
-## 8. Result/Option as `{ payload, i1 }`, and the padding decision
+## 8. Result/Option layouts, and the padding decision
 
-`Result[T, E]` and `Option[T]` are `struct { payload, i1 }` (an ok-flag). `?`
-branches on the flag and early-returns a zero aggregate on the error path.
-`err(e)` **never evaluates `e`** — the error payload is unreachable at runtime
-(only the flag matters), so the `DomainError("...")` constructor is skipped
-entirely. This is why no error-record constructors need codegen.
+`Option[T]` is `struct { payload, i1 }` (a some-flag). `Result[T, E]` is
+`struct { payload, error, i1 }`: the ok payload, the error payload, and the
+ok-flag. Every error type lowers to the same `{ message: Str }` record, so the
+error slot has one type across all `Result`s and the message is observable.
+`?` branches on the flag and, on the error path, early-returns the enclosing
+`Result` carrying the callee's error record; `match err(e)` binds that record so
+`e.message` reads the `Str`. `err(e)` evaluates the error record's message and
+stores it in the error slot (docs/03, docs/06, docs/13).
 
 **Padding, and why it's accepted (feedback point 5).** For a scalar payload,
 `{ payload, i1 }` has ABI padding: `{ i64, i1 }` is 16 bytes in memory (7 bytes

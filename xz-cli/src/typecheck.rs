@@ -893,8 +893,19 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             return Kind::Result(Box::new(Kind::Float), Box::new(Kind::Err));
                         }
                         if is_error_ctor(n) {
-                            // error record constructor: e.g. DomainError("msg"), AllocError(...)
-                            for a in args { self.check_expr(a, env); }
+                            // error record constructor: DomainError("msg"). The
+                            // message is the record's one `{ message: Str }`
+                            // field, and it is carried in the Result error slot
+                            // (docs/03, docs/06).
+                            if args.len() != 1 {
+                                self.error(format!("error constructor '{}' expects one message argument, got {}", n, args.len()));
+                            }
+                            for a in args {
+                                let at = self.check_expr(a, env);
+                                if at != Kind::Str && at != Kind::Unknown {
+                                    self.error(format!("error message must be a Str, got {:?}", at));
+                                }
+                            }
                             return Kind::Err;
                         }
                         // enum variant constructor
@@ -1089,15 +1100,26 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             }
                         }
                     }
-                    // Result payload access: `result.value` under `is ok`
-                    // (docs/06). `.value` is the T payload; `.err` the E.
-                    Kind::Result(t, _) => {
+                    // Result payload access (docs/06): `.value` is the T payload;
+                    // `.err` is the E payload (an error record on the error path).
+                    Kind::Result(t, e) => {
                         if fname == "value" {
                             (**t).clone()
                         } else if fname == "err" {
-                            Kind::Unknown
+                            (**e).clone()
                         } else {
                             self.error(format!("Result has no field '{}' (use .value / .err)", fname));
+                            Kind::Unknown
+                        }
+                    }
+                    // An error record is `{ message: Str }`; the specific error
+                    // type is erased to `Err`/an error union, so `.message` is
+                    // the one observable field (docs/03, docs/06).
+                    Kind::Err | Kind::ErrUnion(_) => {
+                        if fname == "message" {
+                            Kind::Str
+                        } else {
+                            self.error(format!("error record has no field '{}' (use .message)", fname));
                             Kind::Unknown
                         }
                     }
@@ -1274,6 +1296,21 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                                     if i < fts.len() {
                                         env.insert(nm.clone(), fts[i].clone());
                                     }
+                                }
+                            } else {
+                                // Result/Option arm: `ok(v)`/`some(v)` bind the ok
+                                // payload T; `err(e)` binds the error payload E
+                                // (an error record, docs/06).
+                                let bound = match (&st, vname.as_str()) {
+                                    (Kind::Result(t, _), "ok") => Some((**t).clone()),
+                                    (Kind::Result(_, e), "err") => Some((**e).clone()),
+                                    (Kind::Option(t), "some") => Some((**t).clone()),
+                                    _ => None,
+                                };
+                                if let Some(bt) = bound
+                                    && let Some(nm) = names.first()
+                                {
+                                    env.insert(nm.clone(), bt);
                                 }
                             }
                             covered.push(vname.clone());

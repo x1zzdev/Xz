@@ -149,20 +149,36 @@ extern "C" fn xz_str_eq(ap: usize, al: usize, bp: usize, bl: usize) -> i8 {
     1
 }
 
-/// `read_file(path_ptr, path_len, out) -> i1`: read the file at the byte path
-/// and, on success, write a fresh `{ptr, len}` Str payload through `out` and
-/// return 1; return 0 when the path cannot be read or is not valid UTF-8 (the
-/// front end's `IoError`). This is the JIT host half of `read_file`
-/// (docs/12-stdlib.md, docs/13-codegen.md).
+/// Write a fresh heap `{ptr, len}` Str payload through the `out` pointer (the
+/// layout of `XzStr`). Used to publish an error message through `err_out`.
+fn write_str(out: usize, s: &str) {
+    let bytes: Vec<u8> = s.bytes().collect();
+    let ptr = copy_to_leaked(&bytes);
+    let len = bytes.len();
+    unsafe {
+        *(out as *mut usize) = ptr;
+        *((out + std::mem::size_of::<usize>()) as *mut usize) = len;
+    }
+}
+
+/// `read_file(path_ptr, path_len, out, err_out) -> i1`: read the file at the
+/// byte path and, on success, write a fresh `{ptr, len}` Str payload through
+/// `out` and return 1. On failure, write the OS error message as a `{ptr, len}`
+/// Str through `err_out` and return 0; the message is the `IoError` payload
+/// (docs/12-stdlib.md, docs/13-codegen.md). This is the JIT host half of
+/// `read_file`.
 #[unsafe(no_mangle)]
-extern "C" fn xz_read_file(path_ptr: usize, path_len: usize, out: usize) -> i8 {
+extern "C" fn xz_read_file(path_ptr: usize, path_len: usize, out: usize, err_out: usize) -> i8 {
     let mut bytes: Vec<u8> = Vec::with_capacity(path_len);
     for i in 0..path_len {
         bytes.push(unsafe { *((path_ptr + i) as *const u8) });
     }
     let path = match std::str::from_utf8(&bytes) {
         Ok(s) => s,
-        Err(_) => return 0,
+        Err(_) => {
+            write_str(err_out, "path is not valid UTF-8");
+            return 0;
+        }
     };
     match std::fs::read(path) {
         Ok(data) => {
@@ -174,7 +190,10 @@ extern "C" fn xz_read_file(path_ptr: usize, path_len: usize, out: usize) -> i8 {
             }
             1
         }
-        Err(_) => 0,
+        Err(e) => {
+            write_str(err_out, &e.to_string());
+            0
+        }
     }
 }
 
@@ -412,7 +431,7 @@ pub fn run(module: Module) -> Result<i32, String> {
     let lower: unsafe extern "C" fn(usize, usize) -> XzStr = xz_str_to_lower;
     let sfree: unsafe extern "C" fn(usize, usize) -> () = xz_str_free;
     let streq: unsafe extern "C" fn(usize, usize, usize, usize) -> i8 = xz_str_eq;
-    let readf: unsafe extern "C" fn(usize, usize, usize) -> i8 = xz_read_file;
+    let readf: unsafe extern "C" fn(usize, usize, usize, usize) -> i8 = xz_read_file;
     let time_now: unsafe extern "C" fn() -> i64 = xz_time_now;
     let time_mono: unsafe extern "C" fn() -> i64 = xz_time_monotonic;
     bind(&module, &ee, "xz_str_free", sfree as usize);

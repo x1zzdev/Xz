@@ -13,10 +13,9 @@ func show(path: Str) -> Result[Unit, Err] {
 func main() -> Result[Unit, Err] {
     show("../examples/io_input.txt")?
     let missing = read_file("../examples/no_such_file.txt")
-    if missing is err {
-        print("missing: err\n")
-    } else {
-        print("missing: unexpected\n")
+    match missing {
+        ok(_)  -> print("missing: unexpected\n")
+        err(e) -> print("missing: " + e.message + "\n")
     }
     ok()
 }

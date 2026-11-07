@@ -256,7 +256,13 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 let ty = *ty;
                 if matches!(ty, BasicTypeEnum::StructType(_)) {
                     let st = ty.into_struct_type();
-                    if st.count_fields() == 2 {
+                    // Option is `{ payload, i1 }`; Result is `{ payload, err, i1 }`.
+                    // Both put the ok payload at field 0.
+                    let fields = st.count_fields();
+                    let last_is_flag = st
+                        .get_field_type_at_index(fields - 1)
+                        .is_some_and(|t| t == self.backend.types.bool.into());
+                    if (fields == 2 || fields == 3) && last_is_flag {
                         if let Some(pty) = st.get_field_type_at_index(0) {
                             let pptr = self
                                 .backend
@@ -1245,11 +1251,11 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         self.backend.builder.position_at_end(some_bb);
         let slot = unsafe { self.backend.builder.build_in_bounds_gep(val_bt, vals, &[idx], "get.slot").unwrap() };
         let v = self.backend.builder.build_load(val_bt, slot, "get.val").unwrap();
-        let some_agg = self.result_value(v, true)?;
+        let some_agg = self.option_value(v, true)?;
         self.backend.builder.build_unconditional_branch(merge).unwrap();
 
         self.backend.builder.position_at_end(none_bb);
-        let none_agg = self.result_value(val_bt.const_zero(), false)?;
+        let none_agg = self.option_value(val_bt.const_zero(), false)?;
         self.backend.builder.build_unconditional_branch(merge).unwrap();
 
         self.backend.builder.position_at_end(merge);
@@ -1508,12 +1514,12 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         self.backend.builder.position_at_end(ok_bb);
         let slot = unsafe { self.backend.builder.build_in_bounds_gep(elem_bt, buf, &[idx], "index.slot").unwrap() };
         let v = self.backend.builder.build_load(elem_bt, slot, "index.val").unwrap();
-        let ok_agg = self.result_value(v, true)?;
+        let ok_agg = self.result_ok(v)?;
         self.backend.builder.build_unconditional_branch(merge).unwrap();
 
         self.backend.builder.position_at_end(err_bb);
-        let zero_v = elem_bt.const_zero();
-        let err_agg = self.result_value(zero_v, false)?;
+        // IndexError carries no message.
+        let err_agg = self.result_err(elem_bt, self.error_zero())?;
         self.backend.builder.build_unconditional_branch(merge).unwrap();
 
         self.backend.builder.position_at_end(merge);
@@ -2332,16 +2338,11 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 self.gen_expr(a)
             }
             Expr::Ok(inner) => self.gen_ok(inner),
-            Expr::Err(a) => {
-                // The error payload is never read (only the ok-flag matters), so
-                // we skip evaluating it entirely.
-                let _ = a;
-                self.gen_err()
-            }
+            Expr::Err(a) => self.gen_err(a),
             Expr::Some(a) => {
                 self.degrade_str_expr(a);
                 let v = self.gen_expr(a)?;
-                self.result_value(v, true)
+                self.option_value(v, true)
             }
         }
     }
@@ -2359,8 +2360,8 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         }
     }
 
-    /// None / err / early-return zero aggregates for Result/Option.
-    fn result_value(&mut self, payload: BasicValueEnum<'ctx>, ok: bool) -> GenResult<'ctx> {
+    /// `Option[T]` = `{ payload, i1 }` — the some-payload and the some-flag.
+    fn option_value(&mut self, payload: BasicValueEnum<'ctx>, some: bool) -> GenResult<'ctx> {
         let pt = self.basic_type_of(payload);
         let st = self.backend.context.struct_type(&[pt.into(), self.backend.types.bool.into()], false);
         let mut agg = st.const_zero();
@@ -2368,9 +2369,45 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         agg = self
             .backend
             .builder
-            .build_insert_value(agg, self.backend.types.bool.const_int(ok as u64, false), 1, "f")
+            .build_insert_value(agg, self.backend.types.bool.const_int(some as u64, false), 1, "f")
             .unwrap()
             .into_struct_value();
+        Ok(agg.into())
+    }
+
+    /// The zero error payload: an empty `{ message: Str }` record.
+    fn error_zero(&self) -> BasicValueEnum<'ctx> {
+        self.backend.types.xz_error.const_zero().into()
+    }
+
+    /// `Result[T, E]` = `{ ok-payload, error-payload, i1 }` in the ok state.
+    fn result_ok(&mut self, payload: BasicValueEnum<'ctx>) -> GenResult<'ctx> {
+        let pt = self.basic_type_of(payload);
+        let st = self.backend.context.struct_type(
+            &[pt.into(), self.backend.types.xz_error.into(), self.backend.types.bool.into()],
+            false,
+        );
+        let mut agg = st.const_zero();
+        agg = self.backend.builder.build_insert_value(agg, payload, 0, "rp").unwrap().into_struct_value();
+        agg = self
+            .backend
+            .builder
+            .build_insert_value(agg, self.backend.types.bool.const_int(1, false), 2, "rf")
+            .unwrap()
+            .into_struct_value();
+        Ok(agg.into())
+    }
+
+    /// `Result[T, E]` in the error state, carrying `err_rec`
+    /// (`{ message: Str }`). `payload_ty` is the ok payload type, so the struct
+    /// layout matches the binding's declared `Result`.
+    fn result_err(&mut self, payload_ty: BasicTypeEnum<'ctx>, err_rec: BasicValueEnum<'ctx>) -> GenResult<'ctx> {
+        let st = self.backend.context.struct_type(
+            &[payload_ty, self.backend.types.xz_error.into(), self.backend.types.bool.into()],
+            false,
+        );
+        let mut agg = st.const_zero();
+        agg = self.backend.builder.build_insert_value(agg, err_rec, 1, "re").unwrap().into_struct_value();
         Ok(agg.into())
     }
 
@@ -2385,7 +2422,10 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             }
             Some(Kind::Result(t, _)) => {
                 let payload = self.backend.kind_to_llvm(t);
-                let st = self.backend.context.struct_type(&[payload.into(), self.backend.types.bool.into()], false);
+                let st = self.backend.context.struct_type(
+                    &[payload.into(), self.backend.types.xz_error.into(), self.backend.types.bool.into()],
+                    false,
+                );
                 st.const_zero().into()
             }
             _ => self.backend.types.unit.const_zero().into(),
@@ -2397,39 +2437,67 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             Some(e) => {
                 self.degrade_str_expr(e);
                 let v = self.gen_expr(e)?;
-                self.result_value(v, true)
+                self.result_ok(v)
             }
             None => {
                 // ok() with Unit payload
                 let payload = self.backend.types.unit.const_zero().into();
-                self.result_value(payload, true)
+                self.result_ok(payload)
             }
         }
     }
 
-    fn gen_err(&mut self) -> GenResult<'ctx> {
+    /// `err(e)`: evaluate the error record `e` (`{ message: Str }`) and build a
+    /// `Result` in the error state carrying it.
+    fn gen_err(&mut self, a: &Expr) -> GenResult<'ctx> {
+        let err_rec = self.gen_error_record(a)?;
         // payload type comes from the enclosing Result return
         let payload_ty = match &self.ret_kind {
             Some(Kind::Result(t, _)) => self.backend.kind_to_llvm(t),
             Some(Kind::Option(t)) => self.backend.kind_to_llvm(t),
             _ => self.backend.types.unit.into(),
         };
-        let st = self.backend.context.struct_type(&[payload_ty.into(), self.backend.types.bool.into()], false);
+        self.result_err(payload_ty, err_rec)
+    }
+
+    /// Lower the error record argument of `err(...)` to `{ message: Str }`.
+    /// Error records are written as constructors (`DomainError("msg")`,
+    /// `Err("msg")`) taking the message positionally (docs/03-type-system.md).
+    fn gen_error_record(&mut self, e: &Expr) -> GenResult<'ctx> {
+        // A name already bound to an error record is the record itself (e.g. a
+        // `match err(e)` binding re-wrapped in `err(e)`).
+        if let Expr::Name(n) = e
+            && let Some((ptr, ty)) = self.scope.get(n).cloned()
+            && matches!(ty, BasicTypeEnum::StructType(s) if s == self.backend.types.xz_error)
+        {
+            return Ok(self.build_load(ty, ptr, n));
+        }
+        // Otherwise the payload is an error-record constructor; take its (Str)
+        // message positionally. The message is stored in the Result's error
+        // slot, so a source binding it aliases must not be freed while the
+        // result lives (downgrade it; the buffer leaks rather than dangles).
+        let message = match e {
+            Expr::Call(callee, args) if args.len() == 1 && matches!(&**callee, Expr::Name(_)) => {
+                if let Some(base) = self.alias_source(&args[0]) {
+                    self.owns.remove(&base);
+                }
+                self.gen_expr(&args[0])?
+            }
+            _ => self.backend.types.xz_str.const_zero().into(),
+        };
+        let st = self.backend.types.xz_error;
         let mut agg = st.const_zero();
-        agg = self
-            .backend
-            .builder
-            .build_insert_value(agg, self.backend.types.bool.const_int(0, false), 1, "f")
-            .unwrap()
-            .into_struct_value();
+        agg = self.backend.builder.build_insert_value(agg, message, 0, "msg").unwrap().into_struct_value();
         Ok(agg.into())
     }
 
-    /// `?` — on err, early-return a zero aggregate of the enclosing return.
+    /// `?` — on err, early-return the enclosing return carrying the callee's
+    /// error payload (docs/06, docs/13).
     fn gen_prop(&mut self, base: &Expr) -> GenResult<'ctx> {
         let val = self.gen_expr(base)?;
         let st = val.into_struct_value();
-        let ok = self.backend.builder.build_extract_value(st, 1, "prop.ok").unwrap().into_int_value();
+        let flag_idx = st.get_type().count_fields() - 1;
+        let ok = self.backend.builder.build_extract_value(st, flag_idx, "prop.ok").unwrap().into_int_value();
         let fnv = self.cur_fn();
         let then_bb = self.backend.context.append_basic_block(fnv, "prop.then");
         let err_bb = self.backend.context.append_basic_block(fnv, "prop.err");
@@ -2437,19 +2505,34 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
 
         self.backend.builder.position_at_end(err_bb);
         self.free_owned_bindings();
-        self.early_return()?;
+        // Propagate the callee's error record (field 1 of a Result) into the
+        // caller's return value.
+        let err_rec = if st.get_type().count_fields() == 3 {
+            self.backend.builder.build_extract_value(st, 1, "prop.err").unwrap()
+        } else {
+            self.error_zero()
+        };
+        self.early_return_err(err_rec)?;
         self.backend.builder.position_at_end(then_bb);
         let payload = self.backend.builder.build_extract_value(st, 0, "prop.val").unwrap();
         Ok(payload)
     }
 
-    /// Emit a return for the enclosing function (used by `?`).
-    fn early_return(&mut self) -> GenResult<'ctx> {
+    /// Emit a return for the enclosing function (used by `?`), carrying the
+    /// propagated error record when the return type is a `Result`.
+    fn early_return_err(&mut self, err_rec: BasicValueEnum<'ctx>) -> GenResult<'ctx> {
         self.write_back_mut_params();
         match self.ret_llvm {
             Some(rt) => {
-                let zero = rt.const_zero();
-                self.backend.builder.build_return(Some(&zero)).unwrap();
+                let value = match rt {
+                    BasicTypeEnum::StructType(st) if st.count_fields() == 3 => {
+                        let mut agg = st.const_zero();
+                        agg = self.backend.builder.build_insert_value(agg, err_rec, 1, "ret.err").unwrap().into_struct_value();
+                        agg.into()
+                    }
+                    _ => rt.const_zero(),
+                };
+                self.backend.builder.build_return(Some(&value)).unwrap();
             }
             None => {
                 self.backend.builder.build_return(None).unwrap();
@@ -2655,10 +2738,13 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
 
     fn gen_is(&mut self, op: ast::BinOp, a: BasicValueEnum<'ctx>) -> GenResult<'ctx> {
         use crate::ast::BinOp::*;
+        // The ok/some flag is the last field of the Option/Result struct.
+        let st = a.into_struct_value();
+        let flag_idx = st.get_type().count_fields() - 1;
         let flag = self
             .backend
             .builder
-            .build_extract_value(a.into_struct_value(), 1, "is.flag")
+            .build_extract_value(st, flag_idx, "is.flag")
             .unwrap()
             .into_int_value();
         let r = match op {
@@ -2836,9 +2922,10 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             let call = self.backend.builder.build_direct_call(f, &[], "time").unwrap();
             return Ok(call.try_as_basic_value().basic().unwrap());
         }
-        // stdlib read_file -> host xz_read_file(ptr, len, out) -> i1. The host
-        // writes a fresh Str payload through `out` on success; codegen wraps it
-        // in the Result[Str, Err] struct { payload, ok-flag } (docs/13).
+        // stdlib read_file -> host xz_read_file(ptr, len, out, err_out) -> i1.
+        // The host writes a fresh Str payload through `out` on success, or the
+        // OS error message through `err_out` on failure; codegen wraps both in
+        // the Result[Str, Err] struct { payload, error, ok-flag } (docs/13).
         if name == "read_file" {
             if args.len() != 1 {
                 return self.fail("read_file takes one Str argument");
@@ -2848,21 +2935,31 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             let (ptr, len) = self.str_parts(v);
             let str_ty = self.backend.types.xz_str;
             let out = self.backend.builder.build_alloca(str_ty, "read.out").unwrap();
+            let err_out = self.backend.builder.build_alloca(str_ty, "read.err").unwrap();
+            self.backend.builder.build_store(err_out, str_ty.const_zero()).unwrap();
             let f = self.backend.module.get_function("xz_read_file").ok_or("xz_read_file missing")?;
             let ok = self
                 .backend
                 .builder
-                .build_direct_call(f, &[ptr.into(), len.into(), out.into()], "read")
+                .build_direct_call(f, &[ptr.into(), len.into(), out.into(), err_out.into()], "read")
                 .unwrap()
                 .try_as_basic_value()
                 .basic()
                 .unwrap()
                 .into_int_value();
             let payload = self.build_load(str_ty.into(), out, "read.str");
-            let st = self.backend.context.struct_type(&[str_ty.into(), self.backend.types.bool.into()], false);
+            let message = self.build_load(str_ty.into(), err_out, "read.err.str");
+            let err_st = self.backend.types.xz_error;
+            let mut err_rec = err_st.const_zero();
+            err_rec = self.backend.builder.build_insert_value(err_rec, message, 0, "r.err").unwrap().into_struct_value();
+            let st = self.backend.context.struct_type(
+                &[str_ty.into(), err_st.into(), self.backend.types.bool.into()],
+                false,
+            );
             let mut agg = st.const_zero();
             agg = self.backend.builder.build_insert_value(agg, payload, 0, "r.p").unwrap().into_struct_value();
-            agg = self.backend.builder.build_insert_value(agg, ok, 1, "r.f").unwrap().into_struct_value();
+            agg = self.backend.builder.build_insert_value(agg, err_rec, 1, "r.e").unwrap().into_struct_value();
+            agg = self.backend.builder.build_insert_value(agg, ok, 2, "r.f").unwrap().into_struct_value();
             return Ok(agg.into());
         }
         self.fail(&format!("unknown function '{}'", name))
@@ -3283,10 +3380,22 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                     None => self.fail(&format!("record '{}' has no field '{}'", rec_name, fname)),
                 }
             }
+            None if struct_ty == self.backend.types.xz_error => {
+                // Error record `{ message: Str }`.
+                if fname == "message" {
+                    Ok(self.backend.builder.build_extract_value(st, 0, "message").unwrap())
+                } else {
+                    self.fail(&format!("error record has no field '{}'", fname))
+                }
+            }
             None => {
-                // Result / Option `.value`
-                if fname == "value" || fname == "err" {
+                // Result / Option accessors: `.value` is the ok payload (field 0);
+                // `.err` is the error record (field 1 of a Result).
+                if fname == "value" {
                     let v = self.backend.builder.build_extract_value(st, 0, "value").unwrap();
+                    Ok(v)
+                } else if fname == "err" && st.get_type().count_fields() == 3 {
+                    let v = self.backend.builder.build_extract_value(st, 1, "err").unwrap();
                     Ok(v)
                 } else {
                     self.fail(&format!("unknown aggregate field '{}'", fname))
@@ -3694,9 +3803,11 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                         .build_int_compare(IntPredicate::EQ, tagv, expect, "armtest")
                         .unwrap())
                 } else {
-                    // Result/Option arm: ok/some -> true, err/none -> false
+                    // Result/Option arm: ok/some -> true, err/none -> false.
+                    // The flag is the last field.
                     let st = subj.into_struct_value();
-                    let flag = self.backend.builder.build_extract_value(st, 1, "flag").unwrap().into_int_value();
+                    let flag_idx = st.get_type().count_fields() - 1;
+                    let flag = self.backend.builder.build_extract_value(st, flag_idx, "flag").unwrap().into_int_value();
                     match name.as_str() {
                         "ok" | "some" => Ok(flag),
                         "err" | "none" => Ok(self.backend.builder.build_not(flag, "notflag").unwrap()),
@@ -3726,9 +3837,11 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                     }
                     Ok(())
                 } else {
-                    // Result/Option: payload is index 0; bind first name
+                    // Result/Option arm: `ok(v)`/`some(v)` bind the ok payload
+                    // (field 0); `err(e)` binds the error record (field 1).
                     let st = subj.into_struct_value();
-                    let payload = self.backend.builder.build_extract_value(st, 0, "payload").unwrap();
+                    let idx = if name == "err" { 1 } else { 0 };
+                    let payload = self.backend.builder.build_extract_value(st, idx, "payload").unwrap();
                     if let Some(nm) = names.first() {
                         self.bind_value(nm, payload);
                     }
