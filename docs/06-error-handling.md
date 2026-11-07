@@ -34,6 +34,12 @@ match r {
 }
 ```
 
+The `err(e)` arm binds `e` to the error record, whose one field is the message:
+`e.message` is a `Str` (docs/03-type-system.md). This is how a runtime failure's
+reason reaches the caller — e.g. `read_file`'s `IoError.message` is the OS error
+text. `?` propagates the whole error record, so the message survives up the call
+stack ([13-codegen.md](13-codegen.md)).
+
 ## Propagation that stays visible
 
 The `?` operator propagates a `Result` to the caller **if and only if** the caller's declared error channel can accept it. The propagation path remains visible in the signature:

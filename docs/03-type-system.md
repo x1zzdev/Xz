@@ -187,6 +187,12 @@ record DomainError { message: Str }
 err(DomainError("negative input"))
 ```
 
+The error payload is observable: a `match` arm `err(e)` binds the error record,
+so `e.message` reads the `Str` message (`read_file`'s `IoError` carries the OS
+reason). Because the specific error type is a compile-time distinction, all
+error types share the runtime shape `{ message: Str }`
+([13-codegen.md](13-codegen.md)).
+
 The stdlib predeclares `IoError`, `DomainError`, `ParseError`, `AllocError`,
 `IndexError`, `DecodeError`, `HttpError` (see [12-stdlib.md](12-stdlib.md)).
 

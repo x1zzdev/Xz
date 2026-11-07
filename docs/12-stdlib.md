@@ -161,7 +161,7 @@ untyped failure path. To use a value, `match` it; to assert it exists, use
 | Signature | Notes |
 |---|---|
 | `print(x: Str) -> Unit` | `@effects io`; takes `Str` only — build your string with `+`/`to_str()` |
-| `read_file(path: Str) -> Result[Str, IoError]` | `@effects io`; the whole file decoded as UTF-8. `err` when the path cannot be read or its bytes are not valid UTF-8. The `Str` payload is a fresh heap buffer, freed by the same rules as `concat`/`to_str` results |
+| `read_file(path: Str) -> Result[Str, IoError]` | `@effects io`; the whole file decoded as UTF-8. `err` when the path cannot be read or its bytes are not valid UTF-8, with `IoError.message` carrying the OS reason (observable via `match err(e) -> e.message`). The `Str` payload is a fresh heap buffer, freed by the same rules as `concat`/`to_str` results |
 
 ## `time`
 
