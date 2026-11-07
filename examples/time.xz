@@ -20,9 +20,12 @@ func main() -> Result[Unit, Err] {
     print("\n")
     print("elapsed: " + elapsed.to_str())
     print("\n")
+    print("elapsed millis: " + elapsed.millis().to_str())
+    print("\n")
 
     let wall = now()
-    print("now: " + wall.to_str())
+    let wall_elapsed = now() - wall
+    print("wall elapsed: " + wall_elapsed.to_str())
     print("\n")
 
     ok()

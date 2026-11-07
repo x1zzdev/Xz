@@ -46,6 +46,9 @@ pub enum Kind {
     Bytes,
     Unit,
     Ptr,
+    Instant,
+    Timestamp,
+    Duration,
     Option(Box<Kind>),
     Result(Box<Kind>, Box<Kind>),
     List(Box<Kind>),
@@ -435,8 +438,8 @@ impl TypeChecker {
         self.funcs.insert("print".to_string(), (vec![Kind::Str], Some(Kind::Unit), vec![]));
         self.funcs.insert("read_file".to_string(), (vec![Kind::Str], Some(Kind::Result(Box::new(Kind::Str), Box::new(Kind::Err))), vec![]));
         self.funcs.insert("approx_sqrt".to_string(), (vec![Kind::Float], Some(Kind::Float), vec![]));
-        self.funcs.insert("now".to_string(), (vec![], Some(Kind::Float), vec![]));
-        self.funcs.insert("monotonic".to_string(), (vec![], Some(Kind::Float), vec![]));
+        self.funcs.insert("now".to_string(), (vec![], Some(Kind::Timestamp), vec![]));
+        self.funcs.insert("monotonic".to_string(), (vec![], Some(Kind::Instant), vec![]));
     }
 
     fn from_ast(&mut self, ty: &crate::ast::Type) -> Kind {
@@ -465,6 +468,9 @@ impl TypeChecker {
             "Bytes" => Kind::Bytes,
             "Unit" => Kind::Unit,
             "Ptr" => Kind::Ptr,
+            "Instant" => Kind::Instant,
+            "Timestamp" => Kind::Timestamp,
+            "Duration" => Kind::Duration,
             "Option" => {
                 let inner = self.from_ast(&args[0]);
                 Kind::Option(Box::new(inner))
@@ -644,6 +650,50 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
             }
         } else {
             self.error(format!("cannot use arithmetic on type parameter (constraint not defined)"));
+        }
+    }
+
+    /// Type the fixed time-operator table (docs/03-type-system.md § Time types).
+    /// `Instant`/`Timestamp`/`Duration` mix only through the listed operators;
+    /// anything else (raw arithmetic, cross-clock subtraction, comparing a
+    /// reading) is a compile error rather than a misleading number.
+    fn check_time_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) -> Kind {
+        use BinOp::*;
+        // A side whose type is still unknown (empty literals, unresolved
+        // inference) is not evidence of a bad operator; stay permissive.
+        if matches!(at, Kind::Unknown) || matches!(bt, Kind::Unknown) {
+            return Kind::Unknown;
+        }
+        match op {
+            Sub => match (at, bt) {
+                (Kind::Instant, Kind::Instant) | (Kind::Timestamp, Kind::Timestamp) => Kind::Duration,
+                (Kind::Duration, Kind::Duration) => Kind::Duration,
+                (Kind::Instant, Kind::Duration) | (Kind::Timestamp, Kind::Duration) => at.clone(),
+                _ => {
+                    self.error(format!("cannot subtract {:?} from {:?}", bt, at));
+                    Kind::Unknown
+                }
+            },
+            Add => match (at, bt) {
+                (Kind::Instant, Kind::Duration) | (Kind::Timestamp, Kind::Duration) => at.clone(),
+                (Kind::Duration, Kind::Duration) => Kind::Duration,
+                _ => {
+                    self.error(format!("cannot add {:?} and {:?} (only a Duration shifts a reading)", at, bt));
+                    Kind::Unknown
+                }
+            },
+            Eq | Ne | Lt | Le | Gt | Ge => {
+                if *at == Kind::Duration && *bt == Kind::Duration {
+                    Kind::Bool
+                } else {
+                    self.error(format!("only Duration values may be compared, got {:?} and {:?}", at, bt));
+                    Kind::Unknown
+                }
+            }
+            _ => {
+                self.error(format!("operator not defined on time types ({:?}, {:?})", at, bt));
+                Kind::Unknown
+            }
         }
     }
 
@@ -923,7 +973,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         let rt = self.check_expr(receiver, env);
                         let mt = method_type(&rt, method);
                         // check arg count for the method
-                        if matches!(method.as_str(), "len" | "abs" | "to_str" | "to_upper" | "to_lower" | "is_empty" | "keys" | "values") && args.len() != 0 {
+                        if matches!(method.as_str(), "len" | "abs" | "to_str" | "to_upper" | "to_lower" | "is_empty" | "keys" | "values" | "seconds" | "millis" | "nanos") && args.len() != 0 {
                             self.error(format!("method '{}' takes no arguments", method));
                         }
                         if method == "append" {
@@ -1168,6 +1218,10 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                 // operations on a bare type parameter require a justifying constraint
                 if is_typevar(&at) || is_typevar(&bt) {
                     self.check_tvar_op(&at, &bt, op);
+                }
+                // Time types have a fixed, exhaustive operator table (docs/03).
+                if is_time_kind(&at) || is_time_kind(&bt) {
+                    return self.check_time_op(&at, &bt, op);
                 }
                 match op {
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
@@ -1556,7 +1610,20 @@ fn cstruct_named_ok(
 fn method_type(receiver: &Kind, method: &str) -> Option<Kind> {
     let r = receiver;
     if method == "to_str" {
+        // Opaque clock readings have no textual form — only their differences
+        // (a Duration) are meaningful (docs/03, docs/12).
+        if matches!(r, Kind::Instant | Kind::Timestamp) {
+            return None;
+        }
         return Some(Kind::Str);
+    }
+    if r == &Kind::Duration {
+        return match method {
+            "seconds" => Some(Kind::Float),
+            "millis" => Some(Kind::Int),
+            "nanos" => Some(Kind::Int),
+            _ => None,
+        };
     }
     if r == &Kind::Str {
         return match method {
@@ -1625,6 +1692,11 @@ fn method_type(receiver: &Kind, method: &str) -> Option<Kind> {
     None
 }
 
+
+/// The opaque clock value types (docs/03-type-system.md § Time types).
+fn is_time_kind(k: &Kind) -> bool {
+    matches!(k, Kind::Instant | Kind::Timestamp | Kind::Duration)
+}
 
 /// Substitute type-parameter bindings into a type (generic instantiation).
 /// TypeVar(i) with an unbound slot stays a fresh TypeVar (parametric).
@@ -1778,6 +1850,7 @@ fn subst(ty: &Kind, bindings: &Vec<Option<Kind>>) -> Kind {
         Kind::Record(_) | Kind::Enum(_) => ty.clone(),
         Kind::Bool | Kind::Int | Kind::Usize | Kind::Float | Kind::Char
         | Kind::Str | Kind::Bytes | Kind::Unit | Kind::Ptr | Kind::Err
+        | Kind::Instant | Kind::Timestamp | Kind::Duration
         | Kind::Unknown | Kind::Never => ty.clone(),
     }
 }

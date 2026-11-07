@@ -37,7 +37,7 @@ cargo run -- build --shared ../examples/shared_lib.xz  # libXz.so + libXz.h
 | `maps.xz` | `Map[K, V]` literals, `Option` lookup, non-mutating `insert`, insertion-order `keys`/`values` |
 | `sets.xz` | `Set[T]` literals, `contains`, non-mutating `insert`, insertion-order iteration |
 | `io.xz` | `read_file` returning `Result[Str, IoError]`, `?`, and the `err` path (`io_input.txt` is the input) |
-| `time.xz` | `monotonic()` elapsed timing around a loop and `now()` wall-clock reads |
+| `time.xz` | `monotonic()`/`now()` typed readings, `Instant`/`Timestamp` subtraction into a `Duration`, and the `seconds`/`millis`/`nanos`/`to_str` accessors |
 | `shared_lib.xz` | `@export` library surface, `@cstruct` argument, `xz build --shared` |
 
 Conventions used throughout:

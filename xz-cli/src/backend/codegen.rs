@@ -47,6 +47,10 @@ pub struct Codegen<'b, 'ctx> {
     /// map-typed binding name -> (key kind, value kind), so `m.get`/`insert`/
     /// `keys`/`values` can load the right key/value types.
     map_kvs: HashMap<String, (Kind, Kind)>,
+    /// time-typed binding name -> `Instant`/`Timestamp`/`Duration`, so a
+    /// Duration's `seconds`/`millis`/`nanos`/`to_str` can be told apart from a
+    /// plain `Int` (all three lower to the same i64 nanoseconds).
+    time_kinds: HashMap<String, Kind>,
     /// name -> owns a heap-allocated buffer, meaning this binding is the only
     /// reference to it (safe to release on overwrite / scope exit). A value is
     /// recorded here only when it was produced by concat/to_str in this function
@@ -112,6 +116,11 @@ fn kind_carries_pointer(k: &Kind, backend: &LlvmBackend<'_>) -> bool {
         Kind::ErrUnion(members) => members.iter().any(|m| kind_carries_pointer(m, backend)),
         _ => false,
     }
+}
+
+/// The opaque clock value types (docs/03-type-system.md § Time types).
+fn is_time_kind(k: &Kind) -> bool {
+    matches!(k, Kind::Instant | Kind::Timestamp | Kind::Duration)
 }
 
 impl<'b, 'ctx> Codegen<'b, 'ctx> {
@@ -398,6 +407,53 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             },
             Expr::Field(base, fname) => match self.record_field_kind(base, fname) {
                 Some(Kind::Set(t)) => Some(*t),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The time kind (`Instant`/`Timestamp`/`Duration`) of an expression, when
+    /// it is one. All three lower to the same i64 nanoseconds, so the static
+    /// kind is what distinguishes a `Duration` accessor from an `Int` one.
+    /// Determined without a full type pass: a binding's recorded kind, a clock
+    /// call, a `-`/`+` over time operands, a `Duration`-returning call, or such
+    /// a record field.
+    fn time_kind(&self, e: &Expr) -> Option<Kind> {
+        match e {
+            Expr::Name(n) => self.time_kinds.get(n).cloned(),
+            Expr::Call(callee, args) => {
+                if let Some(k) = self.call_ret_kind(callee, args) {
+                    if is_time_kind(&k) {
+                        return Some(k);
+                    }
+                }
+                match &**callee {
+                    Expr::Name(n) if n == "now" => Some(Kind::Timestamp),
+                    Expr::Name(n) if n == "monotonic" => Some(Kind::Instant),
+                    _ => None,
+                }
+            }
+            Expr::Binary(op, a, b) => {
+                let ta = self.time_kind(a)?;
+                let tb = self.time_kind(b)?;
+                match op {
+                    ast::BinOp::Sub => match (&ta, &tb) {
+                        (Kind::Instant, Kind::Instant) | (Kind::Timestamp, Kind::Timestamp) => Some(Kind::Duration),
+                        (Kind::Duration, Kind::Duration) => Some(Kind::Duration),
+                        (Kind::Instant | Kind::Timestamp, Kind::Duration) => Some(ta),
+                        _ => None,
+                    },
+                    ast::BinOp::Add => match (&ta, &tb) {
+                        (Kind::Instant | Kind::Timestamp, Kind::Duration) => Some(ta),
+                        (Kind::Duration, Kind::Duration) => Some(Kind::Duration),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
+            Expr::Field(base, fname) => match self.record_field_kind(base, fname) {
+                Some(k) if is_time_kind(&k) => Some(k),
                 _ => None,
             },
             _ => None,
@@ -1850,6 +1906,15 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 if let Some(ek) = selem {
                     self.set_elems.insert(d.name.clone(), ek);
                 }
+                // Track a time-typed binding so `Duration` accessors are told
+                // apart from plain `Int` (both are i64 nanoseconds).
+                let tkind = match &declared_kind {
+                    Some(k) if is_time_kind(k) => Some(k.clone()),
+                    _ => self.time_kind(e),
+                };
+                if let Some(k) = tkind {
+                    self.time_kinds.insert(d.name.clone(), k);
+                }
                 // Track Str ownership: a fresh buffer bound to `name` becomes
                 // this binding's, freed at scope exit; an alias downgrades the
                 // source binding so neither is freed.
@@ -1868,6 +1933,9 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                         }
                         if let Kind::Set(t) = &k {
                             self.set_elems.insert(d.name.clone(), (**t).clone());
+                        }
+                        if is_time_kind(&k) {
+                            self.time_kinds.insert(d.name.clone(), k.clone());
                         }
                         let lty = self.backend.kind_to_llvm(&k);
                         let alloca = self.backend.builder.build_alloca(lty, &d.name).unwrap();
@@ -2758,7 +2826,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             return self.call_intrinsic("llvm.sqrt.f64", vec![self.backend.types.float.into()], &[v], "sqrt");
         }
         // stdlib now / monotonic -> host xz_time_now() / xz_time_monotonic()
-        // returning f64 seconds (docs/12, docs/13).
+        // returning i64 nanoseconds (docs/12, docs/13).
         if name == "now" || name == "monotonic" {
             if !args.is_empty() {
                 return self.fail(&format!("{} takes no arguments", name));
@@ -2950,6 +3018,32 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
 
     fn gen_method_call(&mut self, receiver: &Expr, method: &str, args: &[Expr]) -> GenResult<'ctx> {
         let rv = self.gen_expr(receiver)?;
+        // Duration accessors (docs/03, docs/12). The receiver is i64 nanos; the
+        // tracked time kind distinguishes it from a plain Int.
+        if let Some(tk) = self.time_kind(receiver) {
+            match method {
+                "nanos" if tk == Kind::Duration => return Ok(rv),
+                "millis" if tk == Kind::Duration => {
+                    let iv = rv.into_int_value();
+                    let r = self
+                        .backend
+                        .builder
+                        .build_int_signed_div(iv, self.backend.types.int.const_int(1_000_000, false), "millis")
+                        .unwrap();
+                    return Ok(r.into());
+                }
+                "seconds" if tk == Kind::Duration => {
+                    let secs = self.nanos_to_seconds(rv.into_int_value());
+                    return Ok(secs.into());
+                }
+                "to_str" if tk == Kind::Duration => {
+                    // A span renders in seconds, matching the old Float API.
+                    let secs = self.nanos_to_seconds(rv.into_int_value());
+                    return self.gen_to_str(secs.into());
+                }
+                _ => {}
+            }
+        }
         if method == "to_str" {
             return self.gen_to_str(rv);
         }
@@ -3111,6 +3205,20 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             let _ = self.gen_expr(a)?;
         }
         self.fail(&format!("method '{}' not supported in Phase 4", method))
+    }
+
+    /// Convert an i64 nanosecond span to an f64 seconds value (docs/03:
+    /// `Duration.seconds() -> Float`).
+    fn nanos_to_seconds(&mut self, nanos: inkwell::values::IntValue<'ctx>) -> inkwell::values::FloatValue<'ctx> {
+        let secs = self
+            .backend
+            .builder
+            .build_signed_int_to_float(nanos, self.backend.types.float, "secs")
+            .unwrap();
+        self.backend
+            .builder
+            .build_float_mul(secs, self.backend.types.float.const_float(1e-9), "secs.s")
+            .unwrap()
     }
 
     fn gen_to_str(&mut self, v: BasicValueEnum<'ctx>) -> GenResult<'ctx> {
@@ -3669,6 +3777,7 @@ pub fn gen_function(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         list_elems: HashMap::new(),
         set_elems: HashMap::new(),
         map_kvs: HashMap::new(),
+        time_kinds: HashMap::new(),
         owns: HashMap::new(),
         leak_owned,
         loop_stack: Vec::new(),
@@ -3704,6 +3813,7 @@ pub fn gen_specialized(
         list_elems: HashMap::new(),
         set_elems: HashMap::new(),
         map_kvs: HashMap::new(),
+        time_kinds: HashMap::new(),
         owns: HashMap::new(),
         leak_owned,
         loop_stack: Vec::new(),
@@ -3734,6 +3844,7 @@ pub fn gen_task(backend: &mut LlvmBackend<'static>, t: &ast::TaskDecl) {
         list_elems: HashMap::new(),
         set_elems: HashMap::new(),
         map_kvs: HashMap::new(),
+        time_kinds: HashMap::new(),
         owns: HashMap::new(),
         leak_owned: false,
         loop_stack: Vec::new(),
@@ -3768,6 +3879,7 @@ pub fn gen_main(backend: &mut LlvmBackend<'static>, f: &ast::FuncDecl) {
         list_elems: HashMap::new(),
         set_elems: HashMap::new(),
         map_kvs: HashMap::new(),
+        time_kinds: HashMap::new(),
         owns: HashMap::new(),
         leak_owned,
         loop_stack: Vec::new(),
@@ -3841,6 +3953,11 @@ impl<'ctx> Codegen<'_, 'ctx> {
                 // Record a Set parameter's element kind for contains/insert/iteration.
                 if let Kind::Set(t) = self.kind_of(&p.ty) {
                     self.set_elems.insert(p.name.clone(), *t);
+                }
+                // Record a time parameter's kind for Duration accessors.
+                let pk = self.kind_of(&p.ty);
+                if is_time_kind(&pk) {
+                    self.time_kinds.insert(p.name.clone(), pk);
                 }
             }
         }

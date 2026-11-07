@@ -191,5 +191,5 @@ Subtracting two readings of the same clock yields a `Duration`:
 `Set` removal, networking (HTTP), ranges, and any module structure. The
 grammar reserves their syntax; nothing provides it yet.
 `List`, `Map`, `Set` (above), `read_file`, `time`, and the `Instant`/
-`Timestamp`/`Duration` types (specified, not yet lowered) are the collections,
+`Timestamp`/`Duration` types are the collections,
 I/O, and clock surface so far.

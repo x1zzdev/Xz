@@ -197,6 +197,10 @@ impl<'ctx> LlvmBackend<'ctx> {
             Kind::Bytes => self.types.xz_bytes.into(),
             Kind::Unit => self.types.unit.into(),
             Kind::Ptr => self.types.ptr.into(),
+            // Opaque clock readings and spans are i64 nanoseconds (docs/03,
+            // docs/13). All three share the i64 layout; their distinct `Kind`s
+            // are what make the operator table and accessors type-checked.
+            Kind::Instant | Kind::Timestamp | Kind::Duration => self.types.int.into(),
             Kind::Record(name) => self.record_types.get(name).copied().unwrap_or(self.types.unit).into(),
             Kind::Enum(name) => self.enum_struct(name).into(),
             Kind::Option(t) | Kind::Result(t, _) => {
@@ -420,6 +424,9 @@ fn kind_from_ast_named(name: &str, args: &[Type], backend: &LlvmBackend<'_>) -> 
         "Bytes" => Kind::Bytes,
         "Unit" => Kind::Unit,
         "Ptr" => Kind::Ptr,
+        "Instant" => Kind::Instant,
+        "Timestamp" => Kind::Timestamp,
+        "Duration" => Kind::Duration,
         "Option" => {
             let inner = kind_from_ast(&args[0], backend);
             Kind::Option(Box::new(inner))
@@ -528,6 +535,9 @@ pub fn mangle_type_tag(k: &Kind) -> String {
         Kind::Bytes => "y".into(),
         Kind::Unit => "v".into(),
         Kind::Ptr => "p".into(),
+        Kind::Instant => "I".into(),
+        Kind::Timestamp => "T".into(),
+        Kind::Duration => "D".into(),
         Kind::Option(t) => format!("O{}", mangle_type_tag(t)),
         Kind::Result(t, _) => format!("R{}", mangle_type_tag(t)),
         Kind::List(t) => format!("L{}", mangle_type_tag(t)),
@@ -722,10 +732,10 @@ fn compile_impl(program: &Program, shared: bool) -> Result<LlvmBackend<'static>,
         // fresh {ptr,len} Str payload through `out` (JIT host in runtime.rs;
         // native body in emit_native_runtime). See docs/13-codegen.md.
         backend.declare_extern("xz_read_file", &[ptr.into(), i64.into(), ptr.into()], Some(i1.into()));
-        // now() / monotonic() -> f64 seconds. JIT host in runtime.rs; native
+        // now() / monotonic() -> i64 nanoseconds. JIT host in runtime.rs; native
         // body (gettimeofday / clock_gettime) in emit_native_runtime.
-        backend.declare_extern("xz_time_now", &[], Some(f64.into()));
-        backend.declare_extern("xz_time_monotonic", &[], Some(f64.into()));
+        backend.declare_extern("xz_time_now", &[], Some(i64.into()));
+        backend.declare_extern("xz_time_monotonic", &[], Some(i64.into()));
         // Phase 6 scheduler + channels (JIT host in runtime.rs; see
         // docs/13-codegen.md § Concurrency). `id` is the compiler-assigned
         // channel id; the value is copied through a `(ptr, size)` byte range.
@@ -1314,10 +1324,10 @@ pub fn emit_native_runtime(backend: &mut LlvmBackend<'static>) -> Result<(), Str
         backend.builder.build_return(Some(&flag.as_basic_value())).unwrap();
     }
 
-    // xz_time_now / xz_time_monotonic -> f64 seconds. `now` reads the wall
+    // xz_time_now / xz_time_monotonic -> i64 nanoseconds. `now` reads the wall
     // clock via gettimeofday; `monotonic` reads CLOCK_MONOTONIC via
     // clock_gettime. Both libc calls fill a {sec, subsec} struct (timeval on
-    // Linux is {i64, i64}, timespec likewise), which is scaled to f64 seconds.
+    // Linux is {i64, i64}, timespec likewise), which is scaled to i64 nanos.
     // The clock id is a libc macro, so `monotonic_clock_id` selects it per host.
     emit_time_body(backend, "xz_time_now", false);
     emit_time_body(backend, "xz_time_monotonic", true);
@@ -1326,8 +1336,9 @@ pub fn emit_native_runtime(backend: &mut LlvmBackend<'static>) -> Result<(), Str
 }
 
 /// Define one clock host function for the native runtime. `monotonic` selects
-/// `clock_gettime(CLOCK_MONOTONIC, &ts)` and a nanosecond scale; otherwise
-/// `gettimeofday(&tv, NULL)` and a microsecond scale. See `emit_native_runtime`.
+/// `clock_gettime(CLOCK_MONOTONIC, &ts)` and a nanosecond sub-second scale;
+/// otherwise `gettimeofday(&tv, NULL)` and a microsecond scale. Both return i64
+/// nanoseconds. See `emit_native_runtime`.
 fn emit_time_body(backend: &mut LlvmBackend<'static>, fname: &str, monotonic: bool) {
     let f = match backend.module.get_function(fname) {
         Some(f) => f,
@@ -1335,7 +1346,6 @@ fn emit_time_body(backend: &mut LlvmBackend<'static>, fname: &str, monotonic: bo
     };
     let i32_ty = backend.context.i32_type();
     let i64_ty = backend.types.int;
-    let f64_ty = backend.types.float;
     let ptr_ty = backend.types.ptr;
     let tv_ty = backend.context.struct_type(&[i64_ty.into(), i64_ty.into()], false);
 
@@ -1373,11 +1383,19 @@ fn emit_time_body(backend: &mut LlvmBackend<'static>, fname: &str, monotonic: bo
     let frac_p = backend.builder.build_struct_gep(tv_ty, tv, 1, "frac.p").unwrap();
     let sec = backend.builder.build_load(i64_ty, sec_p, "sec").unwrap().into_int_value();
     let frac = backend.builder.build_load(i64_ty, frac_p, "frac").unwrap().into_int_value();
-    let sec_f = backend.builder.build_signed_int_to_float(sec, f64_ty, "sec.f").unwrap();
-    let frac_f = backend.builder.build_signed_int_to_float(frac, f64_ty, "frac.f").unwrap();
-    let scale = f64_ty.const_float(if monotonic { 1e-9 } else { 1e-6 });
-    let frac_s = backend.builder.build_float_mul(frac_f, scale, "frac.s").unwrap();
-    let total = backend.builder.build_float_add(sec_f, frac_s, "time").unwrap();
+    // The reading is i64 nanoseconds since the clock's origin (docs/13). `now`
+    // fills a timeval (microsecond sub-second field); `monotonic` a timespec
+    // (nanosecond field), so the fractional scale differs.
+    let sec_nanos = backend
+        .builder
+        .build_int_mul(sec, i64_ty.const_int(1_000_000_000, false), "sec.ns")
+        .unwrap();
+    let frac_scale = if monotonic { 1 } else { 1_000 };
+    let frac_nanos = backend
+        .builder
+        .build_int_mul(frac, i64_ty.const_int(frac_scale, false), "frac.ns")
+        .unwrap();
+    let total = backend.builder.build_int_add(sec_nanos, frac_nanos, "time").unwrap();
     backend.builder.build_return(Some(&total)).unwrap();
 }
 

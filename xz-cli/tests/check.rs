@@ -1442,15 +1442,16 @@ func slurp(path: Str) -> Result[Str, Err] {
 fn time_reads_accepted_with_clock() {
     expect_ok(
         r#"/// Reads the monotonic clock.
-/// @intent  Returns monotonic seconds.
+/// @intent  Returns a monotonic reading.
 /// @effects clock
-func stamp() -> Float {
+func stamp() -> Instant {
     monotonic()
 }
 
 func main() {
     let t = stamp()
-    print(t.to_str())
+    let d = monotonic() - t
+    print(d.to_str())
 }"#,
         "monotonic with clock",
     );
@@ -1462,7 +1463,7 @@ fn time_reads_derive_clock_effect() {
         r#"/// Reads the clock.
 /// @intent  Returns the wall clock.
 /// @effects none
-func stamp() -> Float {
+func stamp() -> Timestamp {
     now()
 }"#,
         "I0020",
@@ -1480,6 +1481,103 @@ fn time_now_rejects_arguments() {
     match err {
         Some(e) => assert!(e.contains("now") && e.contains("0 args"), "unexpected error: {}", e),
         None => panic!("now(1) must be rejected"),
+    }
+}
+
+#[test]
+fn time_operator_table_accepts() {
+    // The fixed operator table (docs/03 § Time types): same-clock subtraction
+    // yields a Duration, a Duration shifts a reading, Durations compare, and the
+    // Duration accessors exist.
+    expect_ok(
+        r#"func main() {
+    let a = monotonic()
+    let b = monotonic()
+    let d = b - a
+    let d2 = d + d
+    let d3 = d - d2
+    let later = a + d
+    let earlier = a - d
+    let back = later - earlier
+    let w = now()
+    let wd = w - w
+    if d < d2 { print("lt") }
+    if wd == wd { print("eq") }
+    print(back.nanos().to_str())
+    print("\n")
+    print(d3.nanos().to_str())
+    print("\n")
+    print(d.to_str())
+    print("\n")
+    print(d.seconds().to_str())
+    print("\n")
+    print(d.millis().to_str())
+    print("\n")
+    print(d.nanos().to_str())
+    print("\n")
+}"#,
+        "time operator table",
+    );
+}
+
+#[test]
+fn time_cross_clock_subtraction_rejected() {
+    let err = typecheck_error(
+        r#"func main() {
+    let i = monotonic()
+    let w = now()
+    let d = w - i
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("cannot subtract"), "unexpected error: {}", e),
+        None => panic!("cross-clock subtraction must be rejected"),
+    }
+}
+
+#[test]
+fn time_reading_comparison_rejected() {
+    // Only Durations compare; an Instant/Timestamp reading has no ordering.
+    let err = typecheck_error(
+        r#"func main() {
+    let a = monotonic()
+    let b = monotonic()
+    if a < b { print("x") }
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("only Duration values may be compared"), "unexpected error: {}", e),
+        None => panic!("comparing two readings must be rejected"),
+    }
+}
+
+#[test]
+fn time_reading_to_str_rejected() {
+    // Opaque readings have no textual form (docs/12).
+    let err = typecheck_error(
+        r#"func main() {
+    let a = monotonic()
+    print(a.to_str())
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("no method 'to_str'"), "unexpected error: {}", e),
+        None => panic!("Instant.to_str() must be rejected"),
+    }
+}
+
+#[test]
+fn time_raw_arithmetic_rejected() {
+    // A Duration/reading is not a raw number: `+` with an Int is a type error.
+    let err = typecheck_error(
+        r#"func main() {
+    let a = monotonic()
+    let x = a + 1
+}"#,
+    );
+    match err {
+        Some(e) => assert!(e.contains("cannot add"), "unexpected error: {}", e),
+        None => panic!("Instant + Int must be rejected"),
     }
 }
 

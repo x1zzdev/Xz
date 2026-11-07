@@ -1337,9 +1337,9 @@ func main() -> Result[Unit, Err] {
     assert!(ir.contains("define i32 @main()"), "native main must return i32");
     assert!(ir.contains("define") && ir.contains("@xz_print"), "runtime bodies must be defined");
     assert!(ir.contains("define i1 @xz_read_file"), "read_file runtime body must be defined:\n{}", ir);
-    assert!(ir.contains("define double @xz_time_now"), "time_now runtime body must be defined:\n{}", ir);
+    assert!(ir.contains("define i64 @xz_time_now"), "time_now runtime body must be defined:\n{}", ir);
     assert!(
-        ir.contains("define double @xz_time_monotonic"),
+        ir.contains("define i64 @xz_time_monotonic"),
         "time_monotonic runtime body must be defined:\n{}",
         ir
     );
@@ -1752,20 +1752,22 @@ fn read_file_reads_and_missing_is_err() -> Result<(), String> {
 #[test]
 fn time_now_and_monotonic_run() {
     // Both clock host functions lower to `xz_time_now` / `xz_time_monotonic`
-    // returning f64. The values are non-deterministic, so this asserts the
-    // monotonic pair does not go backwards (the captured branch) and that
-    // `now()` renders as a parseable float.
+    // returning i64 nanoseconds. The values are non-deterministic, so this
+    // asserts the monotonic pair does not go backwards (a non-negative
+    // Duration) and that a wall-clock span renders as an integer.
     let out = match exec_capture(
         r#"func main() {
     let before = monotonic()
-    let wall = now()
     let after = monotonic()
-    if after < before {
+    let d = after - before
+    if d.nanos() < 0 {
         print("backwards")
     } else {
         print("ok ")
     }
-    print(wall.to_str())
+    let wall = now()
+    let wall_elapsed = now() - wall
+    print(wall_elapsed.millis().to_str())
     print("\n")
 }"#,
     ) {
@@ -1775,20 +1777,21 @@ fn time_now_and_monotonic_run() {
             return;
         }
     };
-    let wall = match out.strip_prefix("ok ") {
-        Some(rest) => rest.trim_end_matches('\n'),
+    let rest = match out.strip_prefix("ok ") {
+        Some(rest) => rest,
         None => {
             println!("FAIL time now/monotonic: monotonic went backwards: {:?}", out);
             return;
         }
     };
-    assert!(wall.parse::<f64>().is_ok(), "now() must render as a float, got {:?}", wall);
+    let ms = rest.trim_end_matches('\n');
+    assert!(ms.parse::<i64>().is_ok(), "wall span millis must be an integer, got {:?}", ms);
 }
 
 #[test]
-fn time_example_elapsed_is_a_float() -> Result<(), String> {
-    // examples/time.xz: `sum` is deterministic and now asserted exactly; the
-    // elapsed/now readings are wall-clock dependent, so only their float shape
+fn time_example_uses_typed_time() -> Result<(), String> {
+    // examples/time.xz: `sum` is deterministic and asserted exactly; the
+    // elapsed/wall spans are wall-clock dependent, so only their rendered shape
     // is asserted. Uses the capture sink so the run leaves no stray stdout.
     let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/time.xz"))
         .map_err(|e| e.to_string())?;
@@ -1797,8 +1800,16 @@ fn time_example_elapsed_is_a_float() -> Result<(), String> {
     assert_eq!(lines.next(), Some("sum: 499999500000"));
     let elapsed = lines.next().and_then(|l| l.strip_prefix("elapsed: ")).ok_or("missing elapsed line")?;
     elapsed.parse::<f64>().map_err(|_| format!("elapsed not a float: {elapsed:?}"))?;
-    let now = lines.next().and_then(|l| l.strip_prefix("now: ")).ok_or("missing now line")?;
-    now.parse::<f64>().map_err(|_| format!("now not a float: {now:?}"))?;
+    let millis = lines
+        .next()
+        .and_then(|l| l.strip_prefix("elapsed millis: "))
+        .ok_or("missing millis line")?;
+    millis.parse::<i64>().map_err(|_| format!("elapsed millis not an int: {millis:?}"))?;
+    let wall = lines
+        .next()
+        .and_then(|l| l.strip_prefix("wall elapsed: "))
+        .ok_or("missing wall line")?;
+    wall.parse::<f64>().map_err(|_| format!("wall elapsed not a float: {wall:?}"))?;
     Ok(())
 }
 

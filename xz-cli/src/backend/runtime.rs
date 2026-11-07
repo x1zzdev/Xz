@@ -178,21 +178,21 @@ extern "C" fn xz_read_file(path_ptr: usize, path_len: usize, out: usize) -> i8 {
     }
 }
 
-/// `now()`: wall-clock seconds since the Unix epoch (UTC) as f64. Reads the
+/// `now()`: wall-clock nanoseconds since the Unix epoch (UTC) as i64. Reads the
 /// system clock, so it can jump forwards or backwards; use `xz_time_monotonic`
 /// for durations. The JIT host half of `now()` (docs/12-stdlib.md).
 #[unsafe(no_mangle)]
-extern "C" fn xz_time_now() -> f64 {
+extern "C" fn xz_time_now() -> i64 {
     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => d.as_secs_f64(),
-        Err(e) => -e.duration().as_secs_f64(),
+        Ok(d) => d.as_nanos() as i64,
+        Err(e) => -(e.duration().as_nanos() as i64),
     }
 }
 
-/// `monotonic()`: non-decreasing seconds from a fixed, unspecified origin as
-/// f64, read from the host's `CLOCK_MONOTONIC`. The origin is the system boot,
-/// matching the native runtime (`emit_native_runtime`). The JIT host half of
-/// `monotonic()` (docs/12-stdlib.md).
+/// `monotonic()`: non-decreasing nanoseconds from a fixed, unspecified origin
+/// as i64, read from the host's `CLOCK_MONOTONIC`. The origin is the system
+/// boot, matching the native runtime (`emit_native_runtime`). The JIT host half
+/// of `monotonic()` (docs/12-stdlib.md).
 #[repr(C)]
 struct Timespec {
     tv_sec: i64,
@@ -205,11 +205,11 @@ unsafe extern "C" {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn xz_time_monotonic() -> f64 {
+extern "C" fn xz_time_monotonic() -> i64 {
     let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
     let clock = crate::backend::llvm_backend::monotonic_clock_id() as i32;
     unsafe { libc_clock_gettime(clock, &mut ts) };
-    ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
+    ts.tv_sec * 1_000_000_000 + ts.tv_nsec
 }
 
 /// Free a heap-allocated Str buffer. No-op unless the pointer is still live in
@@ -413,8 +413,8 @@ pub fn run(module: Module) -> Result<i32, String> {
     let sfree: unsafe extern "C" fn(usize, usize) -> () = xz_str_free;
     let streq: unsafe extern "C" fn(usize, usize, usize, usize) -> i8 = xz_str_eq;
     let readf: unsafe extern "C" fn(usize, usize, usize) -> i8 = xz_read_file;
-    let time_now: unsafe extern "C" fn() -> f64 = xz_time_now;
-    let time_mono: unsafe extern "C" fn() -> f64 = xz_time_monotonic;
+    let time_now: unsafe extern "C" fn() -> i64 = xz_time_now;
+    let time_mono: unsafe extern "C" fn() -> i64 = xz_time_monotonic;
     bind(&module, &ee, "xz_str_free", sfree as usize);
     bind(&module, &ee, "xz_print", p as usize);
     bind(&module, &ee, "xz_concat", c as usize);
