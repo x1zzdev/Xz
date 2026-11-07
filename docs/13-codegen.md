@@ -99,7 +99,7 @@ system linker.
 | `xz_char_to_str` | `fn(i8) -> XzStr` | `Char.to_str()` |
 | `xz_str_to_upper` / `xz_str_to_lower` | `fn(i8*, i64) -> XzStr` | `Str.to_upper()` / `to_lower()` — a fresh byte buffer |
 | `xz_bool_to_str` | `fn(i1) -> XzStr` | `Bool.to_str()` |
-| `xz_str_eq` | `fn(i8*, i64, i8*, i64) -> i1` | `Map` key equality for `Str` keys |
+| `xz_str_eq` | `fn(i8*, i64, i8*, i64) -> i1` | `Map` key / `Set` element equality for `Str` values |
 | `xz_read_file` | `fn(i8*, i64, ptr) -> i1` | `read_file(path: Str)` — reads the file at the byte path and writes a fresh `{ptr, len}` payload through `out`, returning 1; 0 on any failure |
 | `xz_time_now` / `xz_time_monotonic` | `fn() -> f64` | `now()` / `monotonic()` — wall-clock seconds since the Unix epoch / non-decreasing seconds from the host monotonic clock (`CLOCK_MONOTONIC`, system boot) |
 | `xz_str_free` | `fn(i8*, i64) -> ()` | frees a heap Str buffer (registry-guarded) |
@@ -202,9 +202,9 @@ registry-guarded, so freeing one alias would be a use-after-free. Only a
 | `m.get(k)` | hash-index probe (Int/usize/Bool/Char hashed by value, Str by content, records/enums by folding field hashes), linear probing → `some(value)` / `none` |
 | `m.insert(k, v)` | malloc `len` or `len+1` key and value buffers plus a freshly built hash index, copy, replace at the existing slot or append, return a new Map |
 | `m.keys()` / `m.values()` | allocate a `List[K]` / `List[V]` buffer and copy the column, in insertion order |
-| `{e1, e2, ...}` | start from the empty set and `insert` each element in first-insertion order |
-| `s.contains(e)` | linear scan with the same key-equality rule as `Map` (Int/usize/Bool/Char by value, Str via `xz_str_eq`) → `Bool` |
-| `s.insert(e)` | present: return the receiver unchanged (no allocation or copy); absent: malloc `len+1` elements, copy, append, return a new Set |
+| `{e1, e2, ...}` | allocate the element buffer and the hash index once, then place each element in first-insertion order (a repeated element keeps its first position) |
+| `s.contains(e)` | hash-index probe with the same equality rule as `Map` (Int/usize/Bool/Char by value, Str by content), linear probing → `Bool` |
+| `s.insert(e)` | present: return the receiver unchanged (no allocation or copy); absent: malloc `len+1` elements plus a freshly built hash index, copy, append, return a new Set |
 | `for e in s` | the `List` induction lowering over the element buffer, in insertion order |
 | enum construction | allocate a heap box, store the variant's fields, build `{ box, tag }` |
 | function call | `build_direct_call` with the target's `FunctionValue` |
@@ -232,6 +232,19 @@ variant's payload field hashes. Equality compares record fields recursively and,
 for an enum, requires equal tags and equal payload fields; an enum's box pointer
 is never compared, so two structurally equal values at different addresses are
 the same key.
+
+### Set representation
+
+A `Set[T]` value is four words: the element buffer, the element count, a
+hash-index table, and its capacity. The buffer keeps elements in insertion
+order; the index is an open-addressing table of buffer positions used only to
+make `contains`/`insert` average O(1). The index is derived data and is never
+observable: iteration reads the buffer in order, so no hash order leaks into
+behavior. Because elements are immutable, a copy shares the buffer and the
+index; `insert` builds a new buffer and a new index and returns a new Set, and
+returns the receiver unchanged when the element is already present. The hash and
+equality are the same fixed functions of the element that `Map` uses for its
+keys.
 
 ### `?` early return
 

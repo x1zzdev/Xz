@@ -152,6 +152,9 @@ repeated element never occupies a second position. Like `List[T]` and
 — and its elements are immutable: there is no add-in-place. The only way to
 change a set is the non-mutating `s.insert(e)`, which returns a *new* set; when
 `e` is already present the new set has the same elements in the same positions.
+Membership and insertion are average O(1) through an internal hash index, like
+`Map[K, V]`; that index is never observable and does not change the insertion
+order above.
 
 Elements are restricted to types with decidable equality — `Int`, `usize`,
 `Bool`, `Char`, and `Str`. `Map` keys additionally allow records/enums of such
