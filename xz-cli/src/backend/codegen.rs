@@ -497,6 +497,33 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         agg.into()
     }
 
+    /// Split a Set value into its hash-index table and capacity.
+    fn set_index_parts(
+        &mut self,
+        v: BasicValueEnum<'ctx>,
+    ) -> (PointerValue<'ctx>, inkwell::values::IntValue<'ctx>) {
+        let st = v.into_struct_value();
+        let idx = self.backend.builder.build_extract_value(st, 2, "si").unwrap().into_pointer_value();
+        let cap = self.backend.builder.build_extract_value(st, 3, "sc").unwrap().into_int_value();
+        (idx, cap)
+    }
+
+    /// Assemble a `{ elems, len, idx, cap }` Set value.
+    fn set_value(
+        &mut self,
+        elems: PointerValue<'ctx>,
+        len: inkwell::values::IntValue<'ctx>,
+        idx: PointerValue<'ctx>,
+        cap: inkwell::values::IntValue<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        let mut agg = self.backend.types.xz_set.const_zero();
+        agg = self.backend.builder.build_insert_value(agg, elems, 0, "s.ep").unwrap().into_struct_value();
+        agg = self.backend.builder.build_insert_value(agg, len, 1, "s.len").unwrap().into_struct_value();
+        agg = self.backend.builder.build_insert_value(agg, idx, 2, "s.ip").unwrap().into_struct_value();
+        agg = self.backend.builder.build_insert_value(agg, cap, 3, "s.cp").unwrap().into_struct_value();
+        agg.into()
+    }
+
     /// Lower `{k1: v1, ...}`: allocate the key/value columns and the hash index
     /// once, then place each entry in order. A repeated key keeps its first
     /// position and the later value wins (docs/12), all in a single pass
@@ -1211,27 +1238,83 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// Lower an empty `{}` when the binding is a Set; otherwise an empty Map.
     fn gen_empty_brace(&mut self) -> GenResult<'ctx> {
         match &self.set_hint {
-            Some(Kind::Set(_)) => Ok(self.backend.types.xz_list.const_zero().into()),
+            Some(Kind::Set(_)) => Ok(self.backend.types.xz_set.const_zero().into()),
             _ => Ok(self.backend.types.xz_map.const_zero().into()),
         }
     }
 
-    /// Lower `{e1, e2, ...}`: start from the empty set and `insert` each
-    /// element in order, so a repeated element keeps its first position
-    /// (docs/12).
+    /// Lower `{e1, e2, ...}`: allocate the element buffer and the hash index
+    /// once, then place each element in first-insertion order, so a repeated
+    /// element keeps its first position (docs/12; docs/13-codegen.md § Set
+    /// representation).
     fn gen_set_lit(&mut self, elems: &[Expr]) -> GenResult<'ctx> {
-        let mut agg: BasicValueEnum<'ctx> = self.backend.types.xz_list.const_zero().into();
-        for e in elems {
-            let ev = self.gen_expr(e)?;
-            let kind = kind_from_llvm(self.backend, self.basic_type_of(ev));
-            agg = self.set_insert_value(agg, ev, &kind)?;
+        if elems.is_empty() {
+            return self.gen_empty_brace();
         }
-        Ok(agg)
+        let mut vals: Vec<BasicValueEnum<'ctx>> = Vec::with_capacity(elems.len());
+        for e in elems {
+            vals.push(self.gen_expr(e)?);
+        }
+        let elem_bt = self.basic_type_of(vals[0]);
+        // Set elements are primitives, so the LLVM type names the kind; a
+        // declared `Set[T]` hint still wins when present.
+        let elem_kind = match &self.set_hint {
+            Some(Kind::Set(t)) => (**t).clone(),
+            _ => kind_from_llvm(self.backend, elem_bt),
+        };
+        let n = vals.len() as u64;
+        let elems_buf = self.alloc_buffer(elem_bt, n, "set.elems")?;
+        // The table holds at most `n` entries, so a power of two at least twice
+        // that keeps the load factor at or below one half.
+        let mut cap_u = 1u64;
+        while cap_u < n.saturating_mul(2).max(8) {
+            cap_u <<= 1;
+        }
+        let int = self.backend.types.int;
+        let cap = int.const_int(cap_u, false);
+        let idx = self.alloc_map_column(8, cap, "set.idx")?;
+        self.map_fill_index(idx, cap);
+        let cur_ptr = self.backend.builder.build_alloca(int, "set.cur").unwrap();
+        self.backend.builder.build_store(cur_ptr, int.const_zero()).unwrap();
+        for ev in vals.iter() {
+            let cur = self.build_load(int.into(), cur_ptr, "set.curv").into_int_value();
+            let found = self.map_probe_find_raw(elems_buf, idx, cap, cur, *ev, &elem_kind)?;
+            let is_found = self
+                .backend
+                .builder
+                .build_int_compare(IntPredicate::SGE, found, int.const_zero(), "set.found")
+                .unwrap();
+            let fnv = self.cur_fn();
+            let skip = self.backend.context.append_basic_block(fnv, "set.skip");
+            let append = self.backend.context.append_basic_block(fnv, "set.append");
+            let cont = self.backend.context.append_basic_block(fnv, "set.cont");
+            self.backend.builder.build_conditional_branch(is_found, skip, append).unwrap();
+
+            // Present: the element keeps its first position, nothing to store.
+            self.backend.builder.position_at_end(skip);
+            self.backend.builder.build_unconditional_branch(cont).unwrap();
+
+            self.backend.builder.position_at_end(append);
+            let eslot = unsafe { self.backend.builder.build_in_bounds_gep(elem_bt, elems_buf, &[cur], "set.es").unwrap() };
+            self.backend.builder.build_store(eslot, *ev).unwrap();
+            let h = self.map_hash(*ev, &elem_kind)?;
+            let slot = self.map_probe_empty(idx, cap, h);
+            let islot = unsafe { self.backend.builder.build_in_bounds_gep(int, idx, &[slot], "set.is").unwrap() };
+            self.backend.builder.build_store(islot, cur).unwrap();
+            let cur1 = self.backend.builder.build_int_add(cur, int.const_int(1, false), "set.cur1").unwrap();
+            self.backend.builder.build_store(cur_ptr, cur1).unwrap();
+            self.backend.builder.build_unconditional_branch(cont).unwrap();
+
+            self.backend.builder.position_at_end(cont);
+        }
+        let len = self.build_load(int.into(), cur_ptr, "set.len").into_int_value();
+        Ok(self.set_value(elems_buf, len, idx, cap))
     }
 
-    /// Linear scan for `element` in the set's element buffer; returns the
-    /// matching index or -1. Elements compare with the same rule as Map keys
-    /// (`map_key_eq`: by value for Int/usize/Bool/Char, by content for Str).
+    /// Hash-index probe for `element`; returns the matching buffer position or
+    /// -1. Elements hash and compare with the same rule as Map keys
+    /// (`map_hash`/`map_key_eq`: by value for Int/usize/Bool/Char, by content
+    /// for Str), since Set elements are a subset of Map key types.
     fn set_find(
         &mut self,
         set_val: BasicValueEnum<'ctx>,
@@ -1239,49 +1322,16 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         elem_kind: &Kind,
     ) -> Result<inkwell::values::IntValue<'ctx>, String> {
         let (buf, len) = self.str_parts(set_val);
-        let elem_bt = self.basic_type_of(elem_val);
-        let int = self.backend.types.int;
-        let fnv = self.cur_fn();
-        let header = self.backend.context.append_basic_block(fnv, "sfind.header");
-        let body = self.backend.context.append_basic_block(fnv, "sfind.body");
-        let next = self.backend.context.append_basic_block(fnv, "sfind.next");
-        let found = self.backend.context.append_basic_block(fnv, "sfind.found");
-        let done = self.backend.context.append_basic_block(fnv, "sfind.done");
-        let i_ptr = self.backend.builder.build_alloca(int, "sfind.i").unwrap();
-        let idx_ptr = self.backend.builder.build_alloca(int, "sfind.idx").unwrap();
-        self.backend.builder.build_store(i_ptr, int.const_zero()).unwrap();
-        self.backend.builder.build_store(idx_ptr, int.const_int(u64::MAX, false)).unwrap();
-        self.backend.builder.build_unconditional_branch(header).unwrap();
-
-        self.backend.builder.position_at_end(header);
-        let i_cur = self.build_load(int.into(), i_ptr, "sfind.ic").into_int_value();
-        let cond = self.backend.builder.build_int_compare(IntPredicate::SLT, i_cur, len, "sfind.cond").unwrap();
-        self.backend.builder.build_conditional_branch(cond, body, done).unwrap();
-
-        self.backend.builder.position_at_end(body);
-        let slot = unsafe { self.backend.builder.build_in_bounds_gep(elem_bt, buf, &[i_cur], "sfind.es").unwrap() };
-        let ecur = self.backend.builder.build_load(elem_bt, slot, "sfind.e").unwrap();
-        let eq = self.map_key_eq(ecur, elem_val, elem_kind)?;
-        self.backend.builder.build_conditional_branch(eq, found, next).unwrap();
-
-        self.backend.builder.position_at_end(next);
-        let i_next = self.backend.builder.build_int_add(i_cur, int.const_int(1, false), "sfind.in").unwrap();
-        self.backend.builder.build_store(i_ptr, i_next).unwrap();
-        self.backend.builder.build_unconditional_branch(header).unwrap();
-
-        self.backend.builder.position_at_end(found);
-        self.backend.builder.build_store(idx_ptr, i_cur).unwrap();
-        self.backend.builder.build_unconditional_branch(done).unwrap();
-
-        self.backend.builder.position_at_end(done);
-        Ok(self.build_load(int.into(), idx_ptr, "sfind.ret").into_int_value())
+        let (idx, cap) = self.set_index_parts(set_val);
+        self.map_probe_find_raw(buf, idx, cap, len, elem_val, elem_kind)
     }
 
     /// Return a new Set with `element` added. When the element is already
     /// present the receiver is returned unchanged — a no-op insert allocates
     /// nothing and copies nothing, since the elements and their positions are
-    /// identical (docs/12). Otherwise malloc `len+1`, copy the old buffer, and
-    /// store the element at the end.
+    /// identical (docs/12). Otherwise malloc `len+1`, copy the old buffer,
+    /// append, and rebuild the hash index (docs/13-codegen.md § Set
+    /// representation).
     fn set_insert_value(
         &mut self,
         set_val: BasicValueEnum<'ctx>,
@@ -1307,19 +1357,20 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         let _ = self.backend.builder.build_memcpy(new_buf, 1, buf, 1, old_bytes).unwrap();
         let eslot = unsafe { self.backend.builder.build_in_bounds_gep(elem_bt, new_buf, &[len], "s.eslot").unwrap() };
         self.backend.builder.build_store(eslot, elem_val).unwrap();
-        let mut agg = self.backend.types.xz_list.const_zero();
-        agg = self.backend.builder.build_insert_value(agg, new_buf, 0, "s.bp").unwrap().into_struct_value();
-        agg = self.backend.builder.build_insert_value(agg, new_len, 1, "s.len").unwrap().into_struct_value();
-        let appended: BasicValueEnum<'ctx> = agg.into();
+        let (new_idx, cap) = self.map_index_build(new_buf, new_len, elem_kind)?;
+        let appended = self.set_value(new_buf, new_len, new_idx, cap);
+        // `map_index_build` opens its own blocks, so the appended value's
+        // defining block is wherever the builder now sits, not `append`.
+        let append_end = self.backend.builder.get_insert_block().unwrap();
         self.backend.builder.build_unconditional_branch(done).unwrap();
 
         self.backend.builder.position_at_end(done);
-        let phi = self.backend.builder.build_phi(self.backend.types.xz_list, "s.phi").unwrap();
-        phi.add_incoming(&[(&set_val, head), (&appended, append)]);
+        let phi = self.backend.builder.build_phi(self.backend.types.xz_set, "s.phi").unwrap();
+        phi.add_incoming(&[(&set_val, head), (&appended, append_end)]);
         Ok(phi.as_basic_value())
     }
 
-    /// `s.contains(e) -> Bool`: membership by linear scan.
+    /// `s.contains(e) -> Bool`: membership by hash-index probe.
     fn gen_set_contains(
         &mut self,
         set_val: BasicValueEnum<'ctx>,

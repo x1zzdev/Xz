@@ -41,6 +41,7 @@ pub struct TypeMap<'ctx> {
     pub xz_bytes: StructType<'ctx>,
     pub xz_list: StructType<'ctx>,
     pub xz_map: StructType<'ctx>,
+    pub xz_set: StructType<'ctx>,
     pub unit: StructType<'ctx>,
 }
 
@@ -58,6 +59,11 @@ impl<'ctx> TypeMap<'ctx> {
         // table capacity. Entries are immutable, so copies share both buffers
         // and the index; iteration reads the columns in insertion order.
         let xz_map = context.struct_type(&[ptr.into(), ptr.into(), i64.into(), ptr.into(), i64.into()], false);
+        // Set[T] is four words: an element buffer, the element count, an
+        // open-addressing hash-index table (buffer positions), and the table
+        // capacity. Elements are immutable, so copies share the buffer and the
+        // index; iteration reads the buffer in insertion order.
+        let xz_set = context.struct_type(&[ptr.into(), i64.into(), ptr.into(), i64.into()], false);
         TypeMap {
             int: i64,
             float: context.f64_type(),
@@ -68,6 +74,7 @@ impl<'ctx> TypeMap<'ctx> {
             xz_bytes,
             xz_list,
             xz_map,
+            xz_set,
             unit,
         }
     }
@@ -202,10 +209,10 @@ impl<'ctx> LlvmBackend<'ctx> {
             // Map[K, V] is { K*, V*, i64 } regardless of K/V: entries live in
             // separately allocated key/value buffers (opaque pointers erase K/V).
             Kind::Map(_, _) => self.types.xz_map.into(),
-            // Set[T] is also { ptr, i64 }: the element buffer + count. Same
-            // shape as List[T], so it lowers to the same LLVM type; the front
-            // end keeps Set and List apart (opaque pointers erase T).
-            Kind::Set(_) => self.types.xz_list.into(),
+            // Set[T] is { T*, i64, i64*, i64 } regardless of T: elements live in
+            // a separately allocated buffer with an open-addressing hash index
+            // over buffer positions (opaque pointers erase T).
+            Kind::Set(_) => self.types.xz_set.into(),
             Kind::Err | Kind::ErrUnion(_) => self.types.unit.into(),
             // A channel name lowers to its integer id; `send`/`recv` pass the id
             // to the scheduler runtime (docs/13-codegen.md § Concurrency).

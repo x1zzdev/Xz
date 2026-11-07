@@ -1651,8 +1651,42 @@ fn set_insert_noop_returns_receiver_without_copy() -> Result<(), String> {
     let ir = backend.module.print_to_string().to_string();
     assert!(ir.contains("br i1 %s.found"), "the append must be guarded by the find result:\n{}", ir);
     assert!(ir.contains("s.append:"), "the guarded append block must exist:\n{}", ir);
-    assert!(ir.contains("s.phi = phi { ptr, i64 }"), "the no-op path must select the receiver through a phi:\n{}", ir);
+    assert!(ir.contains("s.phi = phi { ptr, i64, ptr, i64 }"), "the no-op path must select the receiver through a phi:\n{}", ir);
     Ok(())
+}
+
+#[test]
+fn set_many_elements_dedup_and_membership() {
+    // Enough elements to force open-addressing probes: a repeated element keeps
+    // its first position, membership finds every element, and iteration stays in
+    // first-insertion order (docs/12, 13 § Set representation).
+    expect_output(
+        r#"func main() -> Result[Unit, Err] {
+    let s: Set[Int] = {10, 20, 30, 40, 50, 60, 70, 80, 20, 10}
+    print(s.len().to_str())
+    print(" ")
+    if s.contains(70) {
+        print("y")
+    } else {
+        print("n")
+    }
+    print(" ")
+    if s.contains(75) {
+        print("y")
+    } else {
+        print("n")
+    }
+    print(" ")
+    for x in s {
+        print(x.to_str())
+        print(",")
+    }
+    print("\n")
+    ok()
+}"#,
+        "8 y n 10,20,30,40,50,60,70,80,\n",
+        "set many elements dedup and membership",
+    );
 }
 
 #[test]
