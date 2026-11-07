@@ -601,11 +601,12 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         Ok(self.map_value(keys, vals, len, idx, cap))
     }
 
-    /// Hash a Map key to an i64. Int/usize hash their value, Bool/Char are
+    /// Hash a hashable value — a Map key or a Set element, the same rule both
+    /// containers use — to an i64. Int/usize hash their value, Bool/Char are
     /// zero-extended first, Str hashes its bytes (FNV-1a), and a record/enum
-    /// folds the hashes of its fields (docs/13-codegen.md § Map
-    /// representation). The hash is a pure function of the key, so lowering is
-    /// deterministic.
+    /// folds the hashes of its fields (docs/13-codegen.md § Map representation;
+    /// Set reuses the rule, § Set representation). The hash is a pure function
+    /// of the value, so lowering is deterministic.
     fn map_hash(
         &mut self,
         key_val: BasicValueEnum<'ctx>,
@@ -621,7 +622,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             Kind::Str => self.map_hash_str(key_val)?,
             Kind::Record(name) => self.map_hash_record(key_val, name)?,
             Kind::Enum(name) => self.map_hash_enum(key_val, name)?,
-            _ => return Err(format!("Map key type {:?} has no hash lowering", key_kind)),
+            _ => return Err(format!("type {:?} has no hash lowering (a Map key or Set element must be hashable)", key_kind)),
         };
         Ok(self.map_mix(raw))
     }
@@ -638,7 +639,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             .record_fields
             .get(name)
             .cloned()
-            .ok_or_else(|| format!("unknown record '{}' as a Map key", name))?;
+            .ok_or_else(|| format!("unknown record '{}' in the hash lowering", name))?;
         let sv = val.into_struct_value();
         let int = self.backend.types.int;
         let mut acc = int.const_int(0xcbf2_9ce4_8422_2325, false);
@@ -730,7 +731,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             .backend
             .enum_variants
             .get(name)
-            .ok_or_else(|| format!("unknown enum '{}' as a Map key", name))?;
+            .ok_or_else(|| format!("unknown enum '{}' in the hash/equality lowering", name))?;
         let mut out = Vec::with_capacity(names.len());
         for vn in names {
             let (_, tag, fields) = self
@@ -987,9 +988,9 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         self.map_probe_find_raw(keys, idx, cap, len, key_val, key_kind)
     }
 
-    /// Equality of two keys, dispatched on the key kind (docs/12): by value for
-    /// Int/usize/Bool/Char, by content for Str, and structurally (field by
-    /// field) for records and enums.
+    /// Equality of two hashable values — Map keys or Set elements — dispatched
+    /// on the kind (docs/12): by value for Int/usize/Bool/Char, by content for
+    /// Str, and structurally (field by field) for records and enums.
     fn map_key_eq(
         &mut self,
         a: BasicValueEnum<'ctx>,
@@ -1013,7 +1014,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             }
             Kind::Record(name) => self.map_key_eq_record(a, b, name),
             Kind::Enum(name) => self.map_key_eq_enum(a, b, name),
-            _ => Err(format!("Map key type {:?} has no equality lowering", kind)),
+            _ => Err(format!("type {:?} has no equality lowering (a Map key or Set element must be equatable)", kind)),
         }
     }
 
@@ -1029,7 +1030,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             .record_fields
             .get(name)
             .cloned()
-            .ok_or_else(|| format!("unknown record '{}' as a Map key", name))?;
+            .ok_or_else(|| format!("unknown record '{}' in the equality lowering", name))?;
         let a_sv = a.into_struct_value();
         let b_sv = b.into_struct_value();
         let bool_ty = self.backend.types.bool;
