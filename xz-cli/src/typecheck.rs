@@ -1281,13 +1281,13 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             return Kind::Str;
                         }
                         if at != bt {
-                            self.error(format!("arithmetic on mismatched types"));
+                            self.error_at(format!("arithmetic on mismatched types"), e.span.clone());
                         }
                         at
                     }
                     BinOp::And | BinOp::Or | BinOp::Implies => {
                         if at != Kind::Bool || bt != Kind::Bool {
-                            self.error(format!("logical op requires Bools"));
+                            self.error_at(format!("logical op requires Bools"), e.span.clone());
                         }
                         Kind::Bool
                     }
@@ -1299,7 +1299,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                 let at = self.check_expr(a, env);
                 let tt = self.from_ast(ty);
                 if !self.accepts_cast(&at, &tt) {
-                    self.error(format!("cannot cast {:?} to {:?} (allowed: Int<->usize, Int->Float, Float->Int, Str<->Bytes)", at, tt));
+                    self.error_at(format!("cannot cast {:?} to {:?} (allowed: Int<->usize, Int->Float, Float->Int, Str<->Bytes)", at, tt), e.span.clone());
                 }
                 tt
             }

@@ -1800,3 +1800,58 @@ fn unknown_name_error_points_at_the_name() {
         e.span
     );
 }
+
+#[test]
+fn arithmetic_mismatch_error_points_at_the_expression() {
+    // An operator error now points at the binary expression, not the statement.
+    let src = "func main() {\n    let y = 1 + true\n}\n";
+    let ts = lex(src.to_string(), "test.xz".to_string()).ok().unwrap();
+    let p = parse(ts).unwrap();
+    resolve(&p).ok().unwrap();
+    let errs = typecheck(&p).unwrap_err();
+    let e = errs
+        .iter()
+        .find(|e| e.message.contains("arithmetic on mismatched types"))
+        .expect("expected an arithmetic mismatch error");
+    assert_eq!(
+        e.span.start, (2, 13),
+        "the error should point at `1 + true`, got {:?}",
+        e.span
+    );
+}
+
+#[test]
+fn logical_op_error_points_at_the_expression() {
+    let src = "func main() {\n    let y = true and 1\n}\n";
+    let ts = lex(src.to_string(), "test.xz".to_string()).ok().unwrap();
+    let p = parse(ts).unwrap();
+    resolve(&p).ok().unwrap();
+    let errs = typecheck(&p).unwrap_err();
+    let e = errs
+        .iter()
+        .find(|e| e.message.contains("logical op requires Bools"))
+        .expect("expected a logical-op error");
+    assert_eq!(
+        e.span.start, (2, 13),
+        "the error should point at `true and 1`, got {:?}",
+        e.span
+    );
+}
+
+#[test]
+fn forbidden_cast_error_points_at_the_expression() {
+    let src = "func main() {\n    let i: Int = \"s\" as Int\n}\n";
+    let ts = lex(src.to_string(), "test.xz".to_string()).ok().unwrap();
+    let p = parse(ts).unwrap();
+    resolve(&p).ok().unwrap();
+    let errs = typecheck(&p).unwrap_err();
+    let e = errs
+        .iter()
+        .find(|e| e.message.contains("cannot cast"))
+        .expect("expected a forbidden-cast error");
+    assert_eq!(
+        e.span.start, (2, 18),
+        "the error should point at `\"s\" as Int`, got {:?}",
+        e.span
+    );
+}
