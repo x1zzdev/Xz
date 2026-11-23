@@ -307,7 +307,10 @@ Host ABI (JIT only):
 | `xz_chan_recv` | `fn(i64, ptr, i64)` | blocking receive |
 
 The host serializes the task threads with a single token so exactly one task
-runs at a time and the schedule is deterministic. `xz build-native` and
+runs at a time and the schedule is deterministic. Scheduler state is per run,
+keyed by the thread that started it and inherited by the tasks it spawns, so two
+programs executed concurrently in one process (for example tests) keep separate
+tokens, channels, and task ids. `xz build-native` and
 `xz build --shared` do not emit these host functions, so a program that uses
 channels or `await` is JIT-only for now: the native/shared build detects the
 scheduler calls and rejects the program with a clear error instead of failing
