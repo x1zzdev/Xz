@@ -423,3 +423,79 @@ fn stdio_server_frames_content_length_messages() {
     let status = child.wait().expect("wait for xz lsp");
     assert_eq!(status.code(), Some(0));
 }
+
+// An untrusted `@trusted` claim: advisory without `--strict`, I0004 with it.
+const UNTRUSTED: &str = r#"/// Trusted but not reviewed.
+/// @intent  Returns one.
+/// @ensures result == 1  @trusted
+/// @effects none
+func f() -> Int
+    post result == 1
+{
+    1
+}"#;
+
+#[test]
+fn non_strict_server_suppresses_intent_diagnostics() {
+    let mut s = Server::new();
+    let publish = did_open(&mut s, "file:///advisory.xz", UNTRUSTED);
+    assert!(diagnostics(&publish).is_empty());
+}
+
+#[test]
+fn strict_server_publishes_intent_diagnostics() {
+    let mut s = Server::new_strict(true);
+    let publish = did_open(&mut s, "file:///strict.xz", UNTRUSTED);
+    let diags = diagnostics(&publish);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0]["code"], "I0004");
+    assert_eq!(diags[0]["source"], "xz");
+}
+
+#[test]
+fn cli_strict_flag_reaches_the_server() {
+    // `xz lsp --strict` must actually enable strict diagnostics: an untrusted
+    // claim comes back as I0004 (docs/07-compiler.md).
+    let mut child = Command::new(env!("CARGO_BIN_EXE_xz"))
+        .args(["lsp", "--strict"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn xz lsp --strict");
+
+    let initialize =
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }).to_string();
+    let did_open = json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": { "textDocument": { "uri": "file:///strict.xz", "text": UNTRUSTED } }
+    })
+    .to_string();
+    let shutdown = json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }).to_string();
+    let exit = json!({ "jsonrpc": "2.0", "method": "exit" }).to_string();
+
+    {
+        let stdin = child.stdin.as_mut().expect("stdin");
+        for body in [&initialize, &did_open, &shutdown, &exit] {
+            stdin.write_all(frame(body).as_bytes()).expect("write frame");
+        }
+        stdin.flush().expect("flush stdin");
+    }
+    drop(child.stdin.take());
+
+    let mut reader = BufReader::new(child.stdout.take().expect("stdout"));
+    let init: Value =
+        serde_json::from_str(&read_frame(&mut reader).expect("initialize response")).unwrap();
+    assert_eq!(init["id"], 1);
+    let publish: Value =
+        serde_json::from_str(&read_frame(&mut reader).expect("diagnostics notification")).unwrap();
+    let diags = diagnostics(&publish);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0]["code"], "I0004");
+
+    let shutdown_resp: Value =
+        serde_json::from_str(&read_frame(&mut reader).expect("shutdown response")).unwrap();
+    assert_eq!(shutdown_resp["id"], 3);
+    assert_eq!(child.wait().expect("wait for xz lsp").code(), Some(0));
+}

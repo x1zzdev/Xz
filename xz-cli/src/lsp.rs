@@ -25,6 +25,8 @@ pub struct Server {
     docs: HashMap<String, String>,
     shutdown: bool,
     exit: bool,
+    /// `xz lsp --strict`: publish strict intent diagnostics (I0004, ...) as well.
+    strict: bool,
 }
 
 impl Default for Server {
@@ -35,7 +37,13 @@ impl Default for Server {
 
 impl Server {
     pub fn new() -> Server {
-        Server { docs: HashMap::new(), shutdown: false, exit: false }
+        Server::new_strict(false)
+    }
+
+    /// A server that also publishes strict intent diagnostics, as
+    /// `xz lsp --strict` requests (docs/09-intent-verification.md).
+    pub fn new_strict(strict: bool) -> Server {
+        Server { docs: HashMap::new(), shutdown: false, exit: false, strict: strict }
     }
 
     pub fn should_exit(&self) -> bool {
@@ -132,7 +140,7 @@ impl Server {
             Some(t) => t,
             None => return clear(uri),
         };
-        let items: Vec<Value> = driver::check(text, uri, false)
+        let items: Vec<Value> = driver::check(text, uri, self.strict)
             .iter()
             .map(|d| diagnostic_json(d, text))
             .collect();
@@ -541,12 +549,12 @@ fn doc_markdown(doc: Option<&ast::DocComment>) -> Option<String> {
 /// Read/decode JSON-RPC messages from `stdin` and write responses to `stdout`
 /// until `exit` (or EOF). Returns the LSP-prescribed exit code: 0 if a
 /// `shutdown` request preceded `exit`, 1 otherwise.
-pub fn run_stdio() -> i32 {
+pub fn run_stdio(strict: bool) -> i32 {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut reader = stdin.lock();
     let mut writer = stdout.lock();
-    let mut server = Server::new();
+    let mut server = Server::new_strict(strict);
     while let Ok(Some(body)) = read_message(&mut reader) {
         if let Some(resp) = server.handle(&body)
             && write_message(&mut writer, &resp).is_err()

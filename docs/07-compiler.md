@@ -40,7 +40,7 @@ xz check --strict <file.xz> # intent checks enforced (I0004: untrusted claims fa
 xz check-json [--strict] <file.xz>   # same, diagnostics as a JSON array
 xz run <file.xz>            # build and JIT-execute
 xz fmt <file.xz>            # parse and print the canonical layout on stdout
-xz lsp                      # language server on stdio (Phase 8, first slice)
+xz lsp [--strict]           # language server on stdio (Phase 8, first slice)
 ```
 
 ## Language server (`xz lsp`)
@@ -80,6 +80,10 @@ spans.
   contract of `xz fmt`.
 - **Positions:** 1-based Xz spans are converted to 0-based UTF-16 code units
   (the LSP default; advertised as `positionEncoding: "utf-16"`).
+- **Strict intent mode:** `xz lsp --strict` publishes strict intent diagnostics
+  (e.g. `I0004`) alongside the ordinary ones, matching `xz check --strict`.
+  Without the flag the editor sees the non-strict set, so the server's default
+  behavior is unchanged.
 - **Exit code:** 0 after a `shutdown` request, 1 otherwise (per the LSP spec).
 
 Type errors carry a real span: a declaration- or statement-level error points at

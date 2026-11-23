@@ -13,7 +13,8 @@ fn main() {
         argv.push(a);
     }
     if argv.len() >= 2 && argv[1] == "lsp" {
-        std::process::exit(xz_cli::lsp::run_stdio());
+        let strict = argv[2..].iter().any(|a| a == "--strict");
+        std::process::exit(xz_cli::lsp::run_stdio(strict));
     }
     if argv.len() >= 2 && argv[1] == "pkg" {
         std::process::exit(run_pkg(&argv[2..]));
