@@ -810,6 +810,32 @@ fn map_int_keys_index_growth_and_replacement_run() {
 }
 
 #[test]
+fn map_insert_replacement_reuses_receiver_index() -> Result<(), String> {
+    // Replacing a present key leaves every column position unchanged, so the
+    // receiver's hash index is reused and only the append path rebuilds it
+    // (docs/13 § Map representation). The lowering branches on the find result
+    // and selects the index and capacity through phis.
+    let src = r#"func main() {
+    mut counts: Map[Str, Int] = {"a": 1}
+    counts = counts.insert("a", 2)
+    print(counts.len().to_str())
+}"#;
+    let tokens = lex(src.to_string(), "map_reuse.xz".to_string()).map_err(|e| e.message)?;
+    let program = parse(tokens).map_err(|e| e.message)?;
+    resolve(&program).map_err(|_| "resolve failed".to_string())?;
+    typecheck(&program).map_err(|e| format!("typecheck: {} errors", e.len()))?;
+    check_intent(&program).map_err(|e| e[0].code.clone())?;
+    let backend = compile(&program)?;
+    let ir = backend.module.print_to_string().to_string();
+    assert!(ir.contains("br i1 %m.found"), "the index choice must be guarded by the find result:\n{}", ir);
+    assert!(ir.contains("m.reuse:"), "the reuse block must exist:\n{}", ir);
+    assert!(ir.contains("m.rebuild:"), "the rebuild block must exist:\n{}", ir);
+    assert!(ir.contains("m.idxsel = phi ptr"), "the index must be selected through a phi:\n{}", ir);
+    assert!(ir.contains("m.capsel = phi i64"), "the capacity must be selected through a phi:\n{}", ir);
+    Ok(())
+}
+
+#[test]
 fn map_bool_and_char_keys_run() {
     // Bool and Char keys take the zero-extend hash path (docs/13 § Map
     // representation).

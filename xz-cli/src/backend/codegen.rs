@@ -1185,6 +1185,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         key_kind: &Kind,
     ) -> GenResult<'ctx> {
         let (keys, vals, len) = self.map_parts(map_val);
+        let (old_idx, old_cap) = self.map_index_parts(map_val);
         let idx = self.map_find_key(map_val, key_val, key_kind)?;
         let key_bt = self.basic_type_of(key_val);
         let val_bt = self.basic_type_of(val_val);
@@ -1209,8 +1210,39 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         self.backend.builder.build_store(kslot, key_val).unwrap();
         let vslot = unsafe { self.backend.builder.build_in_bounds_gep(val_bt, new_vals, &[slot], "m.vslot").unwrap() };
         self.backend.builder.build_store(vslot, val_val).unwrap();
-        let (new_idx, cap) = self.map_index_build(new_keys, new_len, key_kind)?;
-        Ok(self.map_value(new_keys, new_vals, new_len, new_idx, cap))
+        // Replacing an existing key leaves every column position unchanged, so
+        // the receiver's index still maps each key to its slot and is reused
+        // (the index is immutable derived data). Only an append can add a
+        // position, so only the append path rebuilds the index (docs/13 § Map
+        // representation).
+        let fnv = self.cur_fn();
+        let reuse_bb = self.backend.context.append_basic_block(fnv, "m.reuse");
+        let rebuild_bb = self.backend.context.append_basic_block(fnv, "m.rebuild");
+        let merge_bb = self.backend.context.append_basic_block(fnv, "m.merge");
+        self.backend.builder.build_conditional_branch(found, reuse_bb, rebuild_bb).unwrap();
+
+        self.backend.builder.position_at_end(reuse_bb);
+        self.backend.builder.build_unconditional_branch(merge_bb).unwrap();
+
+        self.backend.builder.position_at_end(rebuild_bb);
+        let (built_idx, built_cap) = self.map_index_build(new_keys, new_len, key_kind)?;
+        // `map_index_build` ends in its own `done` block; the built values are
+        // defined there, so the phi must name it, not the entry block.
+        let built_bb = self.backend.builder.get_insert_block().unwrap();
+        self.backend.builder.build_unconditional_branch(merge_bb).unwrap();
+
+        self.backend.builder.position_at_end(merge_bb);
+        let idx_phi = self.backend.builder.build_phi(self.backend.types.ptr, "m.idxsel").unwrap();
+        idx_phi.add_incoming(&[(&old_idx, reuse_bb), (&built_idx, built_bb)]);
+        let cap_phi = self.backend.builder.build_phi(int, "m.capsel").unwrap();
+        cap_phi.add_incoming(&[(&old_cap, reuse_bb), (&built_cap, built_bb)]);
+        Ok(self.map_value(
+            new_keys,
+            new_vals,
+            new_len,
+            idx_phi.as_basic_value().into_pointer_value(),
+            cap_phi.as_basic_value().into_int_value(),
+        ))
     }
 
     /// malloc a map column of `count` elements (at least one byte).

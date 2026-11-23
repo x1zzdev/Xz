@@ -207,7 +207,7 @@ registry-guarded, so freeing one alias would be a use-after-free. Only a
 | `for x in xs` | induction `0..len`; load the element at each index |
 | `{k1: v1, ...}` | allocate the key/value columns and the hash index once, then insert each entry in order (a repeated key keeps its first position with the later value) |
 | `m.get(k)` | hash-index probe (Int/usize/Bool/Char hashed by value, Str by content, records/enums by folding field hashes), linear probing → `some(value)` / `none` |
-| `m.insert(k, v)` | malloc `len` or `len+1` key and value buffers plus a freshly built hash index, copy, replace at the existing slot or append, return a new Map |
+| `m.insert(k, v)` | malloc `len` or `len+1` key and value buffers, copy, replace at the existing slot or append, return a new Map; a replace keeps the receiver's hash index (positions unchanged), an append rebuilds it |
 | `m.keys()` / `m.values()` | allocate a `List[K]` / `List[V]` buffer and copy the column, in insertion order |
 | `{e1, e2, ...}` | allocate the element buffer and the hash index once, then place each element in first-insertion order (a repeated element keeps its first position) |
 | `s.contains(e)` | hash-index probe with the same equality rule as `Map` (Int/usize/Bool/Char by value, Str by content), linear probing → `Bool` |
@@ -232,7 +232,9 @@ insertion order; the index is an open-addressing table of column positions used
 only to make `get`/`insert` average O(1). The index is derived data and is never
 observable: iteration, `keys`, and `values` read the columns in order, so no
 hash order leaks into behavior. Because entries are immutable, a copy shares the
-columns and the index; `insert` always builds new buffers and returns a new Map.
+columns and the index; `insert` always builds new key and value buffers and
+returns a new Map, and reuses the receiver's index when the key is already
+present (every position is unchanged), rebuilding it only on append.
 The hash is a fixed function of the key (no per-process seed), so the same
 program lowers to the same index and the same output. For a record key the hash
 folds the field hashes; for an enum key it folds the tag with the active
