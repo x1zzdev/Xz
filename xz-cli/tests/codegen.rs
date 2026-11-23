@@ -546,6 +546,38 @@ fn copied_read_file_result_buffer_is_not_released() -> Result<(), String> {
 }
 
 #[test]
+fn error_slot_message_is_not_released() -> Result<(), String> {
+    // docs/13, docs/14 § Str memory: a `Str` in a Result error slot is an
+    // embedded Str, so it follows the conservative downgrade-to-leak rule. A
+    // fresh message escapes through the returned Result (or a copy, or `?`), so
+    // the backend does not free it — freeing at the producing function's exit
+    // would dangle the caller's message. The registry guard makes a mistaken
+    // free a no-op, so leaking is the sound choice; the message must stay
+    // observable.
+    let src = r#"/// Always fails with a composed message.
+/// @intent  Returns an error carrying the composed message.
+/// @effects none
+func fail(x: Str) -> Result[Int, Err] {
+    err(DomainError(x + "!"))
+}
+
+func main() {
+    match fail("boom") {
+        ok(_) -> print("ok")
+        err(e) -> print(e.message)
+    }
+}"#;
+    let program = checked_program(src)?;
+    let backend = compile(&program)?;
+    let ir = backend.module.print_to_string().to_string();
+    let calls = ir.matches("call void @xz_str_free").count();
+    assert_eq!(calls, 0, "an error-slot message must not be released (it escapes the function):\n{}", ir);
+    let out = exec_capture(src)?;
+    assert_eq!(out, "boom!", "the fresh message must survive to the caller");
+    Ok(())
+}
+
+#[test]
 fn list_literal_index_and_iteration_run() {
     // List[T]: literal construction, bounds-checked indexing returning
     // Result[T, IndexError], non-mutating append, len/is_empty, and

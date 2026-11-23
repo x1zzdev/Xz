@@ -159,7 +159,10 @@ copied or embedded — `let y = x`, `let y = x.to_str()` (identity), a `Str`
 passed into `Option`/`Result`/record/enum construction, or any `Str` flowing
 through an `if`/`match` phi. This is conservative: shared buffers leak rather
 than risking a use-after-free. Fresh temps passed directly into `print` are
-freed right after the call. See also docs/14-codegen-notes.md § Str memory.
+freed right after the call. A `Str` in a `Result` error slot is the same
+embedded case: a fresh message (`err(DomainError(<fresh>))`, `read_file`'s OS
+reason) is never freed, since it can escape through a copy, `?`, or a return.
+See also docs/14-codegen-notes.md § Str memory.
 
 An `extern func` return marked `transfer` produces a buffer the *caller* owns
 ([10-ffi-interop.md](10-ffi-interop.md)). It is tracked like a fresh runtime

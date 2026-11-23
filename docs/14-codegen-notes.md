@@ -77,6 +77,12 @@ Memory is reclaimed **conservatively but soundly**:
   `LIVE_STR`, so it is released through the `release` symbol the declaration
   names (docs/10-ffi-interop.md), at the same points and under the same
   downgrade-to-leak rules as a fresh runtime buffer.
+- A `Str` in a `Result` error slot is an **embedded** `Str`, so it follows the
+  same rule and is never freed. A fresh message (`err(DomainError(<fresh>))`, or
+  `read_file`'s OS reason) can always escape through a copy, `?`, or a return —
+  a `Result` is a freely-copied value with no drop point — so a precise free
+  point would need whole-value move/alias tracking the backend does not have.
+  The `LIVE_STR` guard makes a future arena/refcount reclamation safe.
 
 `wasm`/native phases can take the next step: a per-frame arena (free the whole
 frame at exit) or real reference counting, once `Str` mutation/loops exist.
