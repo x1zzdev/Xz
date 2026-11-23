@@ -1,6 +1,6 @@
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Condvar, LazyLock, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::thread;
 use std::thread::ThreadId;
 
@@ -261,25 +261,47 @@ struct Sched {
     pending: HashMap<u64, Vec<u8>>,
 }
 
-static SCHED: LazyLock<(Mutex<Sched>, Condvar)> = LazyLock::new(|| {
-    (
-        Mutex::new(Sched {
+impl Sched {
+    /// A fresh scheduler state with the calling thread (task 0) holding the
+    /// token, so no spawned task runs until `main` first blocks.
+    fn new() -> Sched {
+        Sched {
             ready: VecDeque::new(),
             running: Some(0),
             next_id: 1,
             channels: HashMap::new(),
             pending: HashMap::new(),
-        }),
-        Condvar::new(),
-    )
-});
+        }
+    }
+}
+
+/// One scheduler instance: the shared state plus the condvar tasks wait on.
+struct Scheduler {
+    state: Mutex<Sched>,
+    cv: Condvar,
+}
+
+impl Scheduler {
+    fn new() -> Scheduler {
+        Scheduler { state: Mutex::new(Sched::new()), cv: Condvar::new() }
+    }
+}
+
+/// One scheduler per run, keyed by the thread that started it. Tasks inherit
+/// their spawner's key (via `CAPTURE_OWNER`), so a run's `task`/`chan` state is
+/// isolated from concurrent `run_capturing` calls in the same process; a global
+/// scheduler would let one run's token handoffs and channel ids reach another's
+/// tasks (docs/13-codegen.md).
+static SCHEDULERS: LazyLock<Mutex<HashMap<ThreadId, Arc<Scheduler>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn scheduler_for(owner: ThreadId) -> Arc<Scheduler> {
+    let mut m = SCHEDULERS.lock().unwrap();
+    m.entry(owner).or_insert_with(|| Arc::new(Scheduler::new())).clone()
+}
 
 thread_local! {
     static TASK_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-fn sched_lock() -> std::sync::MutexGuard<'static, Sched> {
-    SCHED.0.lock().unwrap()
 }
 
 fn copy_bytes(ptr: usize, size: usize) -> Vec<u8> {
@@ -301,10 +323,10 @@ fn copy_out(dst: usize, src: &[u8], size: usize) {
 #[unsafe(no_mangle)]
 extern "C" fn xz_sched_init() {
     TASK_ID.with(|t| t.set(0));
-    let (lock, cv) = &*SCHED;
-    let mut s = lock.lock().unwrap();
-    s.running = Some(0);
-    cv.notify_all();
+    let sched = scheduler_for(capture_owner());
+    let mut s = sched.state.lock().unwrap();
+    *s = Sched::new();
+    sched.cv.notify_all();
 }
 
 /// Spawn a task: assign an id, append it to the ready queue, and start its OS
@@ -312,9 +334,10 @@ extern "C" fn xz_sched_init() {
 /// grants it. The token passes to the next ready task when the body returns.
 fn spawn_task<F: FnOnce() + Send + 'static>(body: F) {
     let owner = capture_owner();
+    let sched = scheduler_for(owner);
     let id;
     {
-        let mut s = sched_lock();
+        let mut s = sched.state.lock().unwrap();
         id = s.next_id;
         s.next_id += 1;
         s.ready.push_back(id);
@@ -323,17 +346,15 @@ fn spawn_task<F: FnOnce() + Send + 'static>(body: F) {
         TASK_ID.with(|t| t.set(id));
         CAPTURE_OWNER.with(|c| c.set(Some(owner)));
         {
-            let (lock, cv) = &*SCHED;
-            let mut s = lock.lock().unwrap();
+            let mut s = sched.state.lock().unwrap();
             while s.running != Some(id) {
-                s = cv.wait(s).unwrap();
+                s = sched.cv.wait(s).unwrap();
             }
         }
         body();
-        let (lock, cv) = &*SCHED;
-        let mut s = lock.lock().unwrap();
+        let mut s = sched.state.lock().unwrap();
         s.running = s.ready.pop_front();
-        cv.notify_all();
+        sched.cv.notify_all();
     });
 }
 
@@ -359,8 +380,8 @@ extern "C" fn xz_task_spawn_arg(fp: usize, arg: usize) {
 #[unsafe(no_mangle)]
 extern "C" fn xz_chan_send(id: i64, ptr: usize, size: usize) {
     let msg = copy_bytes(ptr, size);
-    let (lock, cv) = &*SCHED;
-    let mut s = lock.lock().unwrap();
+    let sched = scheduler_for(capture_owner());
+    let mut s = sched.state.lock().unwrap();
     let cid = id as u64;
     let recv = {
         let ch = s
@@ -372,7 +393,7 @@ extern "C" fn xz_chan_send(id: i64, ptr: usize, size: usize) {
     if let Some(r) = recv {
         s.pending.insert(r, msg);
         s.ready.push_back(r);
-        cv.notify_all();
+        sched.cv.notify_all();
     } else {
         s.channels.get_mut(&cid).unwrap().queue.push_back(msg);
     }
@@ -384,8 +405,8 @@ extern "C" fn xz_chan_send(id: i64, ptr: usize, size: usize) {
 #[unsafe(no_mangle)]
 extern "C" fn xz_chan_recv(id: i64, out: usize, size: usize) {
     let me = TASK_ID.with(|t| t.get());
-    let (lock, cv) = &*SCHED;
-    let mut s = lock.lock().unwrap();
+    let sched = scheduler_for(capture_owner());
+    let mut s = sched.state.lock().unwrap();
     let cid = id as u64;
     let queued = {
         let ch = s
@@ -400,9 +421,9 @@ extern "C" fn xz_chan_recv(id: i64, out: usize, size: usize) {
     }
     s.channels.get_mut(&cid).unwrap().receivers.push_back(me);
     s.running = s.ready.pop_front();
-    cv.notify_all();
+    sched.cv.notify_all();
     while s.running != Some(me) {
-        s = cv.wait(s).unwrap();
+        s = sched.cv.wait(s).unwrap();
     }
     let msg = s.pending.remove(&me).unwrap_or_default();
     copy_out(out, &msg, size);
@@ -460,6 +481,10 @@ pub fn run(module: Module) -> Result<i32, String> {
 
     let main = ee.get_function_value("main").map_err(|_| "no 'main' function".to_string())?;
     let _ = unsafe { ee.run_function(main, &[]) };
+    // Drop this run's scheduler so a later run on the same thread starts from a
+    // clean state and cannot reuse stale task ids or channels. A task that the
+    // program left parked keeps its own reference and simply never resumes.
+    SCHEDULERS.lock().unwrap().remove(&capture_owner());
     Ok(0)
 }
 
