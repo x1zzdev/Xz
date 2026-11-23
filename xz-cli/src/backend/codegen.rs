@@ -7,7 +7,7 @@ use inkwell::types::{BasicTypeEnum, StructType};
 use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{FloatPredicate, IntPredicate};
 
-use crate::ast::{self, Block, Expr, Pattern, Stmt, StmtKind, Type};
+use crate::ast::{self, Block, Expr, ExprKind, Pattern, Stmt, StmtKind, Type};
 use crate::backend::llvm_backend::{kind_from_ast, kind_from_ast_subst, kind_from_llvm, LlvmBackend};
 use crate::typecheck::Kind;
 
@@ -227,11 +227,11 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// branch) or `NAME is none|err` (false → narrow to payload in the else),
     /// return (name, then_payload). Mirrors the type checker's flow typing.
     fn extract_narrow(cond: &Expr) -> Option<(String, bool)> {
-        match cond {
-            Expr::Binary(op, a, b) => {
+        match &cond.kind {
+            ExprKind::Binary(op, a, b) => {
                 let _ = b;
-                match &**a {
-                    Expr::Name(n) => {
+                match &a.kind {
+                    ExprKind::Name(n) => {
                         if op == &ast::BinOp::IsSome || op == &ast::BinOp::IsOk {
                             Some((n.clone(), true))
                         } else if op == &ast::BinOp::IsNone || op == &ast::BinOp::IsErr {
@@ -349,15 +349,15 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// element, a `List[T]`/`Set[T]`-returning call, or such a record field.
     /// Used by `for x in xs`, `xs[i]`, and `s.contains`.
     fn list_elem_kind(&self, e: &Expr) -> Option<Kind> {
-        match e {
-            Expr::Name(n) => self.list_elems.get(n).cloned().or_else(|| self.set_elems.get(n).cloned()),
-            Expr::ListLit(elems) => elems.first().and_then(|x| self.scalar_kind(x)),
-            Expr::SetLit(elems) => elems.first().and_then(|x| self.scalar_kind(x)),
-            Expr::Call(callee, args) => match self.call_ret_kind(callee, args) {
+        match &e.kind {
+            ExprKind::Name(n) => self.list_elems.get(n).cloned().or_else(|| self.set_elems.get(n).cloned()),
+            ExprKind::ListLit(elems) => elems.first().and_then(|x| self.scalar_kind(x)),
+            ExprKind::SetLit(elems) => elems.first().and_then(|x| self.scalar_kind(x)),
+            ExprKind::Call(callee, args) => match self.call_ret_kind(callee, args) {
                 Some(Kind::List(t)) | Some(Kind::Set(t)) => Some(*t),
                 _ => None,
             },
-            Expr::Field(base, fname) => match self.record_field_kind(base, fname) {
+            ExprKind::Field(base, fname) => match self.record_field_kind(base, fname) {
                 Some(Kind::List(t)) | Some(Kind::Set(t)) => Some(*t),
                 _ => None,
             },
@@ -368,12 +368,12 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// A kind for scalar literal expressions, used only to seed list element
     /// inference.
     fn scalar_kind(&self, e: &Expr) -> Option<Kind> {
-        match e {
-            Expr::Int(_) => Some(Kind::Int),
-            Expr::Float(_) => Some(Kind::Float),
-            Expr::Bool(_) => Some(Kind::Bool),
-            Expr::Char(_) => Some(Kind::Char),
-            Expr::Str(_) | Expr::RawStr(_) => Some(Kind::Str),
+        match &e.kind {
+            ExprKind::Int(_) => Some(Kind::Int),
+            ExprKind::Float(_) => Some(Kind::Float),
+            ExprKind::Bool(_) => Some(Kind::Bool),
+            ExprKind::Char(_) => Some(Kind::Char),
+            ExprKind::Str(_) | ExprKind::RawStr(_) => Some(Kind::Str),
             _ => None,
         }
     }
@@ -383,16 +383,16 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// a `Map[K, V]`-returning call, or such a record field. Used by
     /// `m.get`/`insert`/`keys`/`values`.
     fn map_kv_kind(&self, e: &Expr) -> Option<(Kind, Kind)> {
-        match e {
-            Expr::Name(n) => self.map_kvs.get(n).cloned(),
-            Expr::MapLit(entries) => entries
+        match &e.kind {
+            ExprKind::Name(n) => self.map_kvs.get(n).cloned(),
+            ExprKind::MapLit(entries) => entries
                 .first()
                 .and_then(|(k, v)| Some((self.scalar_kind(k)?, self.scalar_kind(v)?))),
-            Expr::Call(callee, args) => match self.call_ret_kind(callee, args) {
+            ExprKind::Call(callee, args) => match self.call_ret_kind(callee, args) {
                 Some(Kind::Map(k, v)) => Some((*k, *v)),
                 _ => None,
             },
-            Expr::Field(base, fname) => match self.record_field_kind(base, fname) {
+            ExprKind::Field(base, fname) => match self.record_field_kind(base, fname) {
                 Some(Kind::Map(k, v)) => Some((*k, *v)),
                 _ => None,
             },
@@ -404,14 +404,14 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// type pass: a set binding's recorded element kind, a literal's first
     /// element, a `Set[T]`-returning call, or a `Set[T]` record field.
     fn set_elem_kind(&self, e: &Expr) -> Option<Kind> {
-        match e {
-            Expr::Name(n) => self.set_elems.get(n).cloned(),
-            Expr::SetLit(elems) => elems.first().and_then(|x| self.scalar_kind(x)),
-            Expr::Call(callee, args) => match self.call_ret_kind(callee, args) {
+        match &e.kind {
+            ExprKind::Name(n) => self.set_elems.get(n).cloned(),
+            ExprKind::SetLit(elems) => elems.first().and_then(|x| self.scalar_kind(x)),
+            ExprKind::Call(callee, args) => match self.call_ret_kind(callee, args) {
                 Some(Kind::Set(t)) => Some(*t),
                 _ => None,
             },
-            Expr::Field(base, fname) => match self.record_field_kind(base, fname) {
+            ExprKind::Field(base, fname) => match self.record_field_kind(base, fname) {
                 Some(Kind::Set(t)) => Some(*t),
                 _ => None,
             },
@@ -426,21 +426,21 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// call, a `-`/`+` over time operands, a `Duration`-returning call, or such
     /// a record field.
     fn time_kind(&self, e: &Expr) -> Option<Kind> {
-        match e {
-            Expr::Name(n) => self.time_kinds.get(n).cloned(),
-            Expr::Call(callee, args) => {
+        match &e.kind {
+            ExprKind::Name(n) => self.time_kinds.get(n).cloned(),
+            ExprKind::Call(callee, args) => {
                 if let Some(k) = self.call_ret_kind(callee, args) {
                     if is_time_kind(&k) {
                         return Some(k);
                     }
                 }
-                match &**callee {
-                    Expr::Name(n) if n == "now" => Some(Kind::Timestamp),
-                    Expr::Name(n) if n == "monotonic" => Some(Kind::Instant),
+                match &callee.kind {
+                    ExprKind::Name(n) if n == "now" => Some(Kind::Timestamp),
+                    ExprKind::Name(n) if n == "monotonic" => Some(Kind::Instant),
                     _ => None,
                 }
             }
-            Expr::Binary(op, a, b) => {
+            ExprKind::Binary(op, a, b) => {
                 let ta = self.time_kind(a)?;
                 let tb = self.time_kind(b)?;
                 match op {
@@ -458,7 +458,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                     _ => None,
                 }
             }
-            Expr::Field(base, fname) => match self.record_field_kind(base, fname) {
+            ExprKind::Field(base, fname) => match self.record_field_kind(base, fname) {
                 Some(k) if is_time_kind(&k) => Some(k),
                 _ => None,
             },
@@ -472,14 +472,14 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// because their declared return kind may mention a type parameter (the
     /// monomorphization path handles those at the call site).
     fn call_ret_kind(&self, callee: &Expr, args: &[Expr]) -> Option<Kind> {
-        match callee {
-            Expr::Name(f) => {
+        match &callee.kind {
+            ExprKind::Name(f) => {
                 if self.backend.generic_params.contains_key(f) {
                     return None;
                 }
                 self.backend.sigs.get(f).and_then(|s| s.xz_ret.clone())
             }
-            Expr::Field(recv, m) => match m.as_str() {
+            ExprKind::Field(recv, m) => match m.as_str() {
                 "append" => self.list_elem_kind(recv).map(|t| Kind::List(Box::new(t))),
                 "keys" => self.map_kv_kind(recv).map(|(k, _)| Kind::List(Box::new(k))),
                 "values" => self.map_kv_kind(recv).map(|(_, v)| Kind::List(Box::new(v))),
@@ -505,12 +505,12 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// The record type name behind an expression, when it is a binding whose
     /// LLVM type is a named record struct or a nested record field.
     fn record_kind_of(&self, e: &Expr) -> Option<String> {
-        match e {
-            Expr::Name(n) => match self.scope.get(n) {
+        match &e.kind {
+            ExprKind::Name(n) => match self.scope.get(n) {
                 Some((_, BasicTypeEnum::StructType(st))) => st.get_name().map(|s| s.to_str().unwrap().to_string()),
                 _ => None,
             },
-            Expr::Field(base, fname) => match self.record_field_kind(base, fname) {
+            ExprKind::Field(base, fname) => match self.record_field_kind(base, fname) {
                 Some(Kind::Record(name)) => Some(name),
                 _ => None,
             },
@@ -1605,11 +1605,11 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// pattern (e.g. `print(n.to_str())`) and to keep `print(s)` where `s` is a
     /// live binding alive for its own scope-exit release.
     fn is_fresh_temp(&self, e: &Expr) -> bool {
-        match e {
-            Expr::Str(_) | Expr::RawStr(_) => false,
-            Expr::Binary(op, ..) if op == &ast::BinOp::Add => true,
-            Expr::Call(callee, _) => match &**callee {
-                Expr::Field(recv, m) if m == "to_str" => {
+        match &e.kind {
+            ExprKind::Str(_) | ExprKind::RawStr(_) => false,
+            ExprKind::Binary(op, ..) if op == &ast::BinOp::Add => true,
+            ExprKind::Call(callee, _) => match &callee.kind {
+                ExprKind::Field(recv, m) if m == "to_str" => {
                     if self.base_is_str(recv) {
                         self.is_fresh_temp(recv)
                     } else {
@@ -1621,7 +1621,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
             // A `?` unwraps a fresh heap `Str` payload out of a fallible call
             // (`read_file(path)?`), so the binding owns that buffer
             // (docs/12-stdlib.md, docs/13-codegen.md).
-            Expr::Prop(inner, _) => self.is_fresh_str_result(inner),
+            ExprKind::Prop(inner, _) => self.is_fresh_str_result(inner),
             _ => false,
         }
     }
@@ -1631,13 +1631,13 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// (docs/12-stdlib.md); its `Result` payload is freed by the same rules as
     /// a `concat`/`to_str` result.
     fn is_fresh_str_result(&self, e: &Expr) -> bool {
-        matches!(e, Expr::Call(callee, _) if matches!(&**callee, Expr::Name(n) if n == "read_file"))
+        matches!(&e.kind, ExprKind::Call(callee, _) if matches!(&callee.kind, ExprKind::Name(n) if n == "read_file"))
     }
 
     fn base_is_str(&self, e: &Expr) -> bool {
-        match e {
-            Expr::Str(_) | Expr::RawStr(_) => true,
-            Expr::Name(n) => matches!(self.scope.get(n), Some((_, ty)) if *ty == self.backend.types.xz_str.into()),
+        match &e.kind {
+            ExprKind::Str(_) | ExprKind::RawStr(_) => true,
+            ExprKind::Name(n) => matches!(self.scope.get(n), Some((_, ty)) if *ty == self.backend.types.xz_str.into()),
             _ => false,
         }
     }
@@ -1645,10 +1645,10 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// The binding a Str expression reads from, if any (a copy alias). Used to
     /// downgrade the source binding's ownership when it is copied.
     fn alias_source(&self, e: &Expr) -> Option<String> {
-        match e {
-            Expr::Name(n) => Some(n.clone()),
-            Expr::Call(callee, _) => match &**callee {
-                Expr::Field(recv, m) if m == "to_str" && self.base_is_str(recv) => self.alias_source(recv),
+        match &e.kind {
+            ExprKind::Name(n) => Some(n.clone()),
+            ExprKind::Call(callee, _) => match &callee.kind {
+                ExprKind::Field(recv, m) if m == "to_str" && self.base_is_str(recv) => self.alias_source(recv),
                 _ => None,
             },
             _ => None,
@@ -1678,8 +1678,8 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// releases it through the declaration's `release` symbol; a
     /// `concat`/`to_str` result is a fresh runtime allocation.
     fn fresh_free(&self, e: &Expr) -> Option<FreeHow> {
-        if let Expr::Call(callee, _) = e
-            && let Expr::Name(n) = &**callee
+        if let ExprKind::Call(callee, _) = &e.kind
+            && let ExprKind::Name(n) = &callee.kind
             && let Some(sym) = self.backend.release_syms.get(n)
         {
             return Some(FreeHow::Symbol(sym.clone()));
@@ -1723,31 +1723,31 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// aggregate or phi we do not track: the target may outlive this binding,
     /// so the source buffer must not be freed underneath it.
     fn degrade_str_expr(&mut self, e: &Expr) {
-        match e {
-            Expr::Name(n) => {
+        match &e.kind {
+            ExprKind::Name(n) => {
                 self.owns.remove(n);
             }
-            Expr::Binary(_op, a, b) => {
+            ExprKind::Binary(_op, a, b) => {
                 self.degrade_str_expr(a);
                 self.degrade_str_expr(b);
             }
-            Expr::Call(callee, args) => {
+            ExprKind::Call(callee, args) => {
                 self.degrade_str_expr(callee);
                 for a in args {
                     self.degrade_str_expr(a);
                 }
             }
-            Expr::Field(base, _) => self.degrade_str_expr(base),
-            Expr::Prop(base, _) => self.degrade_str_expr(base),
-            Expr::Unary(_op, a) => self.degrade_str_expr(a),
-            Expr::Cast(a, _) => self.degrade_str_expr(a),
-            Expr::Some(a) => self.degrade_str_expr(a),
-            Expr::Ok(inner) => {
+            ExprKind::Field(base, _) => self.degrade_str_expr(base),
+            ExprKind::Prop(base, _) => self.degrade_str_expr(base),
+            ExprKind::Unary(_op, a) => self.degrade_str_expr(a),
+            ExprKind::Cast(a, _) => self.degrade_str_expr(a),
+            ExprKind::Some(a) => self.degrade_str_expr(a),
+            ExprKind::Ok(inner) => {
                 if let Some(a) = inner {
                     self.degrade_str_expr(a);
                 }
             }
-            Expr::If(ifx) => {
+            ExprKind::If(ifx) => {
                 self.degrade_str_expr(&ifx.cond);
                 self.degrade_block(&ifx.then_block);
                 if let Some(b) = &ifx.else_block {
@@ -1758,7 +1758,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                     self.degrade_block(b);
                 }
             }
-            Expr::Match(sub, arms) => {
+            ExprKind::Match(sub, arms) => {
                 self.degrade_str_expr(sub);
                 for (_p, b) in arms {
                     self.degrade_str_expr(b);
@@ -2048,12 +2048,12 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         base: &Expr,
         fname: &str,
     ) -> Result<(PointerValue<'ctx>, BasicTypeEnum<'ctx>), String> {
-        let (base_ptr, base_ty) = match base {
-            Expr::Name(n) => match self.scope.get(n) {
+        let (base_ptr, base_ty) = match &base.kind {
+            ExprKind::Name(n) => match self.scope.get(n) {
                 Some((p, t)) => (*p, *t),
                 None => return self.fail(&format!("unknown name '{}' in field assignment", n)),
             },
-            Expr::Field(inner, iname) => self.field_lvalue(inner, iname)?,
+            ExprKind::Field(inner, iname) => self.field_lvalue(inner, iname)?,
             _ => return self.fail("field assignment target must be a record binding or field"),
         };
         let st = match base_ty {
@@ -2150,8 +2150,8 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
 
     /// `send(ch, v)`: copy the value into the channel (docs/05). Never blocks.
     fn gen_send(&mut self, ch: &Expr, value: &Expr) -> GenResult<'ctx> {
-        let name = match ch {
-            Expr::Name(n) => n.clone(),
+        let name = match &ch.kind {
+            ExprKind::Name(n) => n.clone(),
             _ => return self.fail("send target must be a channel name"),
         };
         let (id, _payload) = self.channel_target(&name)?;
@@ -2188,12 +2188,12 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// the child is blocked. The caller's frame stays alive through the block,
     /// so the argument struct is valid when the child finally runs.
     fn gen_await(&mut self, inner: &Expr) -> GenResult<'ctx> {
-        let (callee, args) = match inner {
-            Expr::Call(c, a) => (&**c, a),
+        let (callee, args) = match &inner.kind {
+            ExprKind::Call(c, a) => (&**c, a),
             _ => return self.fail("await applies to a call to an async function"),
         };
-        let name = match callee {
-            Expr::Name(n) => n.clone(),
+        let name = match &callee.kind {
+            ExprKind::Name(n) => n.clone(),
             _ => return self.fail("await target must be a named function"),
         };
         // A generic async callee is monomorphized on the concrete argument
@@ -2327,51 +2327,51 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     // ------------------------------------------------------------------ //
 
     pub fn gen_expr(&mut self, e: &Expr) -> GenResult<'ctx> {
-        match e {
-            Expr::Int(v) => Ok(self.backend.types.int.const_int(*v, false).into()),
-            Expr::Float(v) => Ok(self.backend.types.float.const_float(*v).into()),
-            Expr::Char(c) => Ok(self.backend.types.char.const_int(*c as u64, false).into()),
-            Expr::Str(s) | Expr::RawStr(s) => Ok(self.str_value(s)),
-            Expr::Bool(b) => Ok(self.backend.types.bool.const_int(*b as u64, false).into()),
-            Expr::None => Ok(self.none_value()),
-            Expr::Name(n) => self.gen_name(n),
-            Expr::Call(callee, args) => self.gen_call(callee, args),
-            Expr::Field(base, fname) => self.gen_field(base, fname),
-            Expr::ListLit(elems) => self.gen_list_lit(elems),
-            Expr::MapLit(entries) => self.gen_map_lit(entries),
-            Expr::SetLit(elems) => self.gen_set_lit(elems),
-            Expr::Index(base, idx) => {
+        match &e.kind {
+            ExprKind::Int(v) => Ok(self.backend.types.int.const_int(*v, false).into()),
+            ExprKind::Float(v) => Ok(self.backend.types.float.const_float(*v).into()),
+            ExprKind::Char(c) => Ok(self.backend.types.char.const_int(*c as u64, false).into()),
+            ExprKind::Str(s) | ExprKind::RawStr(s) => Ok(self.str_value(s)),
+            ExprKind::Bool(b) => Ok(self.backend.types.bool.const_int(*b as u64, false).into()),
+            ExprKind::None => Ok(self.none_value()),
+            ExprKind::Name(n) => self.gen_name(n),
+            ExprKind::Call(callee, args) => self.gen_call(callee, args),
+            ExprKind::Field(base, fname) => self.gen_field(base, fname),
+            ExprKind::ListLit(elems) => self.gen_list_lit(elems),
+            ExprKind::MapLit(entries) => self.gen_map_lit(entries),
+            ExprKind::SetLit(elems) => self.gen_set_lit(elems),
+            ExprKind::Index(base, idx) => {
                 let bv = self.gen_expr(base)?;
                 let iv = self.gen_expr(idx)?;
                 self.gen_list_index(bv, iv, base)
             }
-            Expr::Prop(base, _) => self.gen_prop(base),
-            Expr::Unary(op, a) => self.gen_unary(op, a),
-            Expr::Binary(op, a, b) => {
+            ExprKind::Prop(base, _) => self.gen_prop(base),
+            ExprKind::Unary(op, a) => self.gen_unary(op, a),
+            ExprKind::Binary(op, a, b) => {
                 let av = self.gen_expr(a)?;
                 let bv = self.gen_expr(b)?;
                 self.binop(op.clone(), av, bv)
             }
-            Expr::Cast(a, ty) => {
+            ExprKind::Cast(a, ty) => {
                 let v = self.gen_expr(a)?;
                 self.gen_cast(v, ty)
             }
-            Expr::Match(subject, arms) => self.gen_match(subject, arms),
-            Expr::If(ifx) => self.gen_if(ifx),
-            Expr::Loop(b) => self.gen_loop(b),
-            Expr::For(name, iter, b) => self.gen_for(name, iter, b),
-            Expr::Await(a) => self.gen_await(a),
-            Expr::Send(ch, value) => self.gen_send(ch, value),
-            Expr::Recv(ch) => self.gen_recv_value(ch),
-            Expr::Transfer(a) => {
+            ExprKind::Match(subject, arms) => self.gen_match(subject, arms),
+            ExprKind::If(ifx) => self.gen_if(ifx),
+            ExprKind::Loop(b) => self.gen_loop(b),
+            ExprKind::For(name, iter, b) => self.gen_for(name, iter, b),
+            ExprKind::Await(a) => self.gen_await(a),
+            ExprKind::Send(ch, value) => self.gen_send(ch, value),
+            ExprKind::Recv(ch) => self.gen_recv_value(ch),
+            ExprKind::Transfer(a) => {
                 // `transfer(x)` hands a handle to a callee. At runtime a handle
                 // is passed by value, so the transfer is an identity move — the
                 // ownership bookkeeping is a compile-time concern (docs/10).
                 self.gen_expr(a)
             }
-            Expr::Ok(inner) => self.gen_ok(inner),
-            Expr::Err(a) => self.gen_err(a),
-            Expr::Some(a) => {
+            ExprKind::Ok(inner) => self.gen_ok(inner),
+            ExprKind::Err(a) => self.gen_err(a),
+            ExprKind::Some(a) => {
                 self.degrade_str_expr(a);
                 let v = self.gen_expr(a)?;
                 self.option_value(v, true)
@@ -2498,7 +2498,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     fn gen_error_record(&mut self, e: &Expr) -> GenResult<'ctx> {
         // A name already bound to an error record is the record itself (e.g. a
         // `match err(e)` binding re-wrapped in `err(e)`).
-        if let Expr::Name(n) = e
+        if let ExprKind::Name(n) = &e.kind
             && let Some((ptr, ty)) = self.scope.get(n).cloned()
             && matches!(ty, BasicTypeEnum::StructType(s) if s == self.backend.types.xz_error)
         {
@@ -2508,8 +2508,8 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
         // message positionally. The message is stored in the Result's error
         // slot, so a source binding it aliases must not be freed while the
         // result lives (downgrade it; the buffer leaks rather than dangles).
-        let message = match e {
-            Expr::Call(callee, args) if args.len() == 1 && matches!(&**callee, Expr::Name(_)) => {
+        let message = match &e.kind {
+            ExprKind::Call(callee, args) if args.len() == 1 && matches!(&callee.kind, ExprKind::Name(_)) => {
                 if let Some(base) = self.alias_source(&args[0]) {
                     self.owns.remove(&base);
                 }
@@ -2819,9 +2819,9 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     // ------------------------------------------------------------------ //
 
     fn gen_call(&mut self, callee: &Expr, args: &[Expr]) -> GenResult<'ctx> {
-        match callee {
-            Expr::Name(n) => self.gen_named_call(n, args),
-            Expr::Field(receiver, method) => self.gen_method_call(receiver, method, args),
+        match &callee.kind {
+            ExprKind::Name(n) => self.gen_named_call(n, args),
+            ExprKind::Field(receiver, method) => self.gen_method_call(receiver, method, args),
             _ => self.fail("unsupported callee"),
         }
     }
@@ -2831,12 +2831,12 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
     /// storage; any other expression is materialized into a fresh temporary
     /// (copy-in only — the callee's copy-out is discarded).
     fn gen_mut_arg(&mut self, e: &Expr) -> Result<(PointerValue<'ctx>, BasicTypeEnum<'ctx>), String> {
-        match e {
-            Expr::Name(n) => match self.scope.get(n) {
+        match &e.kind {
+            ExprKind::Name(n) => match self.scope.get(n) {
                 Some((ptr, ty)) => Ok((*ptr, *ty)),
                 None => self.fail(&format!("unknown name '{}' in mut argument", n)),
             },
-            Expr::Field(base, fname) => self.field_lvalue(base, fname),
+            ExprKind::Field(base, fname) => self.field_lvalue(base, fname),
             _ => {
                 let v = self.gen_expr(e)?;
                 let ty = self.basic_type_of(v);
@@ -3455,7 +3455,7 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                     cond: ifx.cond.clone(),
                     then_block: ifx.then_block.clone(),
                     elif: vec![],
-                    else_block: Some(Block { stmts: vec![Stmt { kind: StmtKind::Expr(Expr::If(inner)), span: ifx.then_block.span.clone() }], span: ifx.then_block.span.clone() }),
+                    else_block: Some(Block { stmts: vec![Stmt { kind: StmtKind::Expr(Expr::new(ExprKind::If(inner), ifx.then_block.span.clone())), span: ifx.then_block.span.clone() }], span: ifx.then_block.span.clone() }),
                 };
                 self.gen_if(&outer)
             }

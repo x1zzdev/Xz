@@ -1,4 +1,4 @@
-use xz_cli::ast::{Expr, Item, StmtKind};
+use xz_cli::ast::{ExprKind, Item, StmtKind};
 use xz_cli::lexer::lex;
 use xz_cli::parser::parse;
 use xz_cli::resolve::resolve;
@@ -1606,10 +1606,10 @@ func main() {
         StmtKind::Decl(d) => d.init.as_ref().expect("let initializer"),
         _ => panic!("first statement of main should be a let declaration"),
     };
-    match init.as_ref() {
-        Expr::Prop(inner, _) => match inner.as_ref() {
-            Expr::Await(operand) => match operand.as_ref() {
-                Expr::Call(..) => {}
+    match &init.kind {
+        ExprKind::Prop(inner, _) => match &inner.kind {
+            ExprKind::Await(operand) => match &operand.kind {
+                ExprKind::Call(..) => {}
                 _ => panic!("await operand should be the call, not the `?` expression"),
             },
             _ => panic!("`?` should wrap the await expression, not stay inside it"),
@@ -1688,7 +1688,7 @@ func main() -> Result[Unit, Err] {
 }"#
     ));
     // `.err` fails in the parser: the lexer turns `err` into a keyword, so no
-    // `Expr::Field("err")` is ever built.
+    // `ExprKind::Field("err")` is ever built.
     let ts = match lex(
         String::from(
             r#"func main() {
@@ -1760,4 +1760,43 @@ func a() -> Result[Int, Err] { err(Err("x")) }
 func b() -> Result[Int, MyError] { err(MyError("x")) }
 func c() -> Result[Int, MyError | DomainError] { err(MyError("x")) }"#
     ));
+}
+
+#[test]
+fn argument_type_error_points_at_the_argument() {
+    // A bad argument must be reported at the argument, not at the statement
+    // start: `Expr` now carries its own span (docs/07-compiler.md).
+    let src = "func takes(x: Int) -> Int { x }\nfunc main() {\n    let y = takes(\"s\")\n}\n";
+    let ts = lex(src.to_string(), "test.xz".to_string()).ok().unwrap();
+    let p = parse(ts).unwrap();
+    resolve(&p).ok().unwrap();
+    let errs = typecheck(&p).unwrap_err();
+    let e = errs
+        .iter()
+        .find(|e| e.message.contains("type mismatch"))
+        .expect("expected an argument type-mismatch error");
+    assert_eq!(
+        e.span.start, (3, 19),
+        "the error should point at the argument `\"s\"`, got {:?}",
+        e.span
+    );
+}
+
+#[test]
+fn unknown_name_error_points_at_the_name() {
+    // A resolve error about an expression now carries the expression's span,
+    // not the (0,0) document-start fallback.
+    let src = "func main() {\n    print(missing)\n}\n";
+    let ts = lex(src.to_string(), "test.xz".to_string()).ok().unwrap();
+    let p = parse(ts).unwrap();
+    let errs = resolve(&p).unwrap_err();
+    let e = errs
+        .iter()
+        .find(|e| e.message.contains("unknown name"))
+        .expect("expected an unknown-name error");
+    assert_eq!(
+        e.span.start, (2, 11),
+        "the error should point at `missing`, got {:?}",
+        e.span
+    );
 }

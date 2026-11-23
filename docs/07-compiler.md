@@ -82,8 +82,10 @@ spans.
   (the LSP default; advertised as `positionEncoding: "utf-16"`).
 - **Exit code:** 0 after a `shutdown` request, 1 otherwise (per the LSP spec).
 
-Type errors carry a real span (`T0001` points at the offending statement or
-declaration, not the document start).
+Type errors carry a real span: a declaration- or statement-level error points at
+that construct, and an expression-level error (a bad argument, an unknown
+method) points at the offending sub-expression, because every `Expr` carries its
+own span. `T0001` never falls back to the document start.
 
 ## Formatter (`xz fmt`)
 
@@ -126,10 +128,11 @@ Canonical layout, fixed here (the "mandatory layout convention" of
   re-inserted from the AST.
 
 Known limits of the first slice (tracked as follow-ups): block comments that
-span lines are emitted verbatim; a comment inside a multi-line expression is
-attached to the enclosing statement because expressions do not carry spans
-yet; and integer literals are re-emitted in decimal because the AST keeps only
-their value, not the original radix.
+span lines are emitted verbatim; the printer places comments by statement
+position, so a comment inside a multi-line expression is attached to the
+enclosing statement even though `Expr` now carries a span; and integer literals
+are re-emitted in decimal because the AST keeps only their value, not the
+original radix.
 
 ## JSON Diagnostics (for LLM self-correction)
 

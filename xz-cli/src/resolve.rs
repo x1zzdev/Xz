@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::ast;
-use crate::ast::{Program, Item, Type, Expr, StmtKind, Pattern};
+use crate::ast::{Program, Item, Type, Expr, ExprKind, StmtKind, Pattern};
 use crate::token::Span;
 
 pub struct ResolveError {
@@ -260,61 +260,61 @@ impl Resolver {
     }
 
     fn resolve_expr(&mut self, e: &Expr, scope: &Scope) {
-        match e {
-            Expr::Int(_) => {}
-            Expr::Float(_) => {}
-            Expr::Char(_) => {}
-            Expr::Str(_) => {}
-            Expr::RawStr(_) => {}
-            Expr::Bool(_) => {}
-            Expr::None => {}
-            Expr::Name(n) => {
+        match &e.kind {
+            ExprKind::Int(_) => {}
+            ExprKind::Float(_) => {}
+            ExprKind::Char(_) => {}
+            ExprKind::Str(_) => {}
+            ExprKind::RawStr(_) => {}
+            ExprKind::Bool(_) => {}
+            ExprKind::None => {}
+            ExprKind::Name(n) => {
                 if !scope.contains(n) && !self.values.contains(n) && !is_builtin_type(n) && !self.types.contains(n) {
-                    self.error(format!("unknown name '{}'", n), Span { file: "".to_string(), start: (0, 0), end: (0, 0) });
+                    self.error(format!("unknown name '{}'", n), e.span.clone());
                 }
             }
-            Expr::Call(callee, args) => {
+            ExprKind::Call(callee, args) => {
                 self.resolve_expr(callee, scope);
                 for a in args {
                     self.resolve_expr(a, scope);
                 }
             }
-            Expr::Field(base, _) => self.resolve_expr(base, scope),
-            Expr::Index(base, idx) => {
+            ExprKind::Field(base, _) => self.resolve_expr(base, scope),
+            ExprKind::Index(base, idx) => {
                 self.resolve_expr(base, scope);
                 self.resolve_expr(idx, scope);
             }
-            Expr::ListLit(elems) => {
+            ExprKind::ListLit(elems) => {
                 for e in elems {
                     self.resolve_expr(e, scope);
                 }
             }
-            Expr::MapLit(entries) => {
+            ExprKind::MapLit(entries) => {
                 for (k, v) in entries {
                     self.resolve_expr(k, scope);
                     self.resolve_expr(v, scope);
                 }
             }
-            Expr::SetLit(elems) => {
+            ExprKind::SetLit(elems) => {
                 for e in elems {
                     self.resolve_expr(e, scope);
                 }
             }
-            Expr::Prop(base, _) => self.resolve_expr(base, scope),
-            Expr::Unary(op, a) => {
+            ExprKind::Prop(base, _) => self.resolve_expr(base, scope),
+            ExprKind::Unary(op, a) => {
                 let _ = op;
                 self.resolve_expr(a, scope);
             }
-            Expr::Binary(op, a, b) => {
+            ExprKind::Binary(op, a, b) => {
                 self.resolve_expr(a, scope);
                 self.resolve_expr(b, scope);
                 let _ = op;
             }
-            Expr::Cast(a, ty) => {
+            ExprKind::Cast(a, ty) => {
                 self.resolve_expr(a, scope);
                 self.resolve_type(ty);
             }
-            Expr::Match(subject, arms) => {
+            ExprKind::Match(subject, arms) => {
                 self.resolve_expr(subject, scope);
                 for (pat, body) in arms {
                     let mut inner = Scope::new();
@@ -325,7 +325,7 @@ impl Resolver {
                     self.resolve_expr(body, &inner);
                 }
             }
-            Expr::If(ifx) => {
+            ExprKind::If(ifx) => {
                 self.resolve_expr(&ifx.cond, scope);
                 let mut then_scope = child_scope(scope);
                 self.resolve_block(&ifx.then_block, &mut then_scope);
@@ -342,35 +342,35 @@ impl Resolver {
                     None => {}
                 }
             }
-            Expr::Loop(b) => {
+            ExprKind::Loop(b) => {
                 let mut inner = child_scope(scope);
                 self.resolve_block(b, &mut inner);
             }
-            Expr::For(name, iter, b) => {
+            ExprKind::For(name, iter, b) => {
                 self.resolve_expr(iter, scope);
                 let mut inner = child_scope(scope);
                 inner.insert(name.clone());
                 self.resolve_block(b, &mut inner);
             }
-            Expr::Await(a) => self.resolve_expr(a, scope),
-            Expr::Send(ch, value) => {
+            ExprKind::Await(a) => self.resolve_expr(a, scope),
+            ExprKind::Send(ch, value) => {
                 self.resolve_expr(ch, scope);
                 self.resolve_expr(value, scope);
             }
-            Expr::Recv(ch) => {
+            ExprKind::Recv(ch) => {
                 if !scope.contains(ch) && !self.values.contains(ch) {
-                    self.error(format!("unknown channel '{}'", ch), Span { file: "".to_string(), start: (0, 0), end: (0, 0) });
+                    self.error(format!("unknown channel '{}'", ch), e.span.clone());
                 }
             }
-            Expr::Transfer(a) => self.resolve_expr(a, scope),
-            Expr::Ok(inner) => {
+            ExprKind::Transfer(a) => self.resolve_expr(a, scope),
+            ExprKind::Ok(inner) => {
                 match inner {
                     Some(v) => self.resolve_expr(v, scope),
                     None => {}
                 }
             }
-            Expr::Err(a) => self.resolve_expr(a, scope),
-            Expr::Some(a) => self.resolve_expr(a, scope),
+            ExprKind::Err(a) => self.resolve_expr(a, scope),
+            ExprKind::Some(a) => self.resolve_expr(a, scope),
         }
     }
 }

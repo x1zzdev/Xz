@@ -1,7 +1,7 @@
 use crate::ast::{Program, Item, FuncDecl, TaskDecl, ChanDecl, ExternDecl, RecordDecl, EnumDecl};
 use crate::ast::InterfaceKind;
 use crate::ast::{Param, Field, Variant, TypeParam, Contract, Block, Stmt, StmtKind, Decl, Assign, AssignTarget, AssignOp};
-use crate::ast::{DocComment, DocClaim, Type, Expr, IfExpr, Pattern, UnaryOp, BinOp, PropKind};
+use crate::ast::{DocComment, DocClaim, Type, Expr, ExprKind, IfExpr, Pattern, UnaryOp, BinOp, PropKind};
 use crate::token::{TokKind, Token, Span, DocTag};
 
 #[derive(Debug)]
@@ -39,6 +39,11 @@ impl Parser {
 
     fn at_ident(&self, text: &str) -> bool {
         matches!(self.cur(), TokKind::Ident(s) if s == text)
+    }
+
+    /// The span from `start` through the most recently consumed token.
+    fn span_from(&self, start: &Span) -> Span {
+        start.join(&self.tokens[self.i.saturating_sub(1)].span)
     }
 
     fn eat(&mut self, kind: TokKind) -> Option<Token> {
@@ -485,9 +490,9 @@ let mut trusted = false;
         let op_tok = self.tokens[self.i].kind.clone();
         self.i += 1;
         let value = self.expr()?;
-        let target = match &e {
-            Expr::Name(n) => AssignTarget::Name(n.clone()),
-            Expr::Field(base, name) => AssignTarget::Field((*base).clone(), name.clone()),
+        let target = match &e.kind {
+            ExprKind::Name(n) => AssignTarget::Name(n.clone()),
+            ExprKind::Field(base, name) => AssignTarget::Field((*base).clone(), name.clone()),
             _ => return Err(ParseError { message: String::from("invalid assignment target"), span: start }),
         };
         let op = match &op_tok {
@@ -551,7 +556,8 @@ let mut trusted = false;
         if self.at(TokKind::Implies) {
             self.i += 1;
             let right = self.contract_expr()?;
-            Ok(Expr::Binary(BinOp::Implies, Box::new(left), Box::new(right)))
+            let span = left.span.join(&right.span);
+            Ok(Expr::new(ExprKind::Binary(BinOp::Implies, Box::new(left), Box::new(right)), span))
         } else {
             Ok(left)
         }
@@ -562,7 +568,8 @@ let mut trusted = false;
         while self.at(TokKind::Or) {
             self.i += 1;
             let right = self.and_expr()?;
-            left = Expr::Binary(BinOp::Or, Box::new(left), Box::new(right));
+            let span = left.span.join(&right.span);
+            left = Expr::new(ExprKind::Binary(BinOp::Or, Box::new(left), Box::new(right)), span);
         }
         Ok(left)
     }
@@ -572,16 +579,19 @@ let mut trusted = false;
         while self.at(TokKind::And) {
             self.i += 1;
             let right = self.not_expr()?;
-            left = Expr::Binary(BinOp::And, Box::new(left), Box::new(right));
+            let span = left.span.join(&right.span);
+            left = Expr::new(ExprKind::Binary(BinOp::And, Box::new(left), Box::new(right)), span);
         }
         Ok(left)
     }
 
     fn not_expr(&mut self) -> Result<Expr, ParseError> {
         if self.at(TokKind::Not) {
+            let op = self.tokens[self.i].span.clone();
             self.i += 1;
             let e = self.not_expr()?;
-            Ok(Expr::Unary(UnaryOp::Not, Box::new(e)))
+            let span = op.join(&e.span);
+            Ok(Expr::new(ExprKind::Unary(UnaryOp::Not, Box::new(e)), span))
         } else {
             self.cast_expr()
         }
@@ -592,7 +602,8 @@ let mut trusted = false;
         if self.at(TokKind::As) {
             self.i += 1;
             let ty = self.ty()?;
-            Ok(Expr::Cast(Box::new(e), ty))
+            let span = self.span_from(&e.span);
+            Ok(Expr::new(ExprKind::Cast(Box::new(e), ty), span))
         } else {
             Ok(e)
         }
@@ -604,29 +615,36 @@ let mut trusted = false;
             if self.at(TokKind::EqEq) {
                 self.i += 1;
                 let right = self.additive()?;
-                left = Expr::Binary(BinOp::Eq, Box::new(left), Box::new(right));
+                let span = left.span.join(&right.span);
+                left = Expr::new(ExprKind::Binary(BinOp::Eq, Box::new(left), Box::new(right)), span);
             } else if self.at(TokKind::NotEq) {
                 self.i += 1;
                 let right = self.additive()?;
-                left = Expr::Binary(BinOp::Ne, Box::new(left), Box::new(right));
+                let span = left.span.join(&right.span);
+                left = Expr::new(ExprKind::Binary(BinOp::Ne, Box::new(left), Box::new(right)), span);
             } else if self.at(TokKind::Lt) {
                 self.i += 1;
                 let right = self.additive()?;
-                left = Expr::Binary(BinOp::Lt, Box::new(left), Box::new(right));
+                let span = left.span.join(&right.span);
+                left = Expr::new(ExprKind::Binary(BinOp::Lt, Box::new(left), Box::new(right)), span);
             } else if self.at(TokKind::Le) {
                 self.i += 1;
                 let right = self.additive()?;
-                left = Expr::Binary(BinOp::Le, Box::new(left), Box::new(right));
+                let span = left.span.join(&right.span);
+                left = Expr::new(ExprKind::Binary(BinOp::Le, Box::new(left), Box::new(right)), span);
             } else if self.at(TokKind::Gt) {
                 self.i += 1;
                 let right = self.additive()?;
-                left = Expr::Binary(BinOp::Gt, Box::new(left), Box::new(right));
+                let span = left.span.join(&right.span);
+                left = Expr::new(ExprKind::Binary(BinOp::Gt, Box::new(left), Box::new(right)), span);
             } else if self.at(TokKind::Ge) {
                 self.i += 1;
                 let right = self.additive()?;
-                left = Expr::Binary(BinOp::Ge, Box::new(left), Box::new(right));
+                let span = left.span.join(&right.span);
+                left = Expr::new(ExprKind::Binary(BinOp::Ge, Box::new(left), Box::new(right)), span);
             } else if self.at(TokKind::Is) {
                 self.i += 1;
+                let tag_span = self.tokens[self.i].span.clone();
                 let tag_tok = self.tokens[self.i].kind.clone();
                 self.i += 1;
                 let op = match &tag_tok {
@@ -636,7 +654,9 @@ let mut trusted = false;
                     TokKind::Some => BinOp::IsSome,
                     _ => BinOp::IsOk,
                 };
-                left = Expr::Binary(op, Box::new(left), Box::new(Expr::Bool(true)));
+                let span = left.span.join(&tag_span);
+                let rhs = Expr::new(ExprKind::Bool(true), tag_span.clone());
+                left = Expr::new(ExprKind::Binary(op, Box::new(left), Box::new(rhs)), span);
             } else {
                 break;
             }
@@ -650,11 +670,13 @@ let mut trusted = false;
             if self.at(TokKind::Plus) {
                 self.i += 1;
                 let right = self.multiplicative()?;
-                left = Expr::Binary(BinOp::Add, Box::new(left), Box::new(right));
+                let span = left.span.join(&right.span);
+                left = Expr::new(ExprKind::Binary(BinOp::Add, Box::new(left), Box::new(right)), span);
             } else if self.at(TokKind::Minus) {
                 self.i += 1;
                 let right = self.multiplicative()?;
-                left = Expr::Binary(BinOp::Sub, Box::new(left), Box::new(right));
+                let span = left.span.join(&right.span);
+                left = Expr::new(ExprKind::Binary(BinOp::Sub, Box::new(left), Box::new(right)), span);
             } else {
                 break;
             }
@@ -668,15 +690,18 @@ let mut trusted = false;
             if self.at(TokKind::Star) {
                 self.i += 1;
                 let right = self.unary()?;
-                left = Expr::Binary(BinOp::Mul, Box::new(left), Box::new(right));
+                let span = left.span.join(&right.span);
+                left = Expr::new(ExprKind::Binary(BinOp::Mul, Box::new(left), Box::new(right)), span);
             } else if self.at(TokKind::Slash) {
                 self.i += 1;
                 let right = self.unary()?;
-                left = Expr::Binary(BinOp::Div, Box::new(left), Box::new(right));
+                let span = left.span.join(&right.span);
+                left = Expr::new(ExprKind::Binary(BinOp::Div, Box::new(left), Box::new(right)), span);
             } else if self.at(TokKind::Percent) {
                 self.i += 1;
                 let right = self.unary()?;
-                left = Expr::Binary(BinOp::Mod, Box::new(left), Box::new(right));
+                let span = left.span.join(&right.span);
+                left = Expr::new(ExprKind::Binary(BinOp::Mod, Box::new(left), Box::new(right)), span);
             } else {
                 break;
             }
@@ -686,9 +711,11 @@ let mut trusted = false;
 
     fn unary(&mut self) -> Result<Expr, ParseError> {
         if self.at(TokKind::Minus) {
+            let op = self.tokens[self.i].span.clone();
             self.i += 1;
             let e = self.unary()?;
-            Ok(Expr::Unary(UnaryOp::Neg, Box::new(e)))
+            let span = op.join(&e.span);
+            Ok(Expr::new(ExprKind::Unary(UnaryOp::Neg, Box::new(e)), span))
         } else {
             self.postfix()
         }
@@ -707,19 +734,23 @@ let mut trusted = false;
         loop {
             if self.at(TokKind::LParen) {
                 let args = self.args()?;
-                e = Expr::Call(Box::new(e), args);
+                let span = self.span_from(&e.span);
+                e = Expr::new(ExprKind::Call(Box::new(e), args), span);
             } else if self.at(TokKind::Dot) {
                 self.i += 1;
                 let name_tok = self.expect_ident()?;
-                e = Expr::Field(Box::new(e), name_tok.text.clone());
+                let span = e.span.join(&name_tok.span);
+                e = Expr::new(ExprKind::Field(Box::new(e), name_tok.text.clone()), span);
             } else if self.at(TokKind::LBracket) {
                 self.i += 1;
                 let index = self.expr()?;
                 self.expect(TokKind::RBracket, String::from("']'"))?;
-                e = Expr::Index(Box::new(e), Box::new(index));
+                let span = e.span.join(&index.span);
+                e = Expr::new(ExprKind::Index(Box::new(e), Box::new(index)), span);
             } else if allow_prop && self.at(TokKind::Question) {
                 self.i += 1;
-                e = Expr::Prop(Box::new(e), PropKind::Fallible);
+                let span = self.span_from(&e.span);
+                e = Expr::new(ExprKind::Prop(Box::new(e), PropKind::Fallible), span);
             } else {
                 break;
             }
@@ -743,47 +774,53 @@ let mut trusted = false;
     }
 
     fn primary(&mut self) -> Result<Expr, ParseError> {
+        let start = self.tokens[self.i].span.clone();
+        let kind = self.primary_kind()?;
+        Ok(Expr::new(kind, self.span_from(&start)))
+    }
+
+    fn primary_kind(&mut self) -> Result<ExprKind, ParseError> {
         match self.peek(0) {
             TokKind::Int(v) => {
                 let val = *v;
                 self.i += 1;
-                Ok(Expr::Int(val))
+                Ok(ExprKind::Int(val))
             }
             TokKind::Float(v) => {
                 let val = *v;
                 self.i += 1;
-                Ok(Expr::Float(val))
+                Ok(ExprKind::Float(val))
             }
             TokKind::Char(c) => {
                 let val = *c;
                 self.i += 1;
-                Ok(Expr::Char(val))
+                Ok(ExprKind::Char(val))
             }
             TokKind::Str(s) => {
                 let val = s.clone();
                 self.i += 1;
-                Ok(Expr::Str(val))
+                Ok(ExprKind::Str(val))
             }
             TokKind::RawStr(s) => {
                 let val = s.clone();
                 self.i += 1;
-                Ok(Expr::RawStr(val))
+                Ok(ExprKind::RawStr(val))
             }
             TokKind::True => {
                 self.i += 1;
-                Ok(Expr::Bool(true))
+                Ok(ExprKind::Bool(true))
             }
             TokKind::False => {
                 self.i += 1;
-                Ok(Expr::Bool(false))
+                Ok(ExprKind::Bool(false))
             }
             TokKind::None => {
                 self.i += 1;
-                Ok(Expr::None)
+                Ok(ExprKind::None)
             }
             TokKind::Ident(_) => {
                 let name_tok = self.expect_ident()?;
-                Ok(Expr::Name(name_tok.text.clone()))
+                Ok(ExprKind::Name(name_tok.text.clone()))
             }
             TokKind::LBracket => {
                 self.i += 1;
@@ -797,7 +834,7 @@ let mut trusted = false;
                     }
                 }
                 self.expect(TokKind::RBracket, String::from("']'"))?;
-                Ok(Expr::ListLit(elems))
+                Ok(ExprKind::ListLit(elems))
             }
             TokKind::LBrace => {
                 self.i += 1;
@@ -806,7 +843,7 @@ let mut trusted = false;
                 // Represented as an empty Map literal and accepted by both.
                 if self.at(TokKind::RBrace) {
                     self.i += 1;
-                    return Ok(Expr::MapLit(vec![]));
+                    return Ok(ExprKind::MapLit(vec![]));
                 }
                 let first = self.expr()?;
                 if self.at(TokKind::Colon) {
@@ -821,7 +858,7 @@ let mut trusted = false;
                         entries.push((key, value));
                     }
                     self.expect(TokKind::RBrace, String::from("'}'"))?;
-                    Ok(Expr::MapLit(entries))
+                    Ok(ExprKind::MapLit(entries))
                 } else {
                     // Set literal: `{e, ...}`.
                     let mut elems: Vec<Expr> = vec![first];
@@ -829,14 +866,14 @@ let mut trusted = false;
                         elems.push(self.expr()?);
                     }
                     self.expect(TokKind::RBrace, String::from("'}'"))?;
-                    Ok(Expr::SetLit(elems))
+                    Ok(ExprKind::SetLit(elems))
                 }
             }
             TokKind::LParen => {
                 self.i += 1;
                 let e = self.expr()?;
                 self.expect(TokKind::RParen, String::from("')'"))?;
-                Ok(e)
+                Ok(e.kind)
             }
             TokKind::Ok => {
                 self.i += 1;
@@ -847,19 +884,19 @@ let mut trusted = false;
                     Some(Box::new(self.expr()?))
                 };
                 self.expect(TokKind::RParen, String::from("')'"))?;
-                Ok(Expr::Ok(inner))
+                Ok(ExprKind::Ok(inner))
             }
             TokKind::ErrKw => {
                 self.i += 1;
                 let e = self.args()?;
-                let val = if e.len() > 0 { e[0].clone() } else { Expr::None };
-                Ok(Expr::Err(Box::new(val)))
+                let val = if e.len() > 0 { e[0].clone() } else { Expr::new(ExprKind::None, self.span_from(&self.tokens[self.i - 1].span)) };
+                Ok(ExprKind::Err(Box::new(val)))
             }
             TokKind::Some => {
                 self.i += 1;
                 let e = self.args()?;
-                let val = if e.len() > 0 { e[0].clone() } else { Expr::None };
-                Ok(Expr::Some(Box::new(val)))
+                let val = if e.len() > 0 { e[0].clone() } else { Expr::new(ExprKind::None, self.span_from(&self.tokens[self.i - 1].span)) };
+                Ok(ExprKind::Some(Box::new(val)))
             }
             TokKind::Send => {
                 self.i += 1;
@@ -868,13 +905,13 @@ let mut trusted = false;
                 self.expect(TokKind::Comma, String::from("','"))?;
                 let value = self.expr()?;
                 self.expect(TokKind::RParen, String::from("')'"))?;
-                Ok(Expr::Send(Box::new(ch), Box::new(value)))
+                Ok(ExprKind::Send(Box::new(ch), Box::new(value)))
             }
             TokKind::Transfer => {
                 self.i += 1;
                 let args = self.args()?;
-                let val = if args.len() > 0 { args[0].clone() } else { Expr::None };
-                Ok(Expr::Transfer(Box::new(val)))
+                let val = if args.len() > 0 { args[0].clone() } else { Expr::new(ExprKind::None, self.span_from(&self.tokens[self.i - 1].span)) };
+                Ok(ExprKind::Transfer(Box::new(val)))
             }
             TokKind::Await => {
                 self.i += 1;
@@ -882,7 +919,7 @@ let mut trusted = false;
                 // chain but not to a trailing `?`: `await fetch(url)?` is
                 // `(await fetch(url))?` (docs/11-grammar.md).
                 let e = self.postfix_operand(false)?;
-                Ok(Expr::Await(Box::new(e)))
+                Ok(ExprKind::Await(Box::new(e)))
             }
             TokKind::Match => {
                 self.i += 1;
@@ -896,16 +933,16 @@ let mut trusted = false;
                     arms.push((pat, Box::new(e)));
                 }
                 self.expect(TokKind::RBrace, String::from("'}'"))?;
-                Ok(Expr::Match(Box::new(subject), arms))
+                Ok(ExprKind::Match(Box::new(subject), arms))
             }
             TokKind::If => {
-                let e = self.if_expr()?;
-                Ok(e)
+                let kind = self.if_expr()?;
+                Ok(kind)
             }
             TokKind::Loop => {
                 self.i += 1;
                 let b = self.block()?;
-                Ok(Expr::Loop(b))
+                Ok(ExprKind::Loop(b))
             }
             TokKind::For => {
                 self.i += 1;
@@ -913,7 +950,7 @@ let mut trusted = false;
                 self.expect(TokKind::In, String::from("'in'"))?;
                 let iter = self.expr()?;
                 let b = self.block()?;
-                Ok(Expr::For(name_tok.text.clone(), Box::new(iter), b))
+                Ok(ExprKind::For(name_tok.text.clone(), Box::new(iter), b))
             }
             _ => {
                 let cur = self.tokens[self.i].clone();
@@ -922,7 +959,7 @@ let mut trusted = false;
         }
     }
 
-    fn if_expr(&mut self) -> Result<Expr, ParseError> {
+    fn if_expr(&mut self) -> Result<ExprKind, ParseError> {
         self.expect(TokKind::If, String::from("'if'"))?;
         let cond = self.expr()?;
         let then_block = self.block()?;
@@ -938,7 +975,7 @@ let mut trusted = false;
             self.i += 1;
             else_block = Some(self.block()?);
         }
-        Ok(Expr::If(IfExpr { cond: Box::new(cond), then_block: then_block, elif: elif, else_block: else_block }))
+        Ok(ExprKind::If(IfExpr { cond: Box::new(cond), then_block: then_block, elif: elif, else_block: else_block }))
     }
 
     fn pattern(&mut self) -> Result<Pattern, ParseError> {

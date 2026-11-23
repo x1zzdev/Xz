@@ -101,6 +101,18 @@ pub struct Span {
     pub end: (usize, usize),
 }
 
+impl Span {
+    /// The smallest span covering `self` and `other`, assuming `self` starts
+    /// first. Used to give a compound expression the span of its operands.
+    pub fn join(&self, other: &Span) -> Span {
+        Span {
+            file: self.file.clone(),
+            start: self.start,
+            end: other.end,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Token {
     pub kind: TokKind,

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast;
-use crate::ast::{Program, Item, FuncDecl, Expr, StmtKind};
+use crate::ast::{Program, Item, FuncDecl, Expr, ExprKind, StmtKind};
 use crate::token::{Span, DocTag};
 
 pub struct IntentError {
@@ -269,13 +269,13 @@ fn walk_block(block: &ast::Block, set: &mut EffectSet, callees: &CalleeEffects) 
 }
 
 fn walk_expr(e: &Expr, set: &mut EffectSet, callees: &CalleeEffects) {
-    match e {
-        Expr::Int(_) | Expr::Float(_) | Expr::Char(_) | Expr::Str(_)
-        | Expr::RawStr(_) | Expr::Bool(_) | Expr::None | Expr::Name(_) => {}
-        Expr::Call(callee, args) => {
+    match &e.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Char(_) | ExprKind::Str(_)
+        | ExprKind::RawStr(_) | ExprKind::Bool(_) | ExprKind::None | ExprKind::Name(_) => {}
+        ExprKind::Call(callee, args) => {
             for a in args { walk_expr(a, set, callees); }
-            match &**callee {
-                Expr::Name(n) => {
+            match &callee.kind {
+                ExprKind::Name(n) => {
                     if n == "print" || n == "read_file" {
                         set.io = true;
                     } else if n == "now" || n == "monotonic" {
@@ -286,26 +286,26 @@ fn walk_expr(e: &Expr, set: &mut EffectSet, callees: &CalleeEffects) {
                         set.extern_ = true;
                     }
                 }
-                Expr::Field(_, _) => {
+                ExprKind::Field(_, _) => {
                     // method calls on values are pure in the stdlib surface
                 }
                 _ => { walk_expr(callee, set, callees); }
             }
         }
-        Expr::Field(base, _) => walk_expr(base, set, callees),
-        Expr::Index(base, idx) => { walk_expr(base, set, callees); walk_expr(idx, set, callees); }
-        Expr::ListLit(elems) => { for e in elems { walk_expr(e, set, callees); } }
-        Expr::MapLit(entries) => { for (k, v) in entries { walk_expr(k, set, callees); walk_expr(v, set, callees); } }
-        Expr::SetLit(elems) => { for e in elems { walk_expr(e, set, callees); } }
-        Expr::Prop(base, _) => walk_expr(base, set, callees),
-        Expr::Unary(_, a) => walk_expr(a, set, callees),
-        Expr::Binary(_, a, b) => { walk_expr(a, set, callees); walk_expr(b, set, callees); }
-        Expr::Cast(a, _) => walk_expr(a, set, callees),
-        Expr::Match(subject, arms) => {
+        ExprKind::Field(base, _) => walk_expr(base, set, callees),
+        ExprKind::Index(base, idx) => { walk_expr(base, set, callees); walk_expr(idx, set, callees); }
+        ExprKind::ListLit(elems) => { for e in elems { walk_expr(e, set, callees); } }
+        ExprKind::MapLit(entries) => { for (k, v) in entries { walk_expr(k, set, callees); walk_expr(v, set, callees); } }
+        ExprKind::SetLit(elems) => { for e in elems { walk_expr(e, set, callees); } }
+        ExprKind::Prop(base, _) => walk_expr(base, set, callees),
+        ExprKind::Unary(_, a) => walk_expr(a, set, callees),
+        ExprKind::Binary(_, a, b) => { walk_expr(a, set, callees); walk_expr(b, set, callees); }
+        ExprKind::Cast(a, _) => walk_expr(a, set, callees),
+        ExprKind::Match(subject, arms) => {
             walk_expr(subject, set, callees);
             for (_, body) in arms { walk_expr(body, set, callees); }
         }
-        Expr::If(ifx) => {
+        ExprKind::If(ifx) => {
             walk_expr(&ifx.cond, set, callees);
             walk_block(&ifx.then_block, set, callees);
             for (c, b) in &ifx.elif {
@@ -317,14 +317,14 @@ fn walk_expr(e: &Expr, set: &mut EffectSet, callees: &CalleeEffects) {
                 None => {}
             }
         }
-        Expr::Loop(b) => walk_block(b, set, callees),
-        Expr::For(_, iter, b) => { walk_expr(iter, set, callees); walk_block(b, set, callees); }
-        Expr::Await(a) => walk_expr(a, set, callees),
-        Expr::Send(_, _) => { set.chan = true; }
-        Expr::Recv(_) => { set.chan = true; }
-        Expr::Transfer(a) => walk_expr(a, set, callees),
-        Expr::Ok(inner) => { match inner { Some(v) => walk_expr(v, set, callees), None => {} } }
-        Expr::Err(a) => walk_expr(a, set, callees),
-        Expr::Some(a) => walk_expr(a, set, callees),
+        ExprKind::Loop(b) => walk_block(b, set, callees),
+        ExprKind::For(_, iter, b) => { walk_expr(iter, set, callees); walk_block(b, set, callees); }
+        ExprKind::Await(a) => walk_expr(a, set, callees),
+        ExprKind::Send(_, _) => { set.chan = true; }
+        ExprKind::Recv(_) => { set.chan = true; }
+        ExprKind::Transfer(a) => walk_expr(a, set, callees),
+        ExprKind::Ok(inner) => { match inner { Some(v) => walk_expr(v, set, callees), None => {} } }
+        ExprKind::Err(a) => walk_expr(a, set, callees),
+        ExprKind::Some(a) => walk_expr(a, set, callees),
     }
 }

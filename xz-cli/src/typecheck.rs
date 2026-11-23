@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast;
-use crate::ast::{Program, Item, Type, Expr, StmtKind, BinOp, UnaryOp, Contract};
+use crate::ast::{Program, Item, Type, Expr, ExprKind, StmtKind, BinOp, UnaryOp, Contract};
 use crate::token::Span;
 
 /// Scope map from name to type plus whether the binding is `mut`
@@ -883,21 +883,21 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
     }
 
     fn check_expr(&mut self, e: &Expr, env: &mut Env) -> Kind {
-        match e {
-            Expr::Int(_) => Kind::Int,
-            Expr::Float(_) => Kind::Float,
-            Expr::Char(_) => Kind::Char,
-            Expr::Str(_) => Kind::Str,
-            Expr::RawStr(_) => Kind::Str,
-            Expr::Bool(_) => Kind::Bool,
-            Expr::None => Kind::Option(Box::new(Kind::Unknown)),
-            Expr::Name(n) => {
+        match &e.kind {
+            ExprKind::Int(_) => Kind::Int,
+            ExprKind::Float(_) => Kind::Float,
+            ExprKind::Char(_) => Kind::Char,
+            ExprKind::Str(_) => Kind::Str,
+            ExprKind::RawStr(_) => Kind::Str,
+            ExprKind::Bool(_) => Kind::Bool,
+            ExprKind::None => Kind::Option(Box::new(Kind::Unknown)),
+            ExprKind::Name(n) => {
                 let ty = self.lookup_name(n, env);
                 ty
             }
-            Expr::Call(callee, args) => {
-                match &**callee {
-                    Expr::Name(n) => {
+            ExprKind::Call(callee, args) => {
+                match &callee.kind {
+                    ExprKind::Name(n) => {
                         if n == "print" {
                             for a in args { self.check_expr(a, env); }
                             return Kind::Unit;
@@ -927,12 +927,12 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             // field, and it is carried in the Result error slot
                             // (docs/03, docs/06).
                             if args.len() != 1 {
-                                self.error(format!("error constructor '{}' expects one message argument, got {}", n, args.len()));
+                                self.error_at(format!("error constructor '{}' expects one message argument, got {}", n, args.len()), e.span.clone());
                             }
                             for a in args {
                                 let at = self.check_expr(a, env);
                                 if at != Kind::Str && at != Kind::Unknown {
-                                    self.error(format!("error message must be a Str, got {:?}", at));
+                                    self.error_at(format!("error message must be a Str, got {:?}", at), a.span.clone());
                                 }
                             }
                             return Kind::Err;
@@ -940,13 +940,13 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         // enum variant constructor
                         if let Some((en, fts)) = self.variants.get(n).cloned() {
                             if args.len() != fts.len() {
-                                self.error(format!("variant '{}' expects {} fields, got {}", n, fts.len(), args.len()));
+                                self.error_at(format!("variant '{}' expects {} fields, got {}", n, fts.len(), args.len()), e.span.clone());
                             }
                             for (i, a) in args.iter().enumerate() {
                                 let at = self.check_expr(a, env);
                                 if i < fts.len() {
                                     if !self.accepts(&at, &fts[i]) {
-                                        self.error(format!("variant '{}' field {} type mismatch", n, i));
+                                        self.error_at(format!("variant '{}' field {} type mismatch", n, i), a.span.clone());
                                     }
                                 }
                             }
@@ -960,13 +960,13 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         // record constructor
                         if let Some(ft) = self.record_ctors.get(n).cloned() {
                             if args.len() != ft.len() {
-                                self.error(format!("'{}' expects {} args, got {}", n, ft.len(), args.len()));
+                                self.error_at(format!("'{}' expects {} args, got {}", n, ft.len(), args.len()), e.span.clone());
                             }
                             for (i, a) in args.iter().enumerate() {
                                 let at = self.check_expr(a, env);
                                 if i < ft.len() {
                                     if !self.accepts(&at, &ft[i]) {
-                                        self.error(format!("argument {} to record constructor '{}' type mismatch", i, n));
+                                        self.error_at(format!("argument {} to record constructor '{}' type mismatch", i, n), a.span.clone());
                                     }
                                 }
                             }
@@ -976,7 +976,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         match self.funcs.get(n).cloned() {
                             Some((params, ret, _tvs)) => {
                                 if args.len() != params.len() {
-                                    self.error(format!("function '{}' expects {} args, got {}", n, params.len(), args.len()));
+                                    self.error_at(format!("function '{}' expects {} args, got {}", n, params.len(), args.len()), e.span.clone());
                                 }
                                 // infer type arguments from the argument list:
                                 // wherever a parameter is TypeVar(i), bind it to the arg's type
@@ -984,7 +984,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                                 let mut_params = self.func_mut_params.get(n).cloned().unwrap_or_default();
                                 for (i, a) in args.iter().enumerate() {
                                     if mut_params.get(i).copied().unwrap_or(false) && !is_mut_lvalue(a, env) {
-                                        self.error(format!("argument {} to '{}' is passed to a `mut` parameter, so it must be a mutable binding or field (declare it with `mut`)", i, n));
+                                        self.error_at(format!("argument {} to '{}' is passed to a `mut` parameter, so it must be a mutable binding or field (declare it with `mut`)", i, n), a.span.clone());
                                     }
                                     let at = self.check_expr(a, env);
                                     if i < params.len() {
@@ -994,7 +994,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                                             }
                                             bindings[*ti] = Some(at.clone());
                                         } else if !self.accepts(&at, &params[i]) {
-                                            self.error(format!("argument {} to '{}' type mismatch", i, n));
+                                            self.error_at(format!("argument {} to '{}' type mismatch", i, n), a.span.clone());
                                         }
                                     }
                                 }
@@ -1009,22 +1009,22 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             }
                         }
                     }
-                    Expr::Field(receiver, method) => {
+                    ExprKind::Field(receiver, method) => {
                         let rt = self.check_expr(receiver, env);
                         let mt = method_type(&rt, method);
                         // check arg count for the method
                         if matches!(method.as_str(), "len" | "abs" | "to_str" | "to_upper" | "to_lower" | "is_empty" | "keys" | "values" | "seconds" | "millis" | "nanos") && args.len() != 0 {
-                            self.error(format!("method '{}' takes no arguments", method));
+                            self.error_at(format!("method '{}' takes no arguments", method), e.span.clone());
                         }
                         if method == "append" {
                             if args.len() != 1 {
-                                self.error(format!("append takes one argument"));
+                                self.error_at(format!("append takes one argument"), e.span.clone());
                             }
                             if let Kind::List(t) = &rt {
                                 for a in args {
                                     let at = self.check_expr(a, env);
                                     if !self.accepts(&at, t) {
-                                        self.error(format!("append expects {:?}, got {:?}", t, at));
+                                        self.error_at(format!("append expects {:?}, got {:?}", t, at), a.span.clone());
                                     }
                                 }
                             } else {
@@ -1034,29 +1034,29 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             match &rt {
                                 Kind::Map(k, v) => {
                                     if args.len() != 2 {
-                                        self.error(String::from("insert takes two arguments"));
+                                        self.error_at(String::from("insert takes two arguments"), e.span.clone());
                                     }
                                     if let Some(a) = args.first() {
                                         let at = self.check_expr(a, env);
                                         if !self.accepts(&at, k) {
-                                            self.error(format!("insert key expects {:?}, got {:?}", k, at));
+                                            self.error_at(format!("insert key expects {:?}, got {:?}", k, at), a.span.clone());
                                         }
                                     }
                                     if let Some(a) = args.get(1) {
                                         let at = self.check_expr(a, env);
                                         if !self.accepts(&at, v) {
-                                            self.error(format!("insert value expects {:?}, got {:?}", v, at));
+                                            self.error_at(format!("insert value expects {:?}, got {:?}", v, at), a.span.clone());
                                         }
                                     }
                                 }
                                 Kind::Set(t) => {
                                     if args.len() != 1 {
-                                        self.error(String::from("insert takes one argument"));
+                                        self.error_at(String::from("insert takes one argument"), e.span.clone());
                                     }
                                     if let Some(a) = args.first() {
                                         let at = self.check_expr(a, env);
                                         if !self.accepts(&at, t) {
-                                            self.error(format!("insert element expects {:?}, got {:?}", t, at));
+                                            self.error_at(format!("insert element expects {:?}, got {:?}", t, at), a.span.clone());
                                         }
                                     }
                                 }
@@ -1066,14 +1066,14 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             }
                         } else if method == "contains" {
                             if args.len() != 1 {
-                                self.error(String::from("contains takes one argument"));
+                                self.error_at(String::from("contains takes one argument"), e.span.clone());
                             }
                             match &rt {
                                 Kind::Set(t) => {
                                     if let Some(a) = args.first() {
                                         let at = self.check_expr(a, env);
                                         if !self.accepts(&at, t) {
-                                            self.error(format!("contains element expects {:?}, got {:?}", t, at));
+                                            self.error_at(format!("contains element expects {:?}, got {:?}", t, at), a.span.clone());
                                         }
                                     }
                                 }
@@ -1083,14 +1083,14 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             }
                         } else if method == "get" {
                             if args.len() != 1 {
-                                self.error(String::from("get takes one argument"));
+                                self.error_at(String::from("get takes one argument"), e.span.clone());
                             }
                             match &rt {
                                 Kind::Map(k, _) => {
                                     if let Some(a) = args.first() {
                                         let at = self.check_expr(a, env);
                                         if !self.accepts(&at, k) {
-                                            self.error(format!("get key expects {:?}, got {:?}", k, at));
+                                            self.error_at(format!("get key expects {:?}, got {:?}", k, at), a.span.clone());
                                         }
                                     }
                                 }
@@ -1106,7 +1106,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         match mt {
                             Some(t) => t,
                             None => {
-                                self.error(format!("no method '{}' on {:?}", method, rt));
+                                self.error_at(format!("no method '{}' on {:?}", method, rt), e.span.clone());
                                 Kind::Unknown
                             }
                         }
@@ -1117,7 +1117,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     }
                 }
             }
-            Expr::Field(base, fname) => {
+            ExprKind::Field(base, fname) => {
                 let bt = self.check_expr(base, env);
                 match &bt {
                     Kind::Record(rec) => {
@@ -1159,7 +1159,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     }
                 }
             }
-            Expr::ListLit(elems) => {
+            ExprKind::ListLit(elems) => {
                 if elems.is_empty() {
                     // Element type is supplied by the binding's declared type.
                     Kind::List(Box::new(Kind::Unknown))
@@ -1174,7 +1174,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     Kind::List(Box::new(first))
                 }
             }
-            Expr::MapLit(entries) => {
+            ExprKind::MapLit(entries) => {
                 if entries.is_empty() {
                     // Key/value types are supplied by the binding's declared type.
                     Kind::Map(Box::new(Kind::Unknown), Box::new(Kind::Unknown))
@@ -1197,7 +1197,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     Kind::Map(Box::new(k0), Box::new(v0))
                 }
             }
-            Expr::SetLit(elems) => {
+            ExprKind::SetLit(elems) => {
                 if elems.is_empty() {
                     // Element type is supplied by the binding's declared type.
                     Kind::Set(Box::new(Kind::Unknown))
@@ -1215,7 +1215,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     Kind::Set(Box::new(e0))
                 }
             }
-            Expr::Index(base, idx) => {
+            ExprKind::Index(base, idx) => {
                 let bt = self.check_expr(base, env);
                 let it = self.check_expr(idx, env);
                 if it != Kind::Int && it != Kind::Unknown {
@@ -1230,7 +1230,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     }
                 }
             }
-            Expr::Prop(base, _) => {
+            ExprKind::Prop(base, _) => {
                 let bt = self.check_expr(base, env);
                 match &bt {
                     Kind::Result(t, e) => {
@@ -1256,14 +1256,14 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     }
                 }
             }
-            Expr::Unary(op, a) => {
+            ExprKind::Unary(op, a) => {
                 let at = self.check_expr(a, env);
                 match op {
                     UnaryOp::Neg => at,
                     UnaryOp::Not => Kind::Bool,
                 }
             }
-            Expr::Binary(op, a, b) => {
+            ExprKind::Binary(op, a, b) => {
                 let at = self.check_expr(a, env);
                 let bt = self.check_expr(b, env);
                 // operations on a bare type parameter require a justifying constraint
@@ -1295,7 +1295,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     BinOp::IsOk | BinOp::IsErr | BinOp::IsNone | BinOp::IsSome => Kind::Bool,
                 }
             }
-            Expr::Cast(a, ty) => {
+            ExprKind::Cast(a, ty) => {
                 let at = self.check_expr(a, env);
                 let tt = self.from_ast(ty);
                 if !self.accepts_cast(&at, &tt) {
@@ -1303,7 +1303,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                 }
                 tt
             }
-            Expr::Match(subject, arms) => {
+            ExprKind::Match(subject, arms) => {
                 let st = self.check_expr(subject, env);
                 let mut covered: Vec<String> = vec![];
                 let mut has_wildcard = false;
@@ -1368,7 +1368,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                 }
                 result_ty
             }
-            Expr::If(ifx) => {
+            ExprKind::If(ifx) => {
                 let cond_ty = self.check_expr(&ifx.cond, env);
                 let _ = cond_ty;
                 // flow typing: a positive test narrows the bound name inside
@@ -1394,11 +1394,11 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                 }
                 Kind::Unknown
             }
-            Expr::Loop(b) => {
+            ExprKind::Loop(b) => {
                 self.check_block(b, env);
                 Kind::Never
             }
-            Expr::For(name, iter, b) => {
+            ExprKind::For(name, iter, b) => {
                 let it = self.check_expr(iter, env);
                 // `for i in n` iterates the Int range 0..n; `for x in xs`
                 // iterates a List[T] in order (docs/02, docs/12).
@@ -1416,7 +1416,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                 self.check_block(b, env);
                 Kind::Never
             }
-            Expr::Await(a) => {
+            ExprKind::Await(a) => {
                 // `await` is a suspension point, so it is legal only where the
                 // current body can suspend (docs/05), and only on a call to a
                 // named `async` function (docs/05 rule 6, docs/11, docs/13).
@@ -1425,9 +1425,9 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                         "await is only allowed in an async function, main, or a task",
                     ));
                 }
-                match &**a {
-                    Expr::Call(callee, _) => match &**callee {
-                        Expr::Name(n) => {
+                match &a.kind {
+                    ExprKind::Call(callee, _) => match &callee.kind {
+                        ExprKind::Name(n) => {
                             if !self.async_funcs.contains(n) {
                                 self.error(format!("await target '{}' is not an async function", n));
                             }
@@ -1438,13 +1438,13 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                 }
                 self.check_expr(a, env)
             }
-            Expr::Send(ch, value) => {
+            ExprKind::Send(ch, value) => {
                 let _ = self.check_expr(ch, env); // channel type env
                 let vt = self.check_expr(value, env);
                 let _ = vt;
                 Kind::Unit
             }
-            Expr::Recv(ch) => {
+            ExprKind::Recv(ch) => {
                 // channel payload
                 let ct = env.get(ch).cloned();
                 match ct {
@@ -1452,15 +1452,15 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                     _ => Kind::Unknown,
                 }
             }
-            Expr::Transfer(a) => self.check_expr(a, env),
-            Expr::Ok(inner) => {
+            ExprKind::Transfer(a) => self.check_expr(a, env),
+            ExprKind::Ok(inner) => {
                 let inner_ty = match inner {
                     Some(v) => self.check_expr(v, env),
                     None => Kind::Unit,
                 };
                 Kind::Result(Box::new(inner_ty), Box::new(Kind::Unknown))
             }
-            Expr::Err(a) => {
+            ExprKind::Err(a) => {
                 let et = self.check_expr(a, env);
                 if !self.is_error_type(&et) {
                     self.error(format!(
@@ -1470,7 +1470,7 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                 }
                 Kind::Result(Box::new(Kind::Unknown), Box::new(et))
             }
-            Expr::Some(a) => {
+            ExprKind::Some(a) => {
                 let t = self.check_expr(a, env);
                 Kind::Option(Box::new(t))
             }
@@ -1796,11 +1796,11 @@ enum NarrowKind {
 
 /// If `cond` is `NAME is some|none|ok|err`, return (name, narrowing).
 fn extract_narrowing(cond: &Expr) -> Option<(String, NarrowKind)> {
-    match cond {
-        Expr::Binary(op, a, b) => {
+    match &cond.kind {
+        ExprKind::Binary(op, a, b) => {
             let _ = b;
-            match &**a {
-                Expr::Name(n) => {
+            match &a.kind {
+                ExprKind::Name(n) => {
                     if op == &BinOp::IsSome {
                         Some((n.clone(), NarrowKind::Some))
                     } else if op == &BinOp::IsNone {
@@ -1880,9 +1880,9 @@ fn apply_complement(env: &mut Env, narrow: &Option<(String, NarrowKind)>) {
 /// `a.b.c = ...`. Field writes mutate the root binding, so `mut` is required
 /// on that binding (docs/04).
 fn root_name(e: &Expr) -> Option<String> {
-    match e {
-        Expr::Name(n) => Some(n.clone()),
-        Expr::Field(base, _) => root_name(base),
+    match &e.kind {
+        ExprKind::Name(n) => Some(n.clone()),
+        ExprKind::Field(base, _) => root_name(base),
         _ => None,
     }
 }
@@ -1891,9 +1891,9 @@ fn root_name(e: &Expr) -> Option<String> {
 /// with `mut`, or a field reached through one (docs/04). Anything else is a
 /// temporary, so the callee's copy-out would be silently discarded.
 fn is_mut_lvalue(e: &Expr, env: &Env) -> bool {
-    match e {
-        Expr::Name(n) => env.get(n).is_some() && env.is_mut(n),
-        Expr::Field(_, _) => root_name(e).is_some_and(|root| env.get(&root).is_some() && env.is_mut(&root)),
+    match &e.kind {
+        ExprKind::Name(n) => env.get(n).is_some() && env.is_mut(n),
+        ExprKind::Field(_, _) => root_name(e).is_some_and(|root| env.get(&root).is_some() && env.is_mut(&root)),
         _ => false,
     }
 }

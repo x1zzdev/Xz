@@ -7,7 +7,7 @@
 //! indentation; a comment on the same line as a statement's start is kept
 //! trailing. Every statement carries a start span for exactly this reason.
 use crate::ast::{
-    Assign, AssignOp, AssignTarget, BinOp, Block, Contract, Decl, EnumDecl, Expr, FuncDecl, IfExpr,
+    Assign, AssignOp, AssignTarget, BinOp, Block, Contract, Decl, EnumDecl, Expr, ExprKind, FuncDecl, IfExpr,
     Item, Param, Pattern, Program, RecordDecl, Stmt, StmtKind, Type, TypeParam, UnaryOp, Variant,
 };
 use crate::ast::InterfaceKind;
@@ -319,41 +319,41 @@ impl Printer {
     }
 
     fn emit_expr_inner(&mut self, e: &Expr, indent: usize) {
-        match e {
-            Expr::Int(v) => self.out.push_str(&v.to_string()),
-            Expr::Float(v) => self.out.push_str(&format!("{:?}", v)),
-            Expr::Char(c) => self.out.push_str(&char_lit(*c)),
-            Expr::Str(s) => self.out.push_str(&str_lit(s)),
-            Expr::RawStr(s) => {
+        match &e.kind {
+            ExprKind::Int(v) => self.out.push_str(&v.to_string()),
+            ExprKind::Float(v) => self.out.push_str(&format!("{:?}", v)),
+            ExprKind::Char(c) => self.out.push_str(&char_lit(*c)),
+            ExprKind::Str(s) => self.out.push_str(&str_lit(s)),
+            ExprKind::RawStr(s) => {
                 self.out.push_str("r\"");
                 self.out.push_str(s);
                 self.out.push('"');
             }
-            Expr::Bool(b) => self.out.push_str(if *b { "true" } else { "false" }),
-            Expr::None => self.out.push_str("none"),
-            Expr::Name(n) => self.out.push_str(n),
-            Expr::Call(f, args) => {
+            ExprKind::Bool(b) => self.out.push_str(if *b { "true" } else { "false" }),
+            ExprKind::None => self.out.push_str("none"),
+            ExprKind::Name(n) => self.out.push_str(n),
+            ExprKind::Call(f, args) => {
                 self.emit_expr(f, indent, P_POSTFIX);
                 self.out.push('(');
                 self.emit_args(args, indent);
                 self.out.push(')');
             }
-            Expr::Field(base, name) => {
+            ExprKind::Field(base, name) => {
                 self.emit_expr(base, indent, P_POSTFIX);
                 self.out.push('.');
                 self.out.push_str(name);
             }
-            Expr::Index(base, idx) => {
+            ExprKind::Index(base, idx) => {
                 self.emit_expr(base, indent, P_POSTFIX);
                 self.out.push('[');
                 self.emit_expr(idx, indent, 0);
                 self.out.push(']');
             }
-            Expr::Prop(base, _) => {
+            ExprKind::Prop(base, _) => {
                 self.emit_expr(base, indent, P_POSTFIX);
                 self.out.push('?');
             }
-            Expr::ListLit(xs) => {
+            ExprKind::ListLit(xs) => {
                 self.out.push('[');
                 for (i, x) in xs.iter().enumerate() {
                     if i > 0 {
@@ -363,7 +363,7 @@ impl Printer {
                 }
                 self.out.push(']');
             }
-            Expr::MapLit(entries) => {
+            ExprKind::MapLit(entries) => {
                 self.out.push('{');
                 for (i, (k, v)) in entries.iter().enumerate() {
                     if i > 0 {
@@ -375,7 +375,7 @@ impl Printer {
                 }
                 self.out.push('}');
             }
-            Expr::SetLit(xs) => {
+            ExprKind::SetLit(xs) => {
                 self.out.push('{');
                 for (i, x) in xs.iter().enumerate() {
                     if i > 0 {
@@ -385,7 +385,7 @@ impl Printer {
                 }
                 self.out.push('}');
             }
-            Expr::Binary(op, l, r) => {
+            ExprKind::Binary(op, l, r) => {
                 if let Some(kw) = is_kw(op) {
                     self.emit_expr(l, indent, P_CMP);
                     self.out.push_str(" is ");
@@ -400,55 +400,55 @@ impl Printer {
                     self.emit_expr(r, indent, rmin);
                 }
             }
-            Expr::Unary(UnaryOp::Neg, x) => {
+            ExprKind::Unary(UnaryOp::Neg, x) => {
                 self.out.push('-');
                 self.emit_expr(x, indent, P_UNARY);
             }
-            Expr::Unary(UnaryOp::Not, x) => {
+            ExprKind::Unary(UnaryOp::Not, x) => {
                 self.out.push_str("not ");
                 self.emit_expr(x, indent, P_NOT);
             }
-            Expr::Cast(x, ty) => {
+            ExprKind::Cast(x, ty) => {
                 self.emit_expr(x, indent, P_CAST);
                 self.out.push_str(" as ");
                 self.out.push_str(&self.type_str(ty));
             }
-            Expr::Await(x) => {
+            ExprKind::Await(x) => {
                 self.out.push_str("await ");
                 self.emit_expr(x, indent, 0);
             }
-            Expr::Send(ch, val) => {
+            ExprKind::Send(ch, val) => {
                 self.out.push_str("send(");
                 self.emit_expr(ch, indent, 0);
                 self.out.push_str(", ");
                 self.emit_expr(val, indent, 0);
                 self.out.push(')');
             }
-            Expr::Recv(ch) => self.out.push_str(&format!("recv({})", ch)),
-            Expr::Transfer(x) => {
+            ExprKind::Recv(ch) => self.out.push_str(&format!("recv({})", ch)),
+            ExprKind::Transfer(x) => {
                 self.out.push_str("transfer(");
                 self.emit_expr(x, indent, 0);
                 self.out.push(')');
             }
-            Expr::Ok(inner) => {
+            ExprKind::Ok(inner) => {
                 self.out.push_str("ok(");
                 if let Some(x) = inner {
                     self.emit_expr(x, indent, 0);
                 }
                 self.out.push(')');
             }
-            Expr::Err(x) => {
+            ExprKind::Err(x) => {
                 self.out.push_str("err(");
                 self.emit_expr(x, indent, 0);
                 self.out.push(')');
             }
-            Expr::Some(x) => {
+            ExprKind::Some(x) => {
                 self.out.push_str("some(");
                 self.emit_expr(x, indent, 0);
                 self.out.push(')');
             }
-            Expr::If(ifx) => self.emit_if(ifx, indent),
-            Expr::Match(subject, arms) => {
+            ExprKind::If(ifx) => self.emit_if(ifx, indent),
+            ExprKind::Match(subject, arms) => {
                 self.out.push_str("match ");
                 self.emit_expr(subject, indent, 0);
                 self.out.push_str(" {\n");
@@ -462,11 +462,11 @@ impl Printer {
                 self.out.push_str(&indent_str(indent));
                 self.out.push('}');
             }
-            Expr::Loop(block) => {
+            ExprKind::Loop(block) => {
                 self.out.push_str("loop ");
                 self.emit_block(block, indent);
             }
-            Expr::For(name, iter, block) => {
+            ExprKind::For(name, iter, block) => {
                 self.out.push_str("for ");
                 self.out.push_str(name);
                 self.out.push_str(" in ");
@@ -636,21 +636,21 @@ fn binop_prec(op: &BinOp) -> u8 {
 }
 
 fn prec_of(e: &Expr) -> u8 {
-    match e {
-        Expr::Binary(op, _, _) => {
+    match &e.kind {
+        ExprKind::Binary(op, _, _) => {
             if is_kw(op).is_some() {
                 P_CMP
             } else {
                 binop_prec(op)
             }
         }
-        Expr::Unary(UnaryOp::Neg, _) => P_UNARY,
-        Expr::Unary(UnaryOp::Not, _) => P_NOT,
-        Expr::Cast(_, _) => P_CAST,
-        Expr::Call(_, _)
-        | Expr::Field(_, _)
-        | Expr::Index(_, _)
-        | Expr::Prop(_, _) => P_POSTFIX,
+        ExprKind::Unary(UnaryOp::Neg, _) => P_UNARY,
+        ExprKind::Unary(UnaryOp::Not, _) => P_NOT,
+        ExprKind::Cast(_, _) => P_CAST,
+        ExprKind::Call(_, _)
+        | ExprKind::Field(_, _)
+        | ExprKind::Index(_, _)
+        | ExprKind::Prop(_, _) => P_POSTFIX,
         _ => P_PRIMARY,
     }
 }

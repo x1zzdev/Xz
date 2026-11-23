@@ -194,8 +194,23 @@ pub enum Type {
     NamedPlain(String),
 }
 
+/// An expression, carrying the source span it was parsed from so that
+/// diagnostics about a sub-expression (e.g. a bad argument) point at the
+/// sub-expression rather than at the whole statement.
 #[derive(Clone)]
-pub enum Expr {
+pub struct Expr {
+    pub kind: ExprKind,
+    pub span: Span,
+}
+
+impl Expr {
+    pub fn new(kind: ExprKind, span: Span) -> Expr {
+        Expr { kind, span }
+    }
+}
+
+#[derive(Clone)]
+pub enum ExprKind {
     Int(u64),
     Float(f64),
     Char(char),
