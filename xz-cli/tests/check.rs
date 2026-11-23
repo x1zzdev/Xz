@@ -1672,6 +1672,55 @@ func main() {
 }
 
 #[test]
+fn result_exposes_value_but_not_err() {
+    // docs/06, docs/13: `.value` is the ok payload. There is no `.err`
+    // accessor — `err` is a keyword, so `r.err` is not grammatical and the
+    // error payload is observable only through `match err(e) -> e.message`.
+    assert!(typechecks(
+        r#"func get() -> Result[Int, Err] {
+    ok(1)
+}
+
+func main() -> Result[Unit, Err] {
+    let r = get()
+    print(r.value.to_str())
+    ok()
+}"#
+    ));
+    // `.err` fails in the parser: the lexer turns `err` into a keyword, so no
+    // `Expr::Field("err")` is ever built.
+    let ts = match lex(
+        String::from(
+            r#"func main() {
+    let r = ok(1)
+    print(r.err)
+}"#,
+        ),
+        "test.xz".to_string(),
+    ) {
+        Ok(ts) => ts,
+        Err(_) => panic!("`r.err` should lex, only the parse should fail"),
+    };
+    assert!(parse(ts).is_err());
+    // An unknown Result field names only `.value`.
+    let e = typecheck_error(
+        r#"func get() -> Result[Int, Err] {
+    ok(1)
+}
+
+func main() {
+    let r = get()
+    print(r.nope.to_str())
+}"#,
+    );
+    assert!(
+        e.as_deref().is_some_and(|m| m.contains("Result has no field 'nope' (use .value)")),
+        "expected a Result field error naming only .value, got {:?}",
+        e
+    );
+}
+
+#[test]
 fn result_error_type_must_be_an_error() {
     // docs/03: `E` is an error type — `Err`, an error union, or a
     // `{ message: Str }` record. A plain record or a primitive is rejected,

@@ -1129,15 +1129,15 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
                             }
                         }
                     }
-                    // Result payload access (docs/06): `.value` is the T payload;
-                    // `.err` is the E payload (an error record on the error path).
-                    Kind::Result(t, e) => {
+                    // Result payload access (docs/06, docs/13): `.value` is the T
+                    // payload. There is no `.err` accessor — `err` is a keyword,
+                    // so the error payload is observed only through
+                    // `match err(e) -> e.message`.
+                    Kind::Result(t, _) => {
                         if fname == "value" {
                             (**t).clone()
-                        } else if fname == "err" {
-                            (**e).clone()
                         } else {
-                            self.error(format!("Result has no field '{}' (use .value / .err)", fname));
+                            self.error(format!("Result has no field '{}' (use .value)", fname));
                             Kind::Unknown
                         }
                     }

@@ -3389,13 +3389,11 @@ impl<'b, 'ctx> Codegen<'b, 'ctx> {
                 }
             }
             None => {
-                // Result / Option accessors: `.value` is the ok payload (field 0);
-                // `.err` is the error record (field 1 of a Result).
+                // Result / Option accessor: `.value` is the ok payload (field 0).
+                // There is no `.err` accessor; the error payload is reached only
+                // through `match err(e) -> e.message` (docs/06).
                 if fname == "value" {
                     let v = self.backend.builder.build_extract_value(st, 0, "value").unwrap();
-                    Ok(v)
-                } else if fname == "err" && st.get_type().count_fields() == 3 {
-                    let v = self.backend.builder.build_extract_value(st, 1, "err").unwrap();
                     Ok(v)
                 } else {
                     self.fail(&format!("unknown aggregate field '{}'", fname))
