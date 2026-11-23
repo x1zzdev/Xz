@@ -1907,6 +1907,36 @@ fn read_file_reads_and_missing_is_err() -> Result<(), String> {
 }
 
 #[test]
+#[cfg(unix)]
+fn read_file_accepts_non_utf8_path() -> Result<(), String> {
+    // docs/12, docs/13: the path's bytes are the OS path, so a non-UTF-8 Unix
+    // path is readable (the JIT host matches the native `fopen` path). Xz source
+    // is UTF-8, so the byte path reaches the program through a file.
+    use std::os::unix::ffi::OsStrExt;
+    let pid = std::process::id();
+    let mut name = format!("xz_read_file_nonutf8_{}", pid).into_bytes();
+    name.push(0xff);
+    let target = std::env::temp_dir().join(std::ffi::OsStr::from_bytes(&name));
+    std::fs::write(&target, b"hi\n").map_err(|e| e.to_string())?;
+    let pathfile = std::env::temp_dir().join(format!("xz_read_file_nonutf8_{}_path", pid));
+    std::fs::write(&pathfile, target.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+    let src = format!(
+        r#"func main() -> Result[Unit, Err] {{
+    let p = read_file("{pf}")?
+    let contents = read_file(p)?
+    print(contents)
+    ok()
+}}"#,
+        pf = pathfile.display()
+    );
+    let out = exec_capture(&src);
+    let _ = std::fs::remove_file(&target);
+    let _ = std::fs::remove_file(&pathfile);
+    assert_eq!(out?, "hi\n", "a non-UTF-8 OS path must be readable");
+    Ok(())
+}
+
+#[test]
 fn time_now_and_monotonic_run() {
     // Both clock host functions lower to `xz_time_now` / `xz_time_monotonic`
     // returning i64 nanoseconds. The values are non-deterministic, so this

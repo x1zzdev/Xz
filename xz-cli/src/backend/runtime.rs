@@ -161,6 +161,23 @@ fn write_str(out: usize, s: &str) {
     }
 }
 
+/// Read the whole file named by the byte path. On Unix the path is a byte
+/// string (`OsStr::from_bytes`), matching the native runtime's `fopen` path, so
+/// a non-UTF-8 OS path is readable; on other hosts the path must be valid
+/// UTF-8. Returns the file's bytes, or the OS reason as a `Str`.
+fn read_file_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        std::fs::read(std::ffi::OsStr::from_bytes(bytes)).map_err(|e| e.to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        let path = std::str::from_utf8(bytes).map_err(|_| "path is not valid UTF-8".to_string())?;
+        std::fs::read(path).map_err(|e| e.to_string())
+    }
+}
+
 /// `read_file(path_ptr, path_len, out, err_out) -> i1`: read the file at the
 /// byte path and, on success, write a fresh `{ptr, len}` Str payload through
 /// `out` and return 1. On failure, write the OS error message as a `{ptr, len}`
@@ -173,14 +190,7 @@ extern "C" fn xz_read_file(path_ptr: usize, path_len: usize, out: usize, err_out
     for i in 0..path_len {
         bytes.push(unsafe { *((path_ptr + i) as *const u8) });
     }
-    let path = match std::str::from_utf8(&bytes) {
-        Ok(s) => s,
-        Err(_) => {
-            write_str(err_out, "path is not valid UTF-8");
-            return 0;
-        }
-    };
-    match std::fs::read(path) {
+    match read_file_bytes(&bytes) {
         Ok(data) => {
             let ptr = copy_to_leaked(&data);
             let len = data.len();
@@ -191,7 +201,7 @@ extern "C" fn xz_read_file(path_ptr: usize, path_len: usize, out: usize, err_out
             1
         }
         Err(e) => {
-            write_str(err_out, &e.to_string());
+            write_str(err_out, &e);
             0
         }
     }
