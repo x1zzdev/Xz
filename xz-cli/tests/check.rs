@@ -275,7 +275,7 @@ func main() -> Result[Int, Err] {
     let n: Int = 16
     let p = malloc(n as usize)
     if p == 0 {
-        err("oom")
+        err(Err("oom"))
     } else {
         ok(0)
     }
@@ -1669,4 +1669,46 @@ func main() {
         "expected an unknown-field error, got {:?}",
         e
     );
+}
+
+#[test]
+fn result_error_type_must_be_an_error() {
+    // docs/03: `E` is an error type — `Err`, an error union, or a
+    // `{ message: Str }` record. A plain record or a primitive is rejected,
+    // because the Result error slot has the error-record shape at runtime.
+    for bad in [
+        r#"record Foo { x: Int }
+func f() -> Result[Int, Foo] { ok(1) }"#,
+        r#"func f() -> Result[Int, Int] { ok(1) }"#,
+        r#"func f() -> Result[Int, Str] { ok(1) }"#,
+    ] {
+        let e = typecheck_error(bad);
+        assert!(
+            e.as_deref().is_some_and(|m| m.contains("Result error type must be")),
+            "expected a Result error-type error, got {:?}",
+            e
+        );
+    }
+
+    // `err(...)` takes an error record, not a bare message or a plain record.
+    for bad in [
+        r#"func f() -> Result[Int, Err] { err("boom") }"#,
+        r#"record Foo { x: Int }
+func f() -> Result[Int, Err] { err(Foo(1)) }"#,
+    ] {
+        let e = typecheck_error(bad);
+        assert!(
+            e.as_deref().is_some_and(|m| m.contains("err(...) expects an error record")),
+            "expected an err(...) error, got {:?}",
+            e
+        );
+    }
+
+    // Valid error types still pass: the root, a user error record, and a union.
+    assert!(typechecks(
+        r#"record MyError { message: Str }
+func a() -> Result[Int, Err] { err(Err("x")) }
+func b() -> Result[Int, MyError] { err(MyError("x")) }
+func c() -> Result[Int, MyError | DomainError] { err(MyError("x")) }"#
+    ));
 }

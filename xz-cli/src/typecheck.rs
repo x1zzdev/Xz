@@ -478,6 +478,12 @@ impl TypeChecker {
             "Result" => {
                 let t = self.from_ast(&args[0]);
                 let e = self.from_ast(&args[1]);
+                if !self.is_error_type(&e) {
+                    self.error(format!(
+                        "Result error type must be Err, an error union, or a `{{ message: Str }}` record, got {:?}",
+                        e
+                    ));
+                }
                 Kind::Result(Box::new(t), Box::new(e))
             }
             "Chan" => {
@@ -572,6 +578,29 @@ impl TypeChecker {
             }
             _ => false,
         }
+    }
+
+    /// Whether `k` may be the error type `E` of a `Result[T, E]`: the root
+    /// `Err`, an error union, or a user-declared error record (`{ message: Str }`,
+    /// docs/03-type-system.md). `Unknown` and a bare type parameter are allowed
+    /// because their shape is decided later.
+    fn is_error_type(&self, k: &Kind) -> bool {
+        match k {
+            Kind::Err | Kind::Unknown | Kind::TypeVar(_) => true,
+            Kind::ErrUnion(members) => members.iter().all(|m| self.is_error_type(m)),
+            Kind::Record(name) => self.is_error_record_decl(name),
+            _ => false,
+        }
+    }
+
+    /// A user-declared error record: exactly one field, `message: Str`. Its
+    /// constructor takes the message positionally (docs/03-type-system.md).
+    fn is_error_record_decl(&self, name: &str) -> bool {
+        self.record_ctors.get(name).is_some_and(|fields| fields.len() == 1)
+            && matches!(
+                self.fields.get(&(name.to_string(), "message".to_string())),
+                Some(Kind::Str)
+            )
     }
 
     fn check_bodies(&mut self, program: &Program) {
@@ -1433,6 +1462,12 @@ fn check_tvar_op(&mut self, at: &Kind, bt: &Kind, op: &BinOp) {
             }
             Expr::Err(a) => {
                 let et = self.check_expr(a, env);
+                if !self.is_error_type(&et) {
+                    self.error(format!(
+                        "err(...) expects an error record (`Err(\"msg\")` or a `{{ message: Str }}` record), got {:?}",
+                        et
+                    ));
+                }
                 Kind::Result(Box::new(Kind::Unknown), Box::new(et))
             }
             Expr::Some(a) => {
