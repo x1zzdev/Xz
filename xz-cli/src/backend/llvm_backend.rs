@@ -522,6 +522,10 @@ fn kind_named_subst(name: &str, args: &[Type], backend: &LlvmBackend<'_>, subst:
 /// function from its concrete argument types. Structurally-equal LLVM types
 /// (e.g. `Str`/`List[T]`, both `{ ptr, i64 }`) map to the same canonical kind,
 /// which is harmless because the specialized LLVM signature is identical.
+/// A `Result`'s error slot is the shared `{ message: Str }` record, so its
+/// error kind is reported as `Err` even when the source named a user error
+/// record: codegen never inspects a `Result`'s error kind (lowering, mangling,
+/// and every destructuring use the ok payload only).
 pub fn kind_from_llvm(backend: &LlvmBackend<'_>, t: BasicTypeEnum<'_>) -> Kind {
     match t {
         BasicTypeEnum::IntType(it) => match it.get_bit_width() {

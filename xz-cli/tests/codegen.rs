@@ -961,6 +961,47 @@ func main() {
 }
 
 #[test]
+fn generic_over_user_error_record_result_runs() {
+    // A generic function specialized with a `Result[T, E]` argument where `E`
+    // is a user-declared error record. The argument's LLVM type is the shared
+    // `{ payload, { message: Str }, i1 }` struct, so `kind_from_llvm` reports
+    // the error slot as `Err` and the record name is not recoverable from IR.
+    // The specialization is still correct because codegen never inspects a
+    // `Result`'s error kind — it lowers and mangles by the ok payload only.
+    expect_output(
+        r#"record MyError {
+    message: Str
+}
+
+/// Returns its argument.
+/// @intent  Returns x unchanged.
+/// @effects none
+func id[T](x: T) -> T {
+    x
+}
+
+/// Always fails with a MyError.
+/// @intent  Returns a MyError carrying "boom".
+/// @effects none
+func fail() -> Result[Str, MyError] {
+    err(MyError("boom"))
+}
+
+/// @intent  Prints the propagated error message.
+/// @effects none
+func main() {
+    let r = id(fail())
+    match r {
+        ok(s) -> print(s)
+        err(e) -> print("err: " + e.message)
+    }
+}"#,
+        "err: boom",
+        "generic over user error record Result",
+    );
+}
+
+#[test]
 fn shared_export_linkage_and_header() -> Result<(), String> {
     // `@export` functions keep external linkage (so they survive globaldce
     // into the .so symbol table); everything else, including `main`, stays
