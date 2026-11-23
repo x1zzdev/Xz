@@ -120,9 +120,10 @@ in the module as IR that calls libc (`write`, `malloc`, `memcpy`, `free`,
 `snprintf`), and the object compiled by `llc` is linked with `ld` against the C
 runtime and libc. `print`/`to_str`/`concat`/`str_free` therefore stay one C-ABI
 call each; `xz_str_eq` is a byte-compare loop; `xz_read_file` copies the path
-into a NUL-terminated buffer and reads the file via libc `fopen`/`fread`, and on
-failure reads `errno` through the host libc's accessor symbol to format the OS
-reason (a host with no known accessor reports a fixed message);
+bytes into a NUL-terminated buffer and reads the file via libc `fopen`/`fread`
+(the JIT host passes the same path bytes to the OS, so both accept a non-UTF-8
+Unix path), and on failure reads `errno` through the host libc's accessor symbol
+to format the OS reason (a host with no known accessor reports a fixed message);
 `xz_time_now` calls libc `gettimeofday` and `xz_time_monotonic` calls
 `clock_gettime(CLOCK_MONOTONIC)` (the clock id is selected for the host libc),
 both returning i64 nanoseconds;
