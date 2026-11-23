@@ -100,7 +100,7 @@ system linker.
 | `xz_str_to_upper` / `xz_str_to_lower` | `fn(i8*, i64) -> XzStr` | `Str.to_upper()` / `to_lower()` — a fresh byte buffer |
 | `xz_bool_to_str` | `fn(i1) -> XzStr` | `Bool.to_str()` |
 | `xz_str_eq` | `fn(i8*, i64, i8*, i64) -> i1` | `Map` key / `Set` element equality for `Str` values |
-| `xz_read_file` | `fn(i8*, i64, ptr, ptr) -> i1` | `read_file(path: Str)` — reads the file at the byte path and writes a fresh `{ptr, len}` payload through `out`, returning 1; on failure writes the OS error message (strerror on the native path) through `err_out` and returns 0 |
+| `xz_read_file` | `fn(i8*, i64, ptr, ptr) -> i1` | `read_file(path: Str)` — reads the file at the byte path and writes a fresh `{ptr, len}` payload through `out`, returning 1; on failure writes the OS error message through `err_out` and returns 0. The native path reads `errno` through the host libc's accessor (`__errno_location` on Linux/Android, `__error` on Apple and FreeBSD/DragonFly) and formats it with `strerror`; a host with no known accessor reports a fixed message |
 | `xz_time_now` / `xz_time_monotonic` | `fn() -> i64` | `now()` / `monotonic()` — wall-clock nanoseconds since the Unix epoch / non-decreasing nanoseconds from the host monotonic clock (`CLOCK_MONOTONIC`, system boot), both as i64 nanoseconds |
 | `xz_str_free` | `fn(i8*, i64) -> ()` | frees a heap Str buffer (registry-guarded) |
 
@@ -120,7 +120,9 @@ in the module as IR that calls libc (`write`, `malloc`, `memcpy`, `free`,
 `snprintf`), and the object compiled by `llc` is linked with `ld` against the C
 runtime and libc. `print`/`to_str`/`concat`/`str_free` therefore stay one C-ABI
 call each; `xz_str_eq` is a byte-compare loop; `xz_read_file` copies the path
-into a NUL-terminated buffer and reads the file via libc `fopen`/`fread`;
+into a NUL-terminated buffer and reads the file via libc `fopen`/`fread`, and on
+failure reads `errno` through the host libc's accessor symbol to format the OS
+reason (a host with no known accessor reports a fixed message);
 `xz_time_now` calls libc `gettimeofday` and `xz_time_monotonic` calls
 `clock_gettime(CLOCK_MONOTONIC)` (the clock id is selected for the host libc),
 both returning i64 nanoseconds;

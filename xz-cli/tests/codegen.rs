@@ -1459,6 +1459,15 @@ func main() -> Result[Unit, Err] {
     assert!(ir.contains("define i32 @main()"), "native main must return i32");
     assert!(ir.contains("define") && ir.contains("@xz_print"), "runtime bodies must be defined");
     assert!(ir.contains("define i1 @xz_read_file"), "read_file runtime body must be defined:\n{}", ir);
+    // The native read_file reads errno through the host libc's accessor, not a
+    // hardcoded glibc symbol (docs/13-codegen.md); on this Linux host that is
+    // `__errno_location`.
+    #[cfg(target_os = "linux")]
+    assert!(
+        ir.contains("__errno_location"),
+        "native read_file must read errno via the host accessor:\n{}",
+        ir
+    );
     assert!(ir.contains("define i64 @xz_time_now"), "time_now runtime body must be defined:\n{}", ir);
     assert!(
         ir.contains("define i64 @xz_time_monotonic"),

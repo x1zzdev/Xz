@@ -1275,9 +1275,10 @@ pub fn emit_native_runtime(backend: &mut LlvmBackend<'static>) -> Result<(), Str
         );
         let fclose = backend.module.add_function("fclose", i32.fn_type(&[ptr.into()], false), None);
         // On failure, report the OS reason through `err_out` via strerror(errno).
-        let strerror = backend.module.add_function("strerror", ptr.fn_type(&[i32.into()], false), None);
+        // `errno` is a per-libc macro, so its accessor is host-selected
+        // (`errno_accessor`); a host with no known accessor reports a fixed
+        // message instead.
         let strlen = backend.module.add_function("strlen", i64.fn_type(&[ptr.into()], false), None);
-        let errno_loc = backend.module.add_function("__errno_location", ptr.fn_type(&[], false), None);
 
         let path_ptr = f.get_nth_param(0).unwrap().into_pointer_value();
         let path_len = f.get_nth_param(1).unwrap().into_int_value();
@@ -1362,24 +1363,38 @@ pub fn emit_native_runtime(backend: &mut LlvmBackend<'static>) -> Result<(), Str
         backend.builder.build_unconditional_branch(ret_bb).unwrap();
 
         backend.builder.position_at_end(fail_bb);
-        // errno was set by the failed fopen; strerror gives the OS message.
-        let ep = backend
-            .builder
-            .build_direct_call(errno_loc, &[], "errno.loc")
-            .unwrap()
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_pointer_value();
-        let ev = backend.builder.build_load(i32, ep, "errno").unwrap();
-        let msg = backend
-            .builder
-            .build_direct_call(strerror, &[ev.into()], "strerror")
-            .unwrap()
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_pointer_value();
+        // errno was set by the failed fopen. The accessor is a per-libc macro
+        // symbol, so it is host-selected; a host with no known accessor has no
+        // OS reason and reports a fixed message instead.
+        let msg = match errno_accessor() {
+            Some(sym) => {
+                let errno_loc = backend.module.add_function(sym, ptr.fn_type(&[], false), None);
+                let strerror =
+                    backend.module.add_function("strerror", ptr.fn_type(&[i32.into()], false), None);
+                let ep = backend
+                    .builder
+                    .build_direct_call(errno_loc, &[], "errno.loc")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .basic()
+                    .unwrap()
+                    .into_pointer_value();
+                let ev = backend.builder.build_load(i32, ep, "errno").unwrap();
+                backend
+                    .builder
+                    .build_direct_call(strerror, &[ev.into()], "strerror")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .basic()
+                    .unwrap()
+                    .into_pointer_value()
+            }
+            None => backend
+                .builder
+                .build_global_string_ptr("cannot read file", "read.err")
+                .unwrap()
+                .as_pointer_value(),
+        };
         let mlen = backend
             .builder
             .build_direct_call(strlen, &[msg.into()], "strlen")
@@ -1493,5 +1508,27 @@ pub(crate) fn monotonic_clock_id() -> u64 {
         3
     } else {
         1
+    }
+}
+
+/// The host libc's `errno` accessor symbol, or `None` when the target has no
+/// known one. `errno` is a macro that expands to a call through a per-libc
+/// function (`__errno_location` on Linux/Android, `__error` on Apple and
+/// FreeBSD/DragonFly), not a shared ABI symbol, so it is selected per target OS;
+/// the native runtime is linked against the host libc (docs/13-codegen.md). A
+/// host with no known accessor reports a fixed `read_file` failure message
+/// instead of the OS reason.
+pub(crate) fn errno_accessor() -> Option<&'static str> {
+    if cfg!(any(target_os = "linux", target_os = "android")) {
+        Some("__errno_location")
+    } else if cfg!(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "dragonfly"
+    )) {
+        Some("__error")
+    } else {
+        None
     }
 }
